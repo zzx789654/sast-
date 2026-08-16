@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .adapters import get_adapters
 from .config import config
+from .inventory import inventory
 from .models import (
     Job, JobStatus, ScanTarget, ToolPhase, ToolResult, ToolStatus,
 )
@@ -68,6 +69,11 @@ class JobManager:
         try:
             scan_root = self._prepare_source(source_spec, src_dir, job)
             external = source_spec.get("kind") == "path"
+            job.stage = "inventorying files"
+            try:
+                job.inventory = inventory(scan_root)
+            except Exception:  # noqa: BLE001 - inventory is best-effort
+                job.inventory = {}
             job.stage = "scanning"
             self._run_adapters(job, scan_root)
             job.compute_summary().compute_progress()

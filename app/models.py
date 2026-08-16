@@ -97,6 +97,7 @@ class ToolResult(BaseModel):
     duration_ms: int = 0
     findings: list[Finding] = Field(default_factory=list)
     error: str = ""
+    message: str = ""            # non-error note, e.g. why it was not applicable
     install_hint: str = ""
     summary: dict[str, int] = Field(default_factory=dict)
 
@@ -132,6 +133,7 @@ class Job(BaseModel):
     results: dict[str, ToolResult] = Field(default_factory=dict)
     summary: dict[str, int] = Field(default_factory=dict)
     progress: dict[str, int] = Field(default_factory=dict)
+    inventory: dict = Field(default_factory=dict)   # file count / size / languages
     stage: str = ""            # human-readable current step (e.g. "cloning repo")
     error: str = ""
     logs: list[str] = Field(default_factory=list)

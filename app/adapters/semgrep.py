@@ -20,6 +20,8 @@ class SemgrepAdapter(BaseAdapter):
     kind = ToolKind.SAST
     binary = "semgrep"
     install_hint = "pip install semgrep  (or: brew install semgrep)"
+    languages = ["*"]  # rule-dependent; supports 30+ languages
+    requirement = "source code (30+ languages, rule-based)"
 
     def _probe_version(self) -> tuple[bool, str]:
         res = run_command([self.binary, "--version"], timeout=config.PROBE_TIMEOUT)

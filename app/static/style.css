@@ -83,6 +83,22 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 .tools-pick legend { font-size: .82rem; color: var(--muted); padding: 0 .3rem; }
 .tool-check { display: flex; align-items: center; gap: .45rem; padding: .18rem 0; font-size: .88rem; }
 .tool-check input:disabled + span { color: var(--unknown); }
+.tool-check.inapplicable span { color: var(--high); }
+.tool-req { font-size: .72rem; color: var(--muted); margin: 0 0 .1rem 1.55rem; }
+
+/* project inspect panel */
+.inspect-panel { border: 1px solid var(--line); border-radius: 8px; padding: .55rem .7rem; margin: 0 0 .6rem; background: var(--bg); font-size: .82rem; }
+.inspect-panel .inv-head { font-weight: 600; margin-bottom: .35rem; }
+.lang-chips { display: flex; gap: .3rem; flex-wrap: wrap; margin-bottom: .4rem; }
+.lang-chip { font-size: .72rem; border: 1px solid var(--line); border-radius: 999px; padding: .08rem .45rem; color: var(--muted); }
+.inspect-panel .warn-title { color: var(--high); font-weight: 600; margin: .3rem 0 .2rem; }
+.inspect-panel .warn-item { color: var(--muted); font-size: .78rem; margin-left: .2rem; }
+.inspect-panel.loading { color: var(--muted); }
+
+/* selected-but-inapplicable warnings under the tool picker */
+.tool-warnings { border: 1px solid var(--high); border-radius: 8px; padding: .5rem .7rem; margin-bottom: .8rem; background: rgba(226,87,30,.06); font-size: .8rem; }
+.tool-warnings .tw-title { color: var(--high); font-weight: 600; margin-bottom: .25rem; }
+.tool-warnings .tw-item { color: var(--muted); }
 .kindtag {
   font-size: .68rem; padding: .05rem .35rem; border-radius: 4px;
   border: 1px solid var(--line); color: var(--muted); margin-left: auto;

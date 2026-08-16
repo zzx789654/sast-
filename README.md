@@ -38,6 +38,13 @@ Browser ──► nginx (reverse proxy) ──► FastAPI ──► Orchestrator
 * **Graceful degradation.** A tool that isn't installed is reported as
   `unavailable` with an install hint — the scan still runs every other tool.
   So the app is useful whether you have all six tools or none.
+* **Project inventory + language 防呆.** Each scan reports the project's file
+  count, size and language mix. Every tool declares the languages/inputs it
+  needs; for a local path you can *inspect* before scanning to see which tools
+  won't apply (and why), and picking an inapplicable tool is flagged. (We show
+  an honest inventory rather than fake per-file progress — the tools are batch
+  scanners with no reliable per-file progress stream, and the SCA tools work on
+  lockfiles, not files.)
 * **Simple by design.** In-memory job store, HTTP polling for progress, a
   no-framework vanilla-JS front end. No database, no build step.
 

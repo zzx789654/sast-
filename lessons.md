@@ -1,5 +1,25 @@
 # lessons — SAST Studio
 
+## [2026-08-16] 第 5 輪 — 專案盤點 + 語言防呆（誠實面對「per-file 進度」）
+
+### 本輪紀錄
+- **需求**：想顯示「專案有多少檔案、每個檔案掃描進度」；並問工具語言不支援時如何通知/防呆。
+- **決策（誠實界線）**：不做「逐檔進度」——六個工具都是批次掃描器，沒有可靠的機器可讀 per-file 進度串流；SCA 工具（npm audit/OSV）根本是掃 lockfile 而非逐檔。硬做要為每個工具寫脆弱的 TTY 進度爬取，違反「簡單、不過度設計」。改做**專案盤點**（檔案數/大小/語言分佈）——這才是誠實且有用的粒度。
+- **DevSecOps**：
+  - 新增 `app/inventory.py`：`inventory()`（走訪、跳過 node_modules/.git 等噪音、統計檔數/位元組/語言直方圖、上限保護）與 `has_language()`（早退語言偵測）。
+  - adapter 新增 `languages` 與 `requirement` 中繼資料，並把 `applicable()` 升級為 `applicability() -> (bool, reason)`；bearer 用語言偵測、npm_audit 用 package.json、osv 用 lockfile，各自回可讀原因。
+  - orchestrator 掃前算 `job.inventory`；`ToolResult.message` 帶 not_applicable 原因。
+  - API：`/api/tools` 增列 languages/requirement；新增 `POST /api/inspect`（僅本機路徑）回傳盤點 + 每工具適用性。
+  - 前端：工具清單顯示「needs: …」；本機路徑可「inspect project」→ 顯示盤點卡 + 「Won't apply」清單 + 不適用工具標橘；選到不適用工具底部橘框警告；整批不適用時 Start 擋下。結果列顯示 not_applicable 原因與盤點摘要。
+- **QA / 驗證**：23 測試全通過（+5：inventory、bearer/npm 適用性、/api/inspect 與拒絕非 path、/api/tools 中繼資料）。Playwright 實截 C-only 專案的 inspect 畫面：正確列出 bearer/npm_audit/osv_scanner 不適用原因、npm_audit 橘框警告。
+- **過關狀態**：G1–G4 維持。
+
+### 教訓 / 準則
+- **情境**：使用者要求一個「聽起來合理但技術上做不到/會很脆弱」的功能（逐檔進度）。
+  **準則**：誠實說明界線並提出等價、可靠的替代（專案盤點），比硬做脆弱功能好。先分辨「工具實際能提供的粒度」再設計 UI。
+- **情境**：多工具各自支援不同語言/輸入，使用者可能選錯。
+  **準則**：把「適用性」做成資料（每工具宣告 languages/requirement）+ 可解釋原因（applicability 回 reason），就能同時支撐「事前 inspect 警示」「事後 not_applicable 說明」「UI 需求標示」三個防呆點，而不散落硬編碼。
+
 ## [2026-08-16] 第 4 輪 — 進度表與即時狀態
 
 ### 本輪紀錄

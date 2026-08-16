@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 from ..config import config
+from ..inventory import has_language
 from ..models import Finding, Severity, ToolKind
 from .base import BaseAdapter, run_command
 
@@ -31,6 +32,16 @@ class BearerAdapter(BaseAdapter):
         "curl -sSfL https://raw.githubusercontent.com/Bearer/bearer/main/contrib/install.sh "
         "| sh  (free, Elastic License — see github.com/Bearer/bearer)"
     )
+    languages = ["ruby", "javascript", "typescript", "java", "php", "python", "go"]
+    requirement = "Ruby/JS/TS/Java/PHP/Python/Go source"
+
+    def applicability(self, target_dir: Path) -> tuple[bool, str]:
+        if has_language(target_dir, set(self.languages)):
+            return True, ""
+        return False, (
+            "no supported source files found "
+            f"(Bearer analyses {', '.join(self.languages)})"
+        )
 
     def _probe_version(self) -> tuple[bool, str]:
         res = run_command([self.binary, "version"], timeout=config.PROBE_TIMEOUT)

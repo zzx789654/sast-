@@ -11,9 +11,10 @@ from starlette.concurrency import run_in_threadpool
 
 from .adapters import ADAPTERS
 from .config import config
+from .inventory import inventory
 from .models import ScanTarget
 from .orchestrator import manager
-from .source import SourceError, validate_git_url
+from .source import SourceError, resolve_local_path, validate_git_url
 
 app = FastAPI(title="SAST Studio", version="1.0.0")
 
@@ -38,6 +39,8 @@ async def list_tools() -> dict:
                 "available": available,
                 "version": version,
                 "install_hint": adapter.install_hint,
+                "languages": adapter.languages,
+                "requirement": adapter.requirement,
             })
         return out
 
@@ -50,6 +53,41 @@ async def list_tools() -> dict:
             "max_upload_bytes": config.MAX_UPLOAD_BYTES,
         },
     }
+
+
+@app.post("/api/inspect")
+async def inspect_project(
+    source_kind: str = Form(...),
+    local_path: Optional[str] = Form(None),
+) -> dict:
+    """Pre-scan look at a project: file/size/language inventory plus, for each
+    tool, whether it applies to this project and why not. Available for local
+    paths only (uploads/git aren't on disk until a scan starts)."""
+    if source_kind != "path":
+        raise HTTPException(400, "inspection is available for local paths only")
+    if not config.ALLOW_LOCAL_PATH:
+        raise HTTPException(403, "local path scanning is disabled")
+    if not local_path:
+        raise HTTPException(400, "local_path is required")
+    try:
+        root = resolve_local_path(local_path)
+    except SourceError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    def analyse() -> dict:
+        inv = inventory(root)
+        tools = []
+        for adapter in ADAPTERS:
+            applicable, reason = adapter.applicability(root)
+            tools.append({
+                "name": adapter.name,
+                "applicable": applicable,
+                "reason": reason,
+                "requirement": adapter.requirement,
+            })
+        return {"inventory": inv, "tools": tools}
+
+    return await run_in_threadpool(analyse)
 
 
 @app.post("/api/scans")

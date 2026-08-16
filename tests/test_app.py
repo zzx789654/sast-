@@ -267,6 +267,42 @@ def test_local_path_validation(tmp_path):
         resolve_local_path(str(tmp_path / "does-not-exist"))
 
 
+# ---------------------------------------------------------------- inventory
+def test_inventory_and_language_detection(tmp_path):
+    from app.inventory import inventory, has_language
+
+    (tmp_path / "a.py").write_text("x = 1")
+    (tmp_path / "b.js").write_text("var x")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "junk.js").write_text("ignored")  # skipped dir
+
+    inv = inventory(tmp_path)
+    assert inv["total_files"] == 2  # node_modules excluded
+    assert inv["languages"]["python"] == 1
+    assert inv["languages"]["javascript"] == 1
+    assert has_language(tmp_path, {"python"}) is True
+    assert has_language(tmp_path, {"ruby"}) is False
+
+
+# ---------------------------------------------------------------- applicability (防呆)
+def test_bearer_applicability_reason(tmp_path):
+    from app.adapters.bearer import BearerAdapter
+
+    ok, reason = BearerAdapter().applicability(tmp_path)
+    assert ok is False and "Bearer" in reason
+    (tmp_path / "x.py").write_text("x = 1")
+    assert BearerAdapter().applicability(tmp_path)[0] is True
+
+
+def test_npm_applicability_reason(tmp_path):
+    from app.adapters.npm_audit import NpmAuditAdapter
+
+    ok, reason = NpmAuditAdapter().applicability(tmp_path)
+    assert ok is False and "package.json" in reason
+    (tmp_path / "package.json").write_text("{}")
+    assert NpmAuditAdapter().applicability(tmp_path)[0] is True
+
+
 # ---------------------------------------------------------------- orchestrator
 def test_orchestrator_state_machine(monkeypatch, tmp_path):
     from app import orchestrator
@@ -328,6 +364,27 @@ def test_api_tools(client):
     assert names == {"semgrep", "bearer", "trivy", "npm_audit",
                      "osv_scanner", "gitleaks"}
     assert "allow_local_path" in data["config"]
+    # each tool advertises its languages + requirement for the picker
+    assert all("languages" in t and "requirement" in t for t in data["tools"])
+
+
+def test_api_inspect(client, tmp_path):
+    (tmp_path / "app.py").write_text("import os\n")
+    res = client.post("/api/inspect", data={
+        "source_kind": "path", "local_path": str(tmp_path)})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["inventory"]["total_files"] == 1
+    assert data["inventory"]["languages"]["python"] == 1
+    tools = {t["name"]: t for t in data["tools"]}
+    assert tools["bearer"]["applicable"] is True        # python is supported
+    assert tools["npm_audit"]["applicable"] is False     # no package.json
+    assert "package.json" in tools["npm_audit"]["reason"]
+
+
+def test_api_inspect_rejects_non_path(client):
+    res = client.post("/api/inspect", data={"source_kind": "git"})
+    assert res.status_code == 400
 
 
 def test_api_scan_not_found(client):

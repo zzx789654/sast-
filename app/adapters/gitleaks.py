@@ -21,6 +21,8 @@ class GitleaksAdapter(BaseAdapter):
     install_hint = (
         "brew install gitleaks  (or download from github.com/gitleaks/gitleaks/releases)"
     )
+    languages = ["*"]  # secret scanning is language-agnostic
+    requirement = "any files (secret scan)"
 
     def _probe_version(self) -> tuple[bool, str]:
         res = run_command([self.binary, "version"], timeout=config.PROBE_TIMEOUT)

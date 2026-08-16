@@ -4,9 +4,10 @@
 const SEVERITIES = ["critical", "high", "medium", "low", "info", "unknown"];
 const state = {
   sourceKind: "upload",
-  tools: [],          // [{name, available, kind, install_hint, version}]
+  tools: [],          // [{name, available, kind, requirement, languages, ...}]
   currentJob: null,   // full job object
   pollTimer: null,
+  inspect: null,      // {inventory, tools:[{name, applicable, reason}]} for a path
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -35,6 +36,14 @@ function wireTabs() {
       document.querySelectorAll(".tabpane").forEach((p) => {
         p.classList.toggle("hidden", p.dataset.pane !== state.sourceKind);
       });
+      // inspection is a path-only concept
+      if (state.sourceKind === "path" && $("#path-input").value.trim()) {
+        inspectProject();
+      } else {
+        $("#inspect-panel").classList.add("hidden");
+        clearInapplicableMarks();
+        updateToolWarnings();
+      }
     });
   });
 }
@@ -44,8 +53,12 @@ function wireForm() {
   $("#select-all").addEventListener("click", () => {
     document.querySelectorAll(".tool-check input:not(:disabled)")
       .forEach((cb) => (cb.checked = true));
+    updateToolWarnings();
   });
   $("#scan-picker").addEventListener("change", (e) => loadJob(e.target.value));
+  $("#inspect-btn").addEventListener("click", inspectProject);
+  $("#path-input").addEventListener("change", inspectProject);  // fires on blur
+  $("#tool-checkboxes").addEventListener("change", updateToolWarnings);
 }
 
 function wireFilters() {
@@ -72,21 +85,24 @@ async function loadTools() {
     bar.appendChild(chip);
   });
 
-  // checkboxes
+  // checkboxes (with each tool's language/requirement note)
   const box = $("#tool-checkboxes");
   box.innerHTML = "";
   data.tools.forEach((t) => {
+    const item = el("div", "tool-item");
     const row = el("label", "tool-check");
+    row.dataset.tool = t.name;
     const cb = el("input");
     cb.type = "checkbox";
     cb.value = t.name;
     cb.checked = t.available;
     cb.disabled = !t.available;
     row.appendChild(cb);
-    const span = el("span", null, t.name + (t.available ? "" : " (not installed)"));
-    row.appendChild(span);
+    row.appendChild(el("span", null, t.name + (t.available ? "" : " (not installed)")));
     row.appendChild(el("span", "kindtag", t.kind));
-    box.appendChild(row);
+    item.appendChild(row);
+    item.appendChild(el("div", "tool-req", "needs: " + (t.requirement || "any project")));
+    box.appendChild(item);
   });
 
   // local-path availability
@@ -100,12 +116,127 @@ function selectedTools() {
     .map((cb) => cb.value);
 }
 
+// ---------------------------------------------------------------- inspect
+function formatBytes(n) {
+  if (!n) return "0 B";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return n.toFixed(i ? 1 : 0) + " " + u[i];
+}
+
+async function inspectProject() {
+  if (state.sourceKind !== "path") return;
+  const path = $("#path-input").value.trim();
+  const panel = $("#inspect-panel");
+  if (!path) {
+    panel.classList.add("hidden");
+    state.inspect = null;
+    clearInapplicableMarks();
+    updateToolWarnings();
+    return;
+  }
+  panel.className = "inspect-panel loading";
+  panel.textContent = "Inspecting " + path + " …";
+  try {
+    const fd = new FormData();
+    fd.append("source_kind", "path");
+    fd.append("local_path", path);
+    const res = await fetch("/api/inspect", { method: "POST", body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "inspect failed");
+    state.inspect = data;
+    renderInspectPanel(data);
+  } catch (e) {
+    panel.className = "inspect-panel";
+    panel.textContent = "Could not inspect: " + e.message;
+    state.inspect = null;
+    clearInapplicableMarks();
+  }
+  updateToolWarnings();
+}
+
+function renderInspectPanel(data) {
+  const inv = data.inventory || {};
+  const panel = $("#inspect-panel");
+  panel.className = "inspect-panel";
+  panel.innerHTML = "";
+  panel.appendChild(el("div", "inv-head",
+    `📁 ${inv.total_files || 0} files · ${formatBytes(inv.total_bytes)}` +
+    (inv.truncated ? " (truncated)" : "")));
+
+  const chips = el("div", "lang-chips");
+  Object.entries(inv.languages || {}).slice(0, 8).forEach(([lang, n]) =>
+    chips.appendChild(el("span", "lang-chip", `${lang} ${n}`)));
+  panel.appendChild(chips);
+
+  const inapplicable = (data.tools || []).filter((t) => !t.applicable);
+  if (inapplicable.length) {
+    panel.appendChild(el("div", "warn-title", "Won’t apply to this project:"));
+    inapplicable.forEach((t) =>
+      panel.appendChild(el("div", "warn-item", `• ${t.name}: ${t.reason}`)));
+  }
+  markInapplicable(data.tools || []);
+}
+
+function markInapplicable(tools) {
+  const map = {};
+  tools.forEach((t) => (map[t.name] = t.applicable));
+  document.querySelectorAll(".tool-check").forEach((row) => {
+    const applicable = map[row.dataset.tool];
+    row.classList.toggle("inapplicable", applicable === false);
+  });
+}
+
+function clearInapplicableMarks() {
+  document.querySelectorAll(".tool-check.inapplicable")
+    .forEach((row) => row.classList.remove("inapplicable"));
+}
+
+// warn when a *selected* tool won't apply to the inspected project
+function updateToolWarnings() {
+  const box = $("#tool-warnings");
+  if (!state.inspect || state.sourceKind !== "path") {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    return;
+  }
+  const map = {};
+  state.inspect.tools.forEach((t) => (map[t.name] = t));
+  const bad = selectedTools()
+    .map((n) => map[n])
+    .filter((t) => t && !t.applicable);
+  if (!bad.length) {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    return;
+  }
+  box.classList.remove("hidden");
+  box.innerHTML = "";
+  box.appendChild(el("div", "tw-title",
+    "⚠ Selected tools that won’t find anything here:"));
+  bad.forEach((t) => box.appendChild(el("div", "tw-item", `${t.name} — ${t.reason}`)));
+}
+
 // ---------------------------------------------------------------- scan
 async function startScan() {
   const err = $("#form-error");
   err.classList.add("hidden");
   const tools = selectedTools();
   if (tools.length === 0) return showError("Pick at least one available tool.");
+
+  // 防呆: for an inspected local path, block only if *every* selected tool is
+  // inapplicable (otherwise let inapplicable ones report not_applicable).
+  if (state.sourceKind === "path" && state.inspect) {
+    const map = {};
+    state.inspect.tools.forEach((t) => (map[t.name] = t));
+    const bad = tools.filter((n) => map[n] && !map[n].applicable);
+    if (bad.length === tools.length) {
+      return showError(
+        "None of the selected tools apply to this project (" + bad.join(", ") +
+        "). Pick tools that match its languages/lockfiles.");
+    }
+  }
 
   const fd = new FormData();
   fd.append("source_kind", state.sourceKind);
@@ -190,6 +321,12 @@ function renderJob(job) {
   meta.appendChild(el("span", "jstatus " + job.status, job.status));
   if (job.stage && job.status === "running") {
     meta.appendChild(el("span", null, "· " + job.stage));
+  }
+  const inv = job.inventory;
+  if (inv && inv.total_files) {
+    const langs = Object.keys(inv.languages || {}).slice(0, 4).join(", ");
+    meta.appendChild(el("span", null,
+      `· ${inv.total_files} files${langs ? " (" + langs + ")" : ""}`));
   }
   if (job.error) meta.appendChild(el("div", "error", job.error));
 
@@ -285,6 +422,8 @@ function renderToolRows(results) {
       row.appendChild(el("span", "telapsed", (r.duration_ms || 0) + "ms"));
     } else if (r.status === "unavailable") {
       row.appendChild(el("span", "thint", r.install_hint || ""));
+    } else if (r.status === "not_applicable") {
+      row.appendChild(el("span", "thint", r.message || "nothing to scan for this tool"));
     } else if (r.error) {
       row.appendChild(el("span", "thint", r.error.slice(0, 120)));
     }

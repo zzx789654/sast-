@@ -46,14 +46,19 @@
           <span>Server-local directory path</span>
           <input type="text" id="path-input" placeholder="/srv/code/my-project" />
         </label>
+        <button type="button" id="inspect-btn" class="linkbtn">inspect project</button>
         <p id="path-note" class="note hidden">Local path scanning is disabled by config.</p>
       </div>
+
+      <div id="inspect-panel" class="inspect-panel hidden"></div>
 
       <fieldset class="tools-pick">
         <legend>Tools</legend>
         <div id="tool-checkboxes"></div>
         <button type="button" id="select-all" class="linkbtn">select all available</button>
       </fieldset>
+
+      <div id="tool-warnings" class="tool-warnings hidden"></div>
 
       <button id="start-btn" class="primary">Start scan</button>
       <p id="form-error" class="error hidden" role="alert"></p>

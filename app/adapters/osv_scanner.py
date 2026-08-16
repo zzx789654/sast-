@@ -33,9 +33,13 @@ class OsvScannerAdapter(BaseAdapter):
         "go install github.com/google/osv-scanner/cmd/osv-scanner@latest  "
         "(or download a release binary from github.com/google/osv-scanner)"
     )
+    languages = ["*"]  # any ecosystem, as long as there is a lockfile
+    requirement = "a dependency lockfile (npm, pip, go, cargo, …)"
 
-    def applicable(self, target_dir: Path) -> bool:
-        return any(next(target_dir.rglob(f), None) is not None for f in _LOCKFILES)
+    def applicability(self, target_dir: Path) -> tuple[bool, str]:
+        if any(next(target_dir.rglob(f), None) is not None for f in _LOCKFILES):
+            return True, ""
+        return False, "no supported lockfile found (package-lock.json, requirements.txt, go.mod, …)"
 
     def _execute(self, target_dir: Path) -> list[Finding]:
         res = run_command(

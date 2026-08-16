@@ -29,6 +29,8 @@ class TrivyAdapter(BaseAdapter):
     install_hint = (
         "brew install trivy  (or see aquasecurity.github.io/trivy — free, Apache-2.0)"
     )
+    languages = ["*"]  # deps + secrets + IaC configs, language-agnostic
+    requirement = "any project (deps, secrets, IaC configs)"
 
     def _execute(self, target_dir: Path) -> list[Finding]:
         res = run_command(

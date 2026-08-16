@@ -78,6 +78,11 @@ class BaseAdapter:
     kind: ToolKind = ToolKind.SAST
     binary: str = ""
     install_hint: str = ""
+    # Languages the tool meaningfully analyses. ["*"] means language-agnostic
+    # (works on any project). Used for the pre-scan applicability warning.
+    languages: list[str] = ["*"]
+    # One-line, human-readable statement of what the tool needs to find work.
+    requirement: str = "any project"
 
     # ---- availability -------------------------------------------------
     def probe(self) -> tuple[bool, str]:
@@ -96,9 +101,10 @@ class BaseAdapter:
         return True, version[0] if version else ""
 
     # ---- applicability ------------------------------------------------
-    def applicable(self, target_dir: Path) -> bool:
-        """Whether this tool has anything to scan in target_dir."""
-        return True
+    def applicability(self, target_dir: Path) -> tuple[bool, str]:
+        """Return (applicable, reason). Reason explains a False result so the
+        UI can tell the user *why* a tool would find nothing."""
+        return True, ""
 
     # ---- execution (implemented per tool) -----------------------------
     def _execute(self, target_dir: Path) -> list[Finding]:
@@ -117,8 +123,10 @@ class BaseAdapter:
             result.error = f"{self.name} is not installed"
             return result.compute_summary()
 
-        if not self.applicable(target_dir):
+        applicable, reason = self.applicability(target_dir)
+        if not applicable:
             result.status = ToolStatus.NOT_APPLICABLE
+            result.message = reason
             return result.compute_summary()
 
         start = time.monotonic()

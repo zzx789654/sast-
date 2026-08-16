@@ -22,6 +22,8 @@ class NpmAuditAdapter(BaseAdapter):
     kind = ToolKind.SCA
     binary = "npm"
     install_hint = "Install Node.js (npm ships with it): https://nodejs.org"
+    languages = ["javascript", "typescript"]
+    requirement = "a package.json (Node/npm project)"
 
     def _probe_version(self) -> tuple[bool, str]:
         res = run_command([self.binary, "--version"], timeout=config.PROBE_TIMEOUT)
@@ -29,11 +31,11 @@ class NpmAuditAdapter(BaseAdapter):
             return False, ""
         return True, "npm " + res.stdout.strip()
 
-    def applicable(self, target_dir: Path) -> bool:
-        return any(
-            (target_dir / f).exists()
-            for f in ("package.json", "package-lock.json", "npm-shrinkwrap.json")
-        )
+    def applicability(self, target_dir: Path) -> tuple[bool, str]:
+        if any((target_dir / f).exists()
+               for f in ("package.json", "package-lock.json", "npm-shrinkwrap.json")):
+            return True, ""
+        return False, "no package.json found — not a Node/npm project"
 
     def _execute(self, target_dir: Path) -> list[Finding]:
         # npm audit needs a lockfile; generate one offline-safely if missing.
