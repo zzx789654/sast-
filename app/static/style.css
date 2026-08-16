@@ -42,6 +42,13 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 .logo { font-size: 1.8rem; }
 .tagline { margin: 0; color: var(--muted); font-size: .82rem; }
 
+.topbar-right { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+.lang-toggle {
+  padding: .3rem .6rem; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: var(--ink); cursor: pointer; font-size: .8rem;
+  min-width: 2.4rem;
+}
+.lang-toggle:hover { border-color: var(--accent); color: var(--accent); }
 .tool-status { display: flex; gap: .4rem; flex-wrap: wrap; }
 .chip {
   display: inline-flex; align-items: center; gap: .35rem;
@@ -84,6 +91,7 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 .tool-check { display: flex; align-items: center; gap: .45rem; padding: .18rem 0; font-size: .88rem; }
 .tool-check input:disabled + span { color: var(--unknown); }
 .tool-check.inapplicable span { color: var(--high); }
+.tool-desc { font-size: .74rem; color: var(--ink); opacity: .8; margin: .05rem 0 0 1.55rem; }
 .tool-req { font-size: .72rem; color: var(--muted); margin: 0 0 .1rem 1.55rem; }
 
 /* project inspect panel */
@@ -209,6 +217,7 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 .sev.info, .sev.unknown { background: var(--info); }
 .finding .ftool { font-size: .72rem; color: var(--muted); border: 1px solid var(--line); padding: .05rem .4rem; border-radius: 4px; }
 .finding .ftitle { font-weight: 600; }
+.finding .fsevnote { font-size: .76rem; color: var(--muted); margin: .2rem 0 0; font-style: italic; }
 .finding .fmsg { font-size: .85rem; color: var(--muted); margin: .3rem 0; }
 .finding .floc { font-size: .78rem; font-family: ui-monospace, monospace; color: var(--muted); }
 .finding .ftags { display: flex; gap: .3rem; flex-wrap: wrap; margin-top: .3rem; }

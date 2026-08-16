@@ -1,5 +1,7 @@
 # SAST Studio
 
+> [中文說明 (Chinese README)](README.zh.md)
+
 One web page, six free security scanners. Point it at some code and it runs
 **Semgrep**, **Bearer**, **Trivy**, **npm audit**, **OSV-Scanner** and
 **Gitleaks**, then shows every finding in one severity-sorted report — no

@@ -1,10 +1,12 @@
 "use strict";
-// SAST Studio front-end. Plain browser JS, no build step, no framework.
+// SAST Studio front-end. Plain browser JS, no framework, no build step.
+// All user-facing strings go through t() (see i18n.js) so the UI can switch
+// between 中文 and English live.
 
 const SEVERITIES = ["critical", "high", "medium", "low", "info", "unknown"];
 const state = {
   sourceKind: "upload",
-  tools: [],          // [{name, available, kind, requirement, languages, ...}]
+  toolsData: null,    // full /api/tools response
   currentJob: null,   // full job object
   pollTimer: null,
   inspect: null,      // {inventory, tools:[{name, applicable, reason}]} for a path
@@ -17,6 +19,25 @@ const el = (tag, cls, text) => {
   if (text != null) e.textContent = text;
   return e;
 };
+
+// resolve a per-tool localized string, falling back to a backend value
+function reqText(tl) {
+  const s = t("tool." + tl.name + ".req");
+  return s === "tool." + tl.name + ".req" ? (tl.requirement || "") : s;
+}
+function toolDesc(name) {
+  const s = t("tool." + name + ".desc");
+  return s === "tool." + name + ".desc" ? "" : s;
+}
+function localReason(name, fallback) {
+  const s = t("reason." + name);
+  return s === "reason." + name ? (fallback || "") : s;
+}
+function statusLabel(s) {
+  const known = { ok: "tstat.ok", unavailable: "tstat.unavailable",
+                  not_applicable: "tstat.not_applicable" };
+  return known[s] ? t(known[s]) : s;
+}
 
 // ---------------------------------------------------------------- init
 async function init() {
@@ -36,7 +57,6 @@ function wireTabs() {
       document.querySelectorAll(".tabpane").forEach((p) => {
         p.classList.toggle("hidden", p.dataset.pane !== state.sourceKind);
       });
-      // inspection is a path-only concept
       if (state.sourceKind === "path" && $("#path-input").value.trim()) {
         inspectProject();
       } else {
@@ -57,58 +77,81 @@ function wireForm() {
   });
   $("#scan-picker").addEventListener("change", (e) => loadJob(e.target.value));
   $("#inspect-btn").addEventListener("click", inspectProject);
-  $("#path-input").addEventListener("change", inspectProject);  // fires on blur
+  $("#path-input").addEventListener("change", inspectProject);
   $("#tool-checkboxes").addEventListener("change", updateToolWarnings);
 }
 
 function wireFilters() {
-  const sev = $("#filter-severity");
-  SEVERITIES.forEach((s) => sev.appendChild(new Option(s, s)));
+  buildSeverityFilter();
+  populateToolFilter({});
   ["#filter-severity", "#filter-tool", "#filter-file"].forEach((id) =>
     $(id).addEventListener("input", renderFindings));
+}
+
+function buildSeverityFilter() {
+  const sel = $("#filter-severity");
+  const current = sel.value;
+  sel.innerHTML = "";
+  sel.appendChild(new Option(t("filter.allSev"), ""));
+  SEVERITIES.forEach((s) => sel.appendChild(new Option(t("sev." + s), s)));
+  sel.value = current;
 }
 
 // ---------------------------------------------------------------- tools
 async function loadTools() {
   const res = await fetch("/api/tools");
-  const data = await res.json();
-  state.tools = data.tools;
-
-  // header chips
-  const bar = $("#tool-status");
-  bar.innerHTML = "";
-  data.tools.forEach((t) => {
-    const chip = el("span", "chip");
-    chip.appendChild(el("span", "dot " + (t.available ? "on" : "off")));
-    chip.appendChild(el("span", null, t.name));
-    chip.title = t.available ? (t.version || "available") : t.install_hint;
-    bar.appendChild(chip);
-  });
-
-  // checkboxes (with each tool's language/requirement note)
-  const box = $("#tool-checkboxes");
-  box.innerHTML = "";
-  data.tools.forEach((t) => {
-    const item = el("div", "tool-item");
-    const row = el("label", "tool-check");
-    row.dataset.tool = t.name;
-    const cb = el("input");
-    cb.type = "checkbox";
-    cb.value = t.name;
-    cb.checked = t.available;
-    cb.disabled = !t.available;
-    row.appendChild(cb);
-    row.appendChild(el("span", null, t.name + (t.available ? "" : " (not installed)")));
-    row.appendChild(el("span", "kindtag", t.kind));
-    item.appendChild(row);
-    item.appendChild(el("div", "tool-req", "needs: " + (t.requirement || "any project")));
-    box.appendChild(item);
-  });
-
-  // local-path availability
-  if (!data.config.allow_local_path) {
+  state.toolsData = await res.json();
+  renderToolHeader();
+  renderToolPickers();
+  if (!state.toolsData.config.allow_local_path) {
     $("#path-note").classList.remove("hidden");
   }
+}
+
+function renderToolHeader() {
+  const bar = $("#tool-status");
+  bar.innerHTML = "";
+  state.toolsData.tools.forEach((tl) => {
+    const chip = el("span", "chip");
+    chip.appendChild(el("span", "dot " + (tl.available ? "on" : "off")));
+    chip.appendChild(el("span", null, tl.name));
+    chip.title = tl.available ? (tl.version || t("chip.available")) : tl.install_hint;
+    bar.appendChild(chip);
+  });
+}
+
+function currentSelection() {
+  const boxes = document.querySelectorAll(".tool-check input");
+  if (!boxes.length) return null;
+  const s = new Set();
+  boxes.forEach((cb) => { if (cb.checked) s.add(cb.value); });
+  return s;
+}
+
+function renderToolPickers() {
+  if (!state.toolsData) return;
+  const prev = currentSelection();
+  const box = $("#tool-checkboxes");
+  box.innerHTML = "";
+  state.toolsData.tools.forEach((tl) => {
+    const item = el("div", "tool-item");
+    const row = el("label", "tool-check");
+    row.dataset.tool = tl.name;
+    const cb = el("input");
+    cb.type = "checkbox";
+    cb.value = tl.name;
+    cb.disabled = !tl.available;
+    cb.checked = prev ? prev.has(tl.name) : tl.available;
+    row.appendChild(cb);
+    row.appendChild(el("span", null, tl.name + (tl.available ? "" : t("notInstalled"))));
+    row.appendChild(el("span", "kindtag", tl.kind));
+    item.appendChild(row);
+    const desc = toolDesc(tl.name);
+    if (desc) item.appendChild(el("div", "tool-desc", desc));
+    item.appendChild(el("div", "tool-req", t("needs") + reqText(tl)));
+    box.appendChild(item);
+  });
+  if (state.inspect) markInapplicable(state.inspect.tools);
 }
 
 function selectedTools() {
@@ -137,7 +180,7 @@ async function inspectProject() {
     return;
   }
   panel.className = "inspect-panel loading";
-  panel.textContent = "Inspecting " + path + " …";
+  panel.textContent = t("inspect.inspecting", { path });
   try {
     const fd = new FormData();
     fd.append("source_kind", "path");
@@ -149,7 +192,7 @@ async function inspectProject() {
     renderInspectPanel(data);
   } catch (e) {
     panel.className = "inspect-panel";
-    panel.textContent = "Could not inspect: " + e.message;
+    panel.textContent = t("inspect.failed", { msg: e.message });
     state.inspect = null;
     clearInapplicableMarks();
   }
@@ -162,29 +205,28 @@ function renderInspectPanel(data) {
   panel.className = "inspect-panel";
   panel.innerHTML = "";
   panel.appendChild(el("div", "inv-head",
-    `📁 ${inv.total_files || 0} files · ${formatBytes(inv.total_bytes)}` +
-    (inv.truncated ? " (truncated)" : "")));
+    "📁 " + t("files.unit", { n: inv.total_files || 0 }) +
+    " · " + formatBytes(inv.total_bytes) + (inv.truncated ? " (…)" : "")));
 
   const chips = el("div", "lang-chips");
   Object.entries(inv.languages || {}).slice(0, 8).forEach(([lang, n]) =>
     chips.appendChild(el("span", "lang-chip", `${lang} ${n}`)));
   panel.appendChild(chips);
 
-  const inapplicable = (data.tools || []).filter((t) => !t.applicable);
+  const inapplicable = (data.tools || []).filter((tl) => !tl.applicable);
   if (inapplicable.length) {
-    panel.appendChild(el("div", "warn-title", "Won’t apply to this project:"));
-    inapplicable.forEach((t) =>
-      panel.appendChild(el("div", "warn-item", `• ${t.name}: ${t.reason}`)));
+    panel.appendChild(el("div", "warn-title", t("inspect.wontApply")));
+    inapplicable.forEach((tl) => panel.appendChild(
+      el("div", "warn-item", `• ${tl.name}: ${localReason(tl.name, tl.reason)}`)));
   }
   markInapplicable(data.tools || []);
 }
 
 function markInapplicable(tools) {
   const map = {};
-  tools.forEach((t) => (map[t.name] = t.applicable));
+  tools.forEach((tl) => (map[tl.name] = tl.applicable));
   document.querySelectorAll(".tool-check").forEach((row) => {
-    const applicable = map[row.dataset.tool];
-    row.classList.toggle("inapplicable", applicable === false);
+    row.classList.toggle("inapplicable", map[row.dataset.tool] === false);
   });
 }
 
@@ -193,7 +235,6 @@ function clearInapplicableMarks() {
     .forEach((row) => row.classList.remove("inapplicable"));
 }
 
-// warn when a *selected* tool won't apply to the inspected project
 function updateToolWarnings() {
   const box = $("#tool-warnings");
   if (!state.inspect || state.sourceKind !== "path") {
@@ -202,10 +243,8 @@ function updateToolWarnings() {
     return;
   }
   const map = {};
-  state.inspect.tools.forEach((t) => (map[t.name] = t));
-  const bad = selectedTools()
-    .map((n) => map[n])
-    .filter((t) => t && !t.applicable);
+  state.inspect.tools.forEach((tl) => (map[tl.name] = tl));
+  const bad = selectedTools().map((n) => map[n]).filter((tl) => tl && !tl.applicable);
   if (!bad.length) {
     box.classList.add("hidden");
     box.innerHTML = "";
@@ -213,9 +252,9 @@ function updateToolWarnings() {
   }
   box.classList.remove("hidden");
   box.innerHTML = "";
-  box.appendChild(el("div", "tw-title",
-    "⚠ Selected tools that won’t find anything here:"));
-  bad.forEach((t) => box.appendChild(el("div", "tw-item", `${t.name} — ${t.reason}`)));
+  box.appendChild(el("div", "tw-title", t("toolwarn.title")));
+  bad.forEach((tl) => box.appendChild(
+    el("div", "tw-item", `${tl.name} — ${localReason(tl.name, tl.reason)}`)));
 }
 
 // ---------------------------------------------------------------- scan
@@ -223,18 +262,14 @@ async function startScan() {
   const err = $("#form-error");
   err.classList.add("hidden");
   const tools = selectedTools();
-  if (tools.length === 0) return showError("Pick at least one available tool.");
+  if (tools.length === 0) return showError(t("err.noTool"));
 
-  // 防呆: for an inspected local path, block only if *every* selected tool is
-  // inapplicable (otherwise let inapplicable ones report not_applicable).
   if (state.sourceKind === "path" && state.inspect) {
     const map = {};
-    state.inspect.tools.forEach((t) => (map[t.name] = t));
+    state.inspect.tools.forEach((tl) => (map[tl.name] = tl));
     const bad = tools.filter((n) => map[n] && !map[n].applicable);
     if (bad.length === tools.length) {
-      return showError(
-        "None of the selected tools apply to this project (" + bad.join(", ") +
-        "). Pick tools that match its languages/lockfiles.");
+      return showError(t("err.allInapplicable", { tools: bad.join(", ") }));
     }
   }
 
@@ -244,15 +279,15 @@ async function startScan() {
 
   if (state.sourceKind === "upload") {
     const f = $("#file-input").files[0];
-    if (!f) return showError("Choose a .zip archive to scan.");
+    if (!f) return showError(t("err.noZip"));
     fd.append("file", f);
   } else if (state.sourceKind === "git") {
     const url = $("#git-input").value.trim();
-    if (!url) return showError("Enter a repository URL.");
+    if (!url) return showError(t("err.noUrl"));
     fd.append("git_url", url);
   } else if (state.sourceKind === "path") {
     const p = $("#path-input").value.trim();
-    if (!p) return showError("Enter a server-local path.");
+    if (!p) return showError(t("err.noPath"));
     fd.append("local_path", p);
   }
 
@@ -282,7 +317,7 @@ async function refreshScanList(selectId) {
   const picker = $("#scan-picker");
   picker.innerHTML = "";
   data.jobs.forEach((j) => {
-    const label = `${j.target.display} · ${j.status}`;
+    const label = `${j.target.display} · ${t("status." + j.status)}`;
     picker.appendChild(new Option(label.slice(0, 60), j.id));
   });
   const target = selectId || (data.jobs[0] && data.jobs[0].id);
@@ -318,18 +353,13 @@ async function loadJob(jobId) {
 function renderJob(job) {
   const meta = $("#scan-meta");
   meta.innerHTML = "";
-  const STATUS_LABEL = { awaiting_confirmation: "awaiting confirmation" };
   meta.appendChild(el("span", null, `${job.target.kind}: ${job.target.display}`));
-  meta.appendChild(el("span", "jstatus " + job.status,
-    STATUS_LABEL[job.status] || job.status));
-  if (job.stage && job.status === "running") {
-    meta.appendChild(el("span", null, "· " + job.stage));
-  }
+  meta.appendChild(el("span", "jstatus " + job.status, t("status." + job.status)));
   const inv = job.inventory;
   if (inv && inv.total_files) {
     const langs = Object.keys(inv.languages || {}).slice(0, 4).join(", ");
-    meta.appendChild(el("span", null,
-      `· ${inv.total_files} files${langs ? " (" + langs + ")" : ""}`));
+    const wrapped = langs ? (getLang() === "zh" ? "（" + langs + "）" : " (" + langs + ")") : "";
+    meta.appendChild(el("span", null, t("meta.files", { n: inv.total_files, langs: wrapped })));
   }
   if (job.error) meta.appendChild(el("div", "error", job.error));
 
@@ -341,7 +371,6 @@ function renderJob(job) {
   renderFindings();
 }
 
-// upload/git pause here so the user can review the prepared source
 function renderConfirmBox(job) {
   const box = $("#confirm-box");
   if (job.status !== "awaiting_confirmation") {
@@ -351,26 +380,26 @@ function renderConfirmBox(job) {
   }
   box.classList.remove("hidden");
   box.innerHTML = "";
-  box.appendChild(el("div", "cb-title", "Source ready — review before scanning"));
+  box.appendChild(el("div", "cb-title", t("confirm.title")));
 
   const inv = job.inventory || {};
   const langs = Object.entries(inv.languages || {}).slice(0, 6)
     .map(([l, n]) => `${l} ${n}`).join(" · ");
   box.appendChild(el("div", "cb-inv",
-    `📁 ${inv.total_files || 0} files · ${formatBytes(inv.total_bytes)}` +
-    (langs ? " · " + langs : "")));
+    "📁 " + t("files.unit", { n: inv.total_files || 0 }) + " · " +
+    formatBytes(inv.total_bytes) + (langs ? " · " + langs : "")));
 
-  const bad = (job.applicability || []).filter((t) => !t.applicable);
+  const bad = (job.applicability || []).filter((tl) => !tl.applicable);
   if (bad.length) {
-    box.appendChild(el("div", "cb-warn-title",
-      "These selected tools won’t find anything here:"));
-    bad.forEach((t) => box.appendChild(el("div", "cb-warn", `• ${t.name} — ${t.reason}`)));
+    box.appendChild(el("div", "cb-warn-title", t("confirm.wontApply")));
+    bad.forEach((tl) => box.appendChild(
+      el("div", "cb-warn", `• ${tl.name} — ${localReason(tl.name, tl.reason)}`)));
   }
 
   const btns = el("div", "cb-btns");
-  const run = el("button", "primary", "Run scan");
+  const run = el("button", "primary", t("confirm.run"));
   run.addEventListener("click", () => confirmScan(job.id));
-  const cancel = el("button", "ghostbtn", "Cancel");
+  const cancel = el("button", "ghostbtn", t("confirm.cancel"));
   cancel.addEventListener("click", () => cancelScan(job.id));
   btns.appendChild(run);
   btns.appendChild(cancel);
@@ -399,11 +428,10 @@ function renderProgress(job) {
 
   if (job.status === "queued" ||
       (job.status === "running" && (p.total || 0) === 0)) {
-    // source is being prepared (clone/extract) — no tool counts yet
     wrap.classList.remove("hidden");
     fill.className = "progress-fill indet";
     fill.style.width = "";
-    label.textContent = job.stage || "Preparing…";
+    label.textContent = t("progress.preparing");
     count.textContent = "";
     return;
   }
@@ -411,19 +439,20 @@ function renderProgress(job) {
     wrap.classList.remove("hidden");
     fill.className = "progress-fill";
     fill.style.width = (p.percent || 0) + "%";
-    label.textContent = "Scanning… " + (p.running || 0) + " running";
-    count.textContent = `${p.finished || 0}/${p.total || 0} tools · ${p.percent || 0}%`;
+    label.textContent = t("progress.scanning", { n: p.running || 0 });
+    count.textContent = t("progress.count",
+      { f: p.finished || 0, t: p.total || 0, p: p.percent || 0 });
     return;
   }
   if (job.status === "done") {
     wrap.classList.remove("hidden");
     fill.className = "progress-fill done";
     fill.style.width = "100%";
-    label.textContent = "Scan complete";
-    count.textContent = `${p.total || 0}/${p.total || 0} tools · 100%`;
+    label.textContent = t("progress.complete");
+    count.textContent = t("progress.count",
+      { f: p.total || 0, t: p.total || 0, p: 100 });
     return;
   }
-  // error
   wrap.classList.add("hidden");
 }
 
@@ -439,12 +468,12 @@ function renderSummary(summary) {
   SEVERITIES.slice(0, 5).forEach((s) => {
     const stat = el("div", "stat " + s);
     stat.appendChild(el("span", "n", String(summary[s] || 0)));
-    stat.appendChild(el("span", "l", s));
+    stat.appendChild(el("span", "l", t("sev." + s)));
     box.appendChild(stat);
   });
   const total = el("div", "stat");
   total.appendChild(el("span", "n", String(summary.total || 0)));
-  total.appendChild(el("span", "l", "total"));
+  total.appendChild(el("span", "l", t("stat.total")));
   box.appendChild(total);
 }
 
@@ -457,26 +486,25 @@ function renderToolRows(results) {
 
     if (r.phase === "running") {
       row.appendChild(el("span", "spinner"));
-      row.appendChild(el("span", "tstat running", "running"));
+      row.appendChild(el("span", "tstat running", t("phase.running")));
       row.appendChild(el("span", "telapsed", elapsedText(r.started_at)));
       box.appendChild(row);
       return;
     }
     if (r.phase === "pending") {
-      row.appendChild(el("span", "tstat pending", "queued"));
+      row.appendChild(el("span", "tstat pending", t("phase.queued")));
       box.appendChild(row);
       return;
     }
-    // finished
-    row.appendChild(el("span", "tstat " + r.status, r.status));
+    row.appendChild(el("span", "tstat " + r.status, statusLabel(r.status)));
     if (r.status === "ok") {
-      row.appendChild(el("span", "thint",
-        `${r.summary.total || 0} findings`));
+      row.appendChild(el("span", "thint", t("findings.count", { n: r.summary.total || 0 })));
       row.appendChild(el("span", "telapsed", (r.duration_ms || 0) + "ms"));
     } else if (r.status === "unavailable") {
       row.appendChild(el("span", "thint", r.install_hint || ""));
     } else if (r.status === "not_applicable") {
-      row.appendChild(el("span", "thint", r.message || "nothing to scan for this tool"));
+      row.appendChild(el("span", "thint",
+        localReason(r.tool, r.message) || t("tstat.notApplicableFallback")));
     } else if (r.error) {
       row.appendChild(el("span", "thint", r.error.slice(0, 120)));
     }
@@ -487,7 +515,8 @@ function renderToolRows(results) {
 function populateToolFilter(results) {
   const sel = $("#filter-tool");
   const current = sel.value;
-  sel.innerHTML = '<option value="">All tools</option>';
+  sel.innerHTML = "";
+  sel.appendChild(new Option(t("filter.allTools"), ""));
   Object.keys(results).forEach((name) => sel.appendChild(new Option(name, name)));
   sel.value = current;
 }
@@ -516,22 +545,21 @@ function renderFindings() {
   if (items.length === 0) {
     box.appendChild(el("div", "empty",
       state.currentJob.status === "running"
-        ? "Scanning… findings will appear as tools finish."
-        : "No findings match the current filters."));
+        ? t("findings.scanning") : t("findings.emptyFiltered")));
     return;
   }
-
   items.forEach((f) => box.appendChild(renderFinding(f)));
 }
 
 function renderFinding(f) {
   const card = el("div", "finding " + f.severity);
   const head = el("div", "fhead");
-  head.appendChild(el("span", "sev " + f.severity, f.severity));
+  head.appendChild(el("span", "sev " + f.severity, t("sev." + f.severity)));
   head.appendChild(el("span", "ftool", f.tool));
   head.appendChild(el("span", "ftitle", f.title || f.rule_id || "finding"));
   card.appendChild(head);
 
+  card.appendChild(el("div", "fsevnote", t("sevnote." + f.severity)));
   if (f.message) card.appendChild(el("div", "fmsg", f.message));
 
   const loc = [f.file, f.start_line ? "L" + f.start_line : ""].filter(Boolean).join(":");
@@ -548,4 +576,19 @@ function renderFinding(f) {
   return card;
 }
 
-document.addEventListener("DOMContentLoaded", init);
+// ---------------------------------------------------------------- bootstrap
+document.addEventListener("DOMContentLoaded", () => {
+  window.onLangChange = () => {
+    buildSeverityFilter();
+    if (state.toolsData) { renderToolHeader(); renderToolPickers(); }
+    updateToolWarnings();
+    if (state.inspect) renderInspectPanel(state.inspect);
+    const cur = $("#scan-picker").value;
+    if (cur) refreshScanList(cur);          // relabel picker + re-render job
+    else if (state.currentJob) renderJob(state.currentJob);
+  };
+  $("#lang-toggle").addEventListener("click",
+    () => setLang(getLang() === "zh" ? "en" : "zh"));
+  setLang(getLang());   // apply static i18n + toggle label
+  init();
+});

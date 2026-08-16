@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -12,62 +12,65 @@
       <span class="logo">🛡️</span>
       <div>
         <h1>SAST Studio</h1>
-        <p class="tagline">One page, six free security scanners.</p>
+        <p class="tagline" data-i18n="tagline">一頁搞定六個免費資安掃描器。</p>
       </div>
     </div>
-    <div id="tool-status" class="tool-status" aria-label="tool availability"></div>
+    <div class="topbar-right">
+      <div id="tool-status" class="tool-status" aria-label="tool availability"></div>
+      <button id="lang-toggle" class="lang-toggle" title="切換語言 / switch language">EN</button>
+    </div>
   </header>
 
   <main class="layout">
     <!-- ---- scan configuration ------------------------------------- -->
     <section class="panel" aria-labelledby="new-scan-h">
-      <h2 id="new-scan-h">New scan</h2>
+      <h2 id="new-scan-h" data-i18n="sec.newScan">新增掃描</h2>
 
       <div class="tabs" role="tablist">
-        <button class="tab active" data-kind="upload" role="tab">Upload zip</button>
-        <button class="tab" data-kind="git" role="tab">Git URL</button>
-        <button class="tab" data-kind="path" role="tab">Local path</button>
+        <button class="tab active" data-kind="upload" role="tab" data-i18n="tab.upload">上傳 zip</button>
+        <button class="tab" data-kind="git" role="tab" data-i18n="tab.git">Git 網址</button>
+        <button class="tab" data-kind="path" role="tab" data-i18n="tab.path">本機路徑</button>
       </div>
 
       <div class="tabpane" data-pane="upload">
         <label class="field">
-          <span>Source archive (.zip)</span>
+          <span data-i18n="field.upload">原始碼壓縮檔（.zip）</span>
           <input type="file" id="file-input" accept=".zip" />
         </label>
       </div>
       <div class="tabpane hidden" data-pane="git">
         <label class="field">
-          <span>Repository URL (http/https)</span>
+          <span data-i18n="field.git">儲存庫網址（http/https）</span>
           <input type="text" id="git-input" placeholder="https://github.com/org/repo" />
         </label>
       </div>
       <div class="tabpane hidden" data-pane="path">
         <label class="field">
-          <span>Server-local directory path</span>
+          <span data-i18n="field.path">伺服器本機目錄路徑</span>
           <input type="text" id="path-input" placeholder="/srv/code/my-project" />
         </label>
-        <button type="button" id="inspect-btn" class="linkbtn">inspect project</button>
-        <p id="path-note" class="note hidden">Local path scanning is disabled by config.</p>
+        <button type="button" id="inspect-btn" class="linkbtn" data-i18n="btn.inspect">檢查專案</button>
+        <p id="path-note" class="note hidden" data-i18n="pathNote">本機路徑掃描已被設定停用。</p>
       </div>
 
       <div id="inspect-panel" class="inspect-panel hidden"></div>
 
       <fieldset class="tools-pick">
-        <legend>Tools</legend>
+        <legend data-i18n="sec.tools">工具</legend>
         <div id="tool-checkboxes"></div>
-        <button type="button" id="select-all" class="linkbtn">select all available</button>
+        <button type="button" id="select-all" class="linkbtn" data-i18n="btn.selectAll">全選可用工具</button>
       </fieldset>
 
       <div id="tool-warnings" class="tool-warnings hidden"></div>
 
-      <button id="start-btn" class="primary">Start scan</button>
+      <button id="start-btn" class="primary" data-i18n="btn.start">開始掃描</button>
       <p id="form-error" class="error hidden" role="alert"></p>
     </section>
 
     <!-- ---- results ------------------------------------------------- -->
     <section class="panel results" aria-labelledby="results-h">
       <div class="results-head">
-        <h2 id="results-h">Results</h2>
+        <h2 id="results-h" data-i18n="sec.results">結果</h2>
         <select id="scan-picker" aria-label="pick a scan"></select>
       </div>
 
@@ -89,15 +92,16 @@
       <div id="tool-results" class="tool-results"></div>
 
       <div class="filters">
-        <select id="filter-severity"><option value="">All severities</option></select>
-        <select id="filter-tool"><option value="">All tools</option></select>
-        <input type="text" id="filter-file" placeholder="filter by file…" />
+        <select id="filter-severity"></select>
+        <select id="filter-tool"></select>
+        <input type="text" id="filter-file" data-i18n-ph="ph.filter" placeholder="依檔名篩選…" />
       </div>
 
       <div id="findings" class="findings"></div>
     </section>
   </main>
 
+  <script src="/i18n.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
