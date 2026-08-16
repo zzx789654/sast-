@@ -1,5 +1,23 @@
 # lessons — SAST Studio
 
+## [2026-08-16] 第 6 輪 — upload/git 的「準備→確認→掃描」兩階段流程
+
+### 本輪紀錄
+- **需求**：把 upload/git 也做成「準備好後、正式掃描前先盤點並讓使用者確認」。
+- **DevSecOps**：
+  - Job 狀態機新增 `AWAITING`（awaiting_confirmation）與 `CANCELLED`；`Job.applicability` 於暫停時填入。
+  - orchestrator 把單一 `_run_job` 拆成兩階段：`_prepare_and_maybe_scan`（準備 source + 盤點；若 confirm 則算 applicability、把 scan_root 存進 `_pending`、暫停在 AWAITING，**不清工作區**）與 `_scan`（真正跑工具後清理）。新增 `confirm()`／`cancel()`。
+  - API 新增 `POST /api/scans/{id}/confirm`、`/cancel`；create_scan 增 `confirm` 參數，預設 upload/git=True、path=False（path 本就可事前 inspect，直接跑）。
+  - 前端：AWAITING 時顯示確認框（盤點摘要 + 不適用工具警告 + Run scan / Cancel）；輪詢遇 AWAITING 停下等使用者；confirm 後恢復輪詢至 done。
+- **QA / 驗證**：27 測試全通過（+4：confirm/cancel 狀態機、upload 端到端 await→confirm、confirm 錯狀態 409/404）。Playwright 實截 upload 兩階段：AWAITING 確認框 + 按 Run 後 DONE（semgrep 掃到 eval、npm_audit not_applicable 附因）。
+- **過關狀態**：G1–G4 維持。
+
+### 教訓 / 準則
+- **情境**：非同步 job 要中途暫停等使用者輸入，之後再續跑。
+  **準則**：把「準備」與「執行」拆成兩個可獨立提交到執行緒池的階段，中間狀態（已準備的工作區路徑）存在 manager 端 `_pending`，用明確的 AWAITING 狀態當交接點；確認/取消各自負責續跑或清理，工作區只在「真的跑完」或「取消」時刪，避免準備成果被提前清掉。
+- **情境**：同一個「盤點/適用性」能力要同時服務 path 的事前 inspect 與 upload/git 的事中確認。
+  **準則**：把 applicability/inventory 做成純函式與 adapter 方法，兩條路徑（/api/inspect 與 orchestrator 暫停點）共用同一套邏輯，不重複實作。
+
 ## [2026-08-16] 第 5 輪 — 專案盤點 + 語言防呆（誠實面對「per-file 進度」）
 
 ### 本輪紀錄

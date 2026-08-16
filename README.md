@@ -83,10 +83,17 @@ Any tool you don't install simply shows as unavailable.
 
 1. Pick a source: **upload a `.zip`**, paste a **Git URL**, or give a
    **server-local path**.
-2. Tick the tools to run (unavailable ones are disabled).
-3. **Start scan** — progress updates live; findings appear as each tool
-   finishes.
-4. Filter the combined report by severity, tool, or file.
+2. Tick the tools to run (unavailable ones are disabled). Each tool shows what
+   it needs; for a local path you can **inspect** first to see the file/language
+   inventory and which tools won't apply.
+3. **Start scan.**
+   - For a **local path** the scan runs immediately (you could already inspect it).
+   - For an **upload or Git URL** the source is fetched and inventoried first,
+     then the scan **pauses for confirmation**: you review the file/language
+     inventory and any inapplicable-tool warnings, then click **Run scan** (or
+     **Cancel**, which discards the prepared workspace).
+4. Progress updates live per tool; findings appear as each tool finishes.
+5. Filter the combined report by severity, tool, or file.
 
 ## Security of the tool itself
 

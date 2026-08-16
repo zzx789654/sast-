@@ -126,6 +126,18 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 .jstatus.running { background: rgba(47,111,235,.16); color: var(--accent); }
 .jstatus.done { background: rgba(47,143,91,.16); color: var(--ok); }
 .jstatus.error { background: rgba(179,18,58,.16); color: var(--bad); }
+.jstatus.awaiting_confirmation { background: rgba(201,138,0,.18); color: var(--med); }
+.jstatus.cancelled { background: rgba(138,145,156,.2); color: var(--unknown); }
+
+/* confirmation step (upload/git: review before running) */
+.confirm-box { border: 1px solid var(--med); border-radius: 10px; padding: .75rem .85rem; margin: .2rem 0 .9rem; background: rgba(201,138,0,.06); }
+.confirm-box .cb-title { font-weight: 700; margin-bottom: .35rem; }
+.confirm-box .cb-inv { font-size: .84rem; color: var(--muted); margin-bottom: .3rem; }
+.confirm-box .cb-warn-title { color: var(--high); font-weight: 600; font-size: .82rem; margin-top: .35rem; }
+.confirm-box .cb-warn { color: var(--muted); font-size: .8rem; margin-left: .2rem; }
+.cb-btns { display: flex; gap: .5rem; margin-top: .7rem; }
+.cb-btns .primary { width: auto; padding: .45rem 1.1rem; }
+.ghostbtn { padding: .45rem 1.1rem; border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 8px; cursor: pointer; font-size: .9rem; }
 
 /* progress bar */
 .progress-wrap { margin: .2rem 0 .9rem; }

@@ -296,7 +296,8 @@ function startPolling(jobId) {
   clearInterval(state.pollTimer);
   state.pollTimer = setInterval(async () => {
     const job = await loadJob(jobId);
-    if (job && (job.status === "done" || job.status === "error")) {
+    const terminal = ["done", "error", "awaiting_confirmation", "cancelled"];
+    if (job && terminal.includes(job.status)) {
       clearInterval(state.pollTimer);
       refreshScanList(jobId);
     }
@@ -317,8 +318,10 @@ async function loadJob(jobId) {
 function renderJob(job) {
   const meta = $("#scan-meta");
   meta.innerHTML = "";
+  const STATUS_LABEL = { awaiting_confirmation: "awaiting confirmation" };
   meta.appendChild(el("span", null, `${job.target.kind}: ${job.target.display}`));
-  meta.appendChild(el("span", "jstatus " + job.status, job.status));
+  meta.appendChild(el("span", "jstatus " + job.status,
+    STATUS_LABEL[job.status] || job.status));
   if (job.stage && job.status === "running") {
     meta.appendChild(el("span", null, "· " + job.stage));
   }
@@ -331,10 +334,60 @@ function renderJob(job) {
   if (job.error) meta.appendChild(el("div", "error", job.error));
 
   renderProgress(job);
+  renderConfirmBox(job);
   renderSummary(job.summary || {});
   renderToolRows(job.results || {});
   populateToolFilter(job.results || {});
   renderFindings();
+}
+
+// upload/git pause here so the user can review the prepared source
+function renderConfirmBox(job) {
+  const box = $("#confirm-box");
+  if (job.status !== "awaiting_confirmation") {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    return;
+  }
+  box.classList.remove("hidden");
+  box.innerHTML = "";
+  box.appendChild(el("div", "cb-title", "Source ready — review before scanning"));
+
+  const inv = job.inventory || {};
+  const langs = Object.entries(inv.languages || {}).slice(0, 6)
+    .map(([l, n]) => `${l} ${n}`).join(" · ");
+  box.appendChild(el("div", "cb-inv",
+    `📁 ${inv.total_files || 0} files · ${formatBytes(inv.total_bytes)}` +
+    (langs ? " · " + langs : "")));
+
+  const bad = (job.applicability || []).filter((t) => !t.applicable);
+  if (bad.length) {
+    box.appendChild(el("div", "cb-warn-title",
+      "These selected tools won’t find anything here:"));
+    bad.forEach((t) => box.appendChild(el("div", "cb-warn", `• ${t.name} — ${t.reason}`)));
+  }
+
+  const btns = el("div", "cb-btns");
+  const run = el("button", "primary", "Run scan");
+  run.addEventListener("click", () => confirmScan(job.id));
+  const cancel = el("button", "ghostbtn", "Cancel");
+  cancel.addEventListener("click", () => cancelScan(job.id));
+  btns.appendChild(run);
+  btns.appendChild(cancel);
+  box.appendChild(btns);
+}
+
+async function confirmScan(id) {
+  const res = await fetch(`/api/scans/${id}/confirm`, { method: "POST" });
+  if (res.ok) {
+    await loadJob(id);
+    startPolling(id);
+  }
+}
+
+async function cancelScan(id) {
+  await fetch(`/api/scans/${id}/cancel`, { method: "POST" });
+  await refreshScanList(id);
 }
 
 function renderProgress(job) {

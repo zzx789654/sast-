@@ -327,7 +327,7 @@ def test_orchestrator_state_machine(monkeypatch, tmp_path):
     mgr = orchestrator.JobManager()
     job = mgr.new_job(ScanTarget(kind="path", display=str(tmp_path)), ["fake"])
     assert job.status.value == "queued"
-    mgr._run_job(job.id, {"kind": "path", "path": str(tmp_path)})
+    mgr._prepare_and_maybe_scan(job.id, {"kind": "path", "path": str(tmp_path)}, False)
 
     assert job.status.value == "done"
     assert job.summary["high"] == 1
@@ -339,13 +339,66 @@ def test_orchestrator_state_machine(monkeypatch, tmp_path):
     assert job.progress["finished"] == job.progress["total"] == 1
 
 
+def test_confirm_flow(monkeypatch, tmp_path):
+    from app import orchestrator
+    from app.adapters.base import BaseAdapter
+    from app.models import JobStatus, ScanTarget
+
+    class FakeAdapter(BaseAdapter):
+        name = "fake"
+        kind = ToolKind.SAST
+        binary = "fake"
+
+        def probe(self):
+            return True, "1.0"
+
+        def applicability(self, target_dir):
+            return True, ""
+
+        def _execute(self, target_dir):
+            return [Finding(tool="fake", severity=Severity.HIGH, title="x")]
+
+    monkeypatch.setattr(orchestrator, "get_adapters", lambda names: [FakeAdapter()])
+    mgr = orchestrator.JobManager()
+    (tmp_path / "a.py").write_text("x = 1")
+    job = mgr.new_job(ScanTarget(kind="path", display=str(tmp_path)), ["fake"])
+
+    # phase 1: prepare + inventory, then pause
+    mgr._prepare_and_maybe_scan(job.id, {"kind": "path", "path": str(tmp_path)}, True)
+    assert job.status == JobStatus.AWAITING
+    assert job.inventory["total_files"] >= 1
+    assert job.applicability[0]["name"] == "fake"
+    assert job.id in mgr._pending
+
+    # phase 2: confirm -> scan runs
+    pending = mgr._pending.pop(job.id)
+    mgr._scan(job, pending["scan_root"], pending["external"])
+    assert job.status == JobStatus.DONE
+    assert job.summary["high"] == 1
+
+
+def test_cancel_flow(monkeypatch, tmp_path):
+    from app import orchestrator
+    from app.models import JobStatus, ScanTarget
+
+    mgr = orchestrator.JobManager()
+    job = mgr.new_job(ScanTarget(kind="path", display=str(tmp_path)), ["semgrep"])
+    mgr._prepare_and_maybe_scan(job.id, {"kind": "path", "path": str(tmp_path)}, True)
+    assert job.status == JobStatus.AWAITING
+    assert mgr.cancel(job.id) is True
+    assert job.status == JobStatus.CANCELLED
+    assert job.id not in mgr._pending
+    # cancelling again is a no-op
+    assert mgr.cancel(job.id) is False
+
+
 def test_orchestrator_reports_source_error(tmp_path):
     from app import orchestrator
     from app.models import ScanTarget
 
     mgr = orchestrator.JobManager()
     job = mgr.new_job(ScanTarget(kind="git", display="bad"), ["semgrep"])
-    mgr._run_job(job.id, {"kind": "git", "url": "file:///etc/passwd"})
+    mgr._prepare_and_maybe_scan(job.id, {"kind": "git", "url": "file:///etc/passwd"}, False)
     assert job.status.value == "error"
     assert "scheme" in job.error.lower() or "SourceError" in job.error
 
@@ -385,6 +438,63 @@ def test_api_inspect(client, tmp_path):
 def test_api_inspect_rejects_non_path(client):
     res = client.post("/api/inspect", data={"source_kind": "git"})
     assert res.status_code == 400
+
+
+def test_api_upload_awaits_then_confirms(client, monkeypatch):
+    import io
+    import time
+    import zipfile
+
+    # no tools installed -> confirmed scan finishes instantly
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("src/app.py", "print('hi')\n")
+    buf.seek(0)
+
+    res = client.post(
+        "/api/scans",
+        data={"source_kind": "upload", "tools": "semgrep"},
+        files={"file": ("proj.zip", buf, "application/zip")},
+    )
+    assert res.status_code == 201
+    jid = res.json()["id"]
+
+    # phase 1: pauses awaiting confirmation, with an inventory to review
+    job = None
+    for _ in range(100):
+        job = client.get("/api/scans/" + jid).json()
+        if job["status"] in ("awaiting_confirmation", "done", "error"):
+            break
+        time.sleep(0.05)
+    assert job["status"] == "awaiting_confirmation"
+    assert job["inventory"]["total_files"] == 1
+    assert job["applicability"][0]["name"] == "semgrep"
+
+    # phase 2: confirm -> runs to completion
+    assert client.post(f"/api/scans/{jid}/confirm").status_code == 200
+    for _ in range(100):
+        job = client.get("/api/scans/" + jid).json()
+        if job["status"] in ("done", "error"):
+            break
+        time.sleep(0.05)
+    assert job["status"] == "done"
+    assert "semgrep" in job["results"]
+
+
+def test_api_confirm_wrong_state(client, tmp_path):
+    # a local-path scan runs directly (no awaiting), so confirm is a 409
+    import time
+    res = client.post("/api/scans", data={
+        "source_kind": "path", "tools": "semgrep", "local_path": str(tmp_path)})
+    jid = res.json()["id"]
+    for _ in range(100):
+        if client.get("/api/scans/" + jid).json()["status"] in ("done", "error"):
+            break
+        time.sleep(0.05)
+    assert client.post(f"/api/scans/{jid}/confirm").status_code == 409
+    assert client.post("/api/scans/deadbeef/confirm").status_code == 404
 
 
 def test_api_scan_not_found(client):

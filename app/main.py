@@ -96,9 +96,15 @@ async def create_scan(
     tools: str = Form(""),
     git_url: Optional[str] = Form(None),
     local_path: Optional[str] = Form(None),
+    confirm: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
 ) -> JSONResponse:
     requested = [t.strip() for t in tools.split(",") if t.strip()]
+
+    # upload/git are prepared server-side, so pause for confirmation by default
+    # (the user reviews the inventory before tools run). A local path is already
+    # inspectable up front, so it runs directly. Clients may override.
+    want_confirm = _parse_bool(confirm, default=(source_kind in ("upload", "git")))
 
     if source_kind == "git":
         if not git_url:
@@ -109,7 +115,7 @@ async def create_scan(
             raise HTTPException(400, str(exc)) from exc
         target = ScanTarget(kind="git", display=git_url)
         job = manager.new_job(target, requested)
-        manager.start(job.id, {"kind": "git", "url": git_url})
+        manager.start(job.id, {"kind": "git", "url": git_url}, confirm=want_confirm)
 
     elif source_kind == "path":
         if not config.ALLOW_LOCAL_PATH:
@@ -118,7 +124,7 @@ async def create_scan(
             raise HTTPException(400, "local_path is required for source_kind=path")
         target = ScanTarget(kind="path", display=local_path)
         job = manager.new_job(target, requested)
-        manager.start(job.id, {"kind": "path", "path": local_path})
+        manager.start(job.id, {"kind": "path", "path": local_path}, confirm=False)
 
     elif source_kind == "upload":
         if file is None:
@@ -130,12 +136,31 @@ async def create_scan(
             await _save_upload(file, zip_path)
         except HTTPException:
             raise
-        manager.start(job.id, {"kind": "upload", "zip_path": str(zip_path)})
+        manager.start(job.id, {"kind": "upload", "zip_path": str(zip_path)},
+                      confirm=want_confirm)
 
     else:
         raise HTTPException(400, f"unknown source_kind: {source_kind}")
 
     return JSONResponse({"id": job.id, "status": job.status.value}, status_code=201)
+
+
+@app.post("/api/scans/{job_id}/confirm")
+async def confirm_scan(job_id: str) -> dict:
+    if manager.get(job_id) is None:
+        raise HTTPException(404, "scan not found")
+    if not manager.confirm(job_id):
+        raise HTTPException(409, "scan is not awaiting confirmation")
+    return {"id": job_id, "status": "running"}
+
+
+@app.post("/api/scans/{job_id}/cancel")
+async def cancel_scan(job_id: str) -> dict:
+    if manager.get(job_id) is None:
+        raise HTTPException(404, "scan not found")
+    if not manager.cancel(job_id):
+        raise HTTPException(409, "scan is not awaiting confirmation")
+    return {"id": job_id, "status": "cancelled"}
 
 
 @app.get("/api/scans")
@@ -161,6 +186,12 @@ async def get_scan(job_id: str) -> dict:
     if job is None:
         raise HTTPException(404, "scan not found")
     return job.model_dump()
+
+
+def _parse_bool(value: Optional[str], default: bool) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 async def _save_upload(file: UploadFile, dest: Path) -> None:

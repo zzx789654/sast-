@@ -113,8 +113,10 @@ class ToolResult(BaseModel):
 class JobStatus(str, enum.Enum):
     QUEUED = "queued"
     RUNNING = "running"
+    AWAITING = "awaiting_confirmation"   # source prepared; waiting for user to run
     DONE = "done"
     ERROR = "error"
+    CANCELLED = "cancelled"
 
 
 class ScanTarget(BaseModel):
@@ -134,6 +136,7 @@ class Job(BaseModel):
     summary: dict[str, int] = Field(default_factory=dict)
     progress: dict[str, int] = Field(default_factory=dict)
     inventory: dict = Field(default_factory=dict)   # file count / size / languages
+    applicability: list[dict] = Field(default_factory=list)  # per-tool, set at pause
     stage: str = ""            # human-readable current step (e.g. "cloning repo")
     error: str = ""
     logs: list[str] = Field(default_factory=list)

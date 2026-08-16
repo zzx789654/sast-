@@ -24,6 +24,9 @@ from .source import clone_git, extract_zip, resolve_local_path
 class JobManager:
     def __init__(self) -> None:
         self._jobs: dict[str, Job] = {}
+        # job_id -> {"scan_root": str, "external": bool} for scans paused for
+        # confirmation (source already prepared on disk, tools not yet run).
+        self._pending: dict[str, dict] = {}
         self._lock = threading.Lock()
         self._pool = ThreadPoolExecutor(
             max_workers=config.MAX_WORKERS, thread_name_prefix="job"
@@ -43,8 +46,35 @@ class JobManager:
     def job_dir(self, job_id: str) -> Path:
         return config.WORKSPACE_DIR / job_id
 
-    def start(self, job_id: str, source_spec: dict) -> None:
-        self._pool.submit(self._run_job, job_id, source_spec)
+    def start(self, job_id: str, source_spec: dict, confirm: bool = False) -> None:
+        self._pool.submit(self._prepare_and_maybe_scan, job_id, source_spec, confirm)
+
+    def confirm(self, job_id: str) -> bool:
+        """Resume a scan that was paused for confirmation. Returns False if the
+        job isn't in that state."""
+        with self._lock:
+            pending = self._pending.pop(job_id, None)
+        job = self.get(job_id)
+        if job is None or pending is None or job.status != JobStatus.AWAITING:
+            return False
+        job.status = JobStatus.RUNNING
+        self._pool.submit(self._scan, job, pending["scan_root"], pending["external"])
+        return True
+
+    def cancel(self, job_id: str) -> bool:
+        """Cancel a scan awaiting confirmation and clean up its workspace."""
+        with self._lock:
+            pending = self._pending.pop(job_id, None)
+        job = self.get(job_id)
+        if job is None or job.status != JobStatus.AWAITING:
+            return False
+        external = pending["external"] if pending else False
+        job.status = JobStatus.CANCELLED
+        job.stage = "cancelled"
+        job.finished_at = _now()
+        if not config.KEEP_WORKSPACES:
+            self._cleanup(job_id, external)
+        return True
 
     def get(self, job_id: str) -> Job | None:
         with self._lock:
@@ -57,7 +87,11 @@ class JobManager:
             )
 
     # ---- worker -------------------------------------------------------
-    def _run_job(self, job_id: str, source_spec: dict) -> None:
+    def _prepare_and_maybe_scan(
+        self, job_id: str, source_spec: dict, confirm: bool
+    ) -> None:
+        """Phase 1: prepare the source and inventory it. If `confirm` is set,
+        pause in AWAITING for the user; otherwise go straight to scanning."""
         job = self.get(job_id)
         if job is None:
             return
@@ -65,21 +99,44 @@ class JobManager:
         job.started_at = _now()
         job.stage = "preparing source"
         src_dir = self.job_dir(job_id) / "source"
-        external = False  # true for local-path mode (do not delete user's dir)
+        external = source_spec.get("kind") == "path"
         try:
             scan_root = self._prepare_source(source_spec, src_dir, job)
-            external = source_spec.get("kind") == "path"
             job.stage = "inventorying files"
             try:
                 job.inventory = inventory(scan_root)
             except Exception:  # noqa: BLE001 - inventory is best-effort
                 job.inventory = {}
+
+            if confirm:
+                job.applicability = self._applicability(job, scan_root)
+                with self._lock:
+                    self._pending[job_id] = {
+                        "scan_root": str(scan_root), "external": external,
+                    }
+                job.stage = "awaiting confirmation"
+                job.status = JobStatus.AWAITING
+                return
+
+            self._scan(job, str(scan_root), external)
+        except Exception as exc:  # noqa: BLE001 - report any prep failure
+            job.status = JobStatus.ERROR
+            job.stage = "error"
+            job.error = f"{type(exc).__name__}: {exc}"
+            job.logs.append(job.error)
+            job.finished_at = _now()
+            if not config.KEEP_WORKSPACES:
+                self._cleanup(job_id, external)
+
+    def _scan(self, job: Job, scan_root: str, external: bool) -> None:
+        """Phase 2: run the tools on the already-prepared source."""
+        try:
             job.stage = "scanning"
-            self._run_adapters(job, scan_root)
+            self._run_adapters(job, Path(scan_root))
             job.compute_summary().compute_progress()
             job.stage = "done"
             job.status = JobStatus.DONE
-        except Exception as exc:  # noqa: BLE001 - report any prep/scan failure
+        except Exception as exc:  # noqa: BLE001
             job.status = JobStatus.ERROR
             job.stage = "error"
             job.error = f"{type(exc).__name__}: {exc}"
@@ -87,7 +144,19 @@ class JobManager:
         finally:
             job.finished_at = _now()
             if not config.KEEP_WORKSPACES:
-                self._cleanup(job_id, external)
+                self._cleanup(job.id, external)
+
+    def _applicability(self, job: Job, scan_root: Path) -> list[dict]:
+        out = []
+        for adapter in get_adapters(job.requested_tools):
+            applicable, reason = adapter.applicability(scan_root)
+            out.append({
+                "name": adapter.name,
+                "applicable": applicable,
+                "reason": reason,
+                "requirement": adapter.requirement,
+            })
+        return out
 
     def _prepare_source(self, spec: dict, src_dir: Path, job: Job) -> Path:
         kind = spec.get("kind")
@@ -151,7 +220,7 @@ class JobManager:
             return
         finished = sorted(
             (j for j in self._jobs.values()
-             if j.status in (JobStatus.DONE, JobStatus.ERROR)),
+             if j.status in (JobStatus.DONE, JobStatus.ERROR, JobStatus.CANCELLED)),
             key=lambda j: j.created_at,
         )
         while len(self._jobs) > config.MAX_JOBS_RETAINED and finished:
