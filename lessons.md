@@ -1,5 +1,20 @@
 # lessons — SAST Studio
 
+## [2026-08-16] 第 8 輪 — 合併 main + 一鍵安裝腳本 + README 使用方式
+
+### 本輪紀錄
+- **需求**：先把功能分支合併到 main；建立自動安裝腳本（含套件與完整建立）；README 補上使用方式。
+- **交付**：
+  - 以 fast-forward 把 `claude/security-scan-tools-web-ffc5mb`（7 個功能 commit）合併進 `main` 並推送。
+  - 新增 `setup.sh`（一鍵安裝與建立）：檢查系統相依（apt 有則自動裝 git/curl/node/python3-venv）、建立 venv、裝 Python 相依 + semgrep、呼叫 `scripts/install-tools.sh` 裝四個二進位工具、跑測試驗證、印出啟動指令；支援 `--run`／`--docker`／`--no-tools`／`--no-venv`／`--help`。pip 自我升級失敗改為非致命（Debian 系統 pip 不可反安裝）。
+  - README（中英）：Quick start 新增「一鍵安裝」為首選；使用方式擴充（進度、讀報表、語言切換、findings 原文說明）＋ REST API 對照表。
+- **QA / 驗證**：`bash -n` 語法檢查；真實跑 `./setup.sh --no-tools`（建 venv → 裝相依 → 27 測試全過 → 印啟動指引）；`--help` 輸出正確。
+- **過關狀態**：G1–G4 維持；本輪主要為交付（合併 + 安裝腳本 + 文件）。
+
+### 教訓 / 準則
+- **情境**：一鍵安裝腳本要在各種環境穩健。
+  **準則**：系統相依用「有 apt 才裝、非 root 才 sudo」；會因環境而失敗的步驟（pip 自升級、工具下載）一律 `|| warn` 非致命，讓腳本能走完並在最後誠實回報；工具二進位裝到可寫的 BIN_DIR（root→/usr/local/bin，否則 ~/.local/bin）並提示 PATH。用「跑測試」當建立成功的驗收關卡。
+
 ## [2026-08-16] 第 7 輪 — 介面中文化（中／英雙語切換）
 
 ### 本輪紀錄

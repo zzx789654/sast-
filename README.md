@@ -52,7 +52,22 @@ Browser ──► nginx (reverse proxy) ──► FastAPI ──► Orchestrator
 
 ## Quick start
 
-### Option A — Docker (recommended, free on Linux servers)
+### Option A — one command (recommended)
+
+`setup.sh` installs everything (system prerequisites, a Python virtualenv with
+all dependencies, and all six scanners), verifies the build by running the test
+suite, and tells you how to start:
+
+```bash
+./setup.sh              # full local setup: venv + deps + scanners + verify
+./setup.sh --run        # ...and start the server on http://localhost:8000
+```
+
+Other flags: `./setup.sh --docker` (build & start via Docker Compose instead),
+`--no-tools` (Python app only — scanners degrade gracefully), `--no-venv`
+(install into the current environment), `--help`.
+
+### Option B — Docker (free on Linux servers)
 
 Docker Engine + Compose are free (Apache-2.0); only the Docker **Desktop** GUI
 carries a fee for large orgs, and a server deployment doesn't need it.
@@ -68,10 +83,7 @@ the **backend** (internal). The backend image bundles all six scanners
 use. To serve on the standard HTTP port, change the nginx mapping to `80:80`
 in `docker-compose.yml`.
 
-Running the backend on its own (no proxy) still works for local dev — see
-Option B — and serves the same UI directly on `:8000`.
-
-### Option B — run locally
+### Option C — manual local install
 
 ```bash
 pip install -r requirements.txt
@@ -94,8 +106,31 @@ Any tool you don't install simply shows as unavailable.
      then the scan **pauses for confirmation**: you review the file/language
      inventory and any inapplicable-tool warnings, then click **Run scan** (or
      **Cancel**, which discards the prepared workspace).
-4. Progress updates live per tool; findings appear as each tool finishes.
-5. Filter the combined report by severity, tool, or file.
+4. Progress updates live per tool (a progress bar plus a spinner and elapsed
+   time on each running tool); findings appear as each tool finishes.
+5. Read the combined report: a severity summary (critical → info), a per-tool
+   row (findings count / duration, or `unavailable` / `not applicable` with the
+   reason), and one card per finding with its severity, tool, file:line, and any
+   CWE/OWASP tags. Filter by severity, tool, or file name.
+6. Switch the interface between **中文 / English** with the toggle in the top-
+   right corner (your choice is remembered).
+
+> A finding's message comes from the scanning tool itself, so it appears in that
+> tool's own wording (usually English); the UI adds a localized severity note
+> alongside it.
+
+### REST API
+
+The UI is a thin client over a small JSON API — handy for scripting/CI:
+
+| Method & path | Purpose |
+|---|---|
+| `GET /api/tools` | tool availability + what each tool needs |
+| `POST /api/inspect` | inventory a local path + per-tool applicability |
+| `POST /api/scans` | start a scan (`source_kind`=`upload`/`git`/`path`, `tools`, …) |
+| `GET /api/scans/{id}` | scan status, progress, results |
+| `POST /api/scans/{id}/confirm` \| `/cancel` | run or discard a scan awaiting confirmation |
+| `GET /api/health` | health check |
 
 ## Security of the tool itself
 
