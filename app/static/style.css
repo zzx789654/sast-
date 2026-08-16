@@ -102,7 +102,34 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
   padding: .4rem .5rem; border: 1px solid var(--line); border-radius: 8px;
   background: var(--bg); color: var(--ink); font-size: .85rem;
 }
-.scan-meta { color: var(--muted); font-size: .84rem; margin: .5rem 0; }
+.scan-meta { color: var(--muted); font-size: .84rem; margin: .5rem 0; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+
+/* job status pill */
+.jstatus { font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; padding: .12rem .5rem; border-radius: 999px; }
+.jstatus.queued { background: rgba(138,145,156,.2); color: var(--unknown); }
+.jstatus.running { background: rgba(47,111,235,.16); color: var(--accent); }
+.jstatus.done { background: rgba(47,143,91,.16); color: var(--ok); }
+.jstatus.error { background: rgba(179,18,58,.16); color: var(--bad); }
+
+/* progress bar */
+.progress-wrap { margin: .2rem 0 .9rem; }
+.progress-head { display: flex; justify-content: space-between; font-size: .8rem; color: var(--muted); margin-bottom: .3rem; }
+.progress-track { height: 8px; background: var(--line); border-radius: 999px; overflow: hidden; }
+.progress-fill { height: 100%; width: 0; background: var(--accent); border-radius: 999px; transition: width .4s ease; }
+.progress-fill.done { background: var(--ok); }
+.progress-fill.indet { width: 40%; background: linear-gradient(90deg, transparent, var(--accent), transparent); animation: indet 1.1s linear infinite; }
+@keyframes indet { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+
+/* spinner for a running tool */
+.spinner { width: .8rem; height: .8rem; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent); animation: spin .7s linear infinite; display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .progress-fill.indet { animation: none; }
+  .spinner { animation: none; }
+}
+.tstat.pending { background: rgba(138,145,156,.18); color: var(--unknown); }
+.tstat.running { background: rgba(47,111,235,.16); color: var(--accent); }
+.telapsed { color: var(--muted); font-size: .76rem; margin-left: auto; }
 
 .summary { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: .8rem; }
 .stat {

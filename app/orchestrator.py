@@ -9,12 +9,14 @@ from __future__ import annotations
 import shutil
 import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from .adapters import get_adapters
 from .config import config
-from .models import Job, JobStatus, ScanTarget, ToolResult, ToolStatus
+from .models import (
+    Job, JobStatus, ScanTarget, ToolPhase, ToolResult, ToolStatus,
+)
 from .source import clone_git, extract_zip, resolve_local_path
 
 
@@ -60,16 +62,20 @@ class JobManager:
             return
         job.status = JobStatus.RUNNING
         job.started_at = _now()
+        job.stage = "preparing source"
         src_dir = self.job_dir(job_id) / "source"
         external = False  # true for local-path mode (do not delete user's dir)
         try:
             scan_root = self._prepare_source(source_spec, src_dir, job)
             external = source_spec.get("kind") == "path"
+            job.stage = "scanning"
             self._run_adapters(job, scan_root)
-            job.compute_summary()
+            job.compute_summary().compute_progress()
+            job.stage = "done"
             job.status = JobStatus.DONE
         except Exception as exc:  # noqa: BLE001 - report any prep/scan failure
             job.status = JobStatus.ERROR
+            job.stage = "error"
             job.error = f"{type(exc).__name__}: {exc}"
             job.logs.append(job.error)
         finally:
@@ -80,42 +86,55 @@ class JobManager:
     def _prepare_source(self, spec: dict, src_dir: Path, job: Job) -> Path:
         kind = spec.get("kind")
         if kind == "upload":
+            job.stage = "extracting uploaded archive"
             job.logs.append("extracting uploaded archive")
             return extract_zip(Path(spec["zip_path"]), src_dir)
         if kind == "git":
+            job.stage = f"cloning {spec['url']}"
             job.logs.append(f"cloning {spec['url']}")
             return clone_git(spec["url"], src_dir)
         if kind == "path":
+            job.stage = "reading local path"
             job.logs.append(f"scanning local path {spec['path']}")
             return resolve_local_path(spec["path"])
         raise ValueError(f"unknown source kind: {kind}")
 
     def _run_adapters(self, job: Job, scan_root: Path) -> None:
         adapters = get_adapters(job.requested_tools)
-        # Seed placeholders so the UI shows every requested tool immediately.
+        # Seed every requested tool as PENDING so the UI shows the full list
+        # (and an accurate 0% progress) the moment the scan starts.
         for adapter in adapters:
             job.results[adapter.name] = ToolResult(
-                tool=adapter.name, kind=adapter.kind, status=ToolStatus.OK
+                tool=adapter.name, kind=adapter.kind,
+                status=ToolStatus.OK, phase=ToolPhase.PENDING,
             )
+        job.compute_progress()
         workers = max(1, min(config.MAX_WORKERS, len(adapters)))
+
+        def run_one(adapter) -> None:
+            placeholder = job.results[adapter.name]
+            placeholder.phase = ToolPhase.RUNNING
+            placeholder.started_at = _now()
+            job.compute_progress()
+            try:
+                result = adapter.scan(scan_root)
+            except Exception as exc:  # noqa: BLE001
+                result = ToolResult(
+                    tool=adapter.name, kind=adapter.kind,
+                    status=ToolStatus.ERROR,
+                    error=f"{type(exc).__name__}: {exc}",
+                ).compute_summary()
+            result.phase = ToolPhase.FINISHED
+            result.started_at = placeholder.started_at
+            job.results[adapter.name] = result
+            job.compute_progress()
+            job.logs.append(f"{adapter.name}: {result.status.value}")
+
         with ThreadPoolExecutor(max_workers=workers,
                                 thread_name_prefix="tool") as pool:
-            futures = {
-                pool.submit(adapter.scan, scan_root): adapter for adapter in adapters
-            }
-            for future in futures:
-                adapter = futures[future]
-                try:
-                    job.results[adapter.name] = future.result()
-                except Exception as exc:  # noqa: BLE001
-                    job.results[adapter.name] = ToolResult(
-                        tool=adapter.name, kind=adapter.kind,
-                        status=ToolStatus.ERROR,
-                        error=f"{type(exc).__name__}: {exc}",
-                    ).compute_summary()
-                job.logs.append(
-                    f"{adapter.name}: {job.results[adapter.name].status.value}"
-                )
+            futures = [pool.submit(run_one, a) for a in adapters]
+            for future in as_completed(futures):
+                future.result()  # re-raise nothing (run_one swallows tool errors)
 
     def _cleanup(self, job_id: str, external: bool) -> None:
         # Remove the job's own workspace; never touch a user-supplied path.

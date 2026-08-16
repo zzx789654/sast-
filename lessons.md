@@ -1,5 +1,22 @@
 # lessons — SAST Studio
 
+## [2026-08-16] 第 4 輪 — 進度表與即時狀態
+
+### 本輪紀錄
+- **需求**：網頁要有進度表與即時狀態。
+- **DevSecOps**：
+  - 後端 models 新增 `ToolPhase`（pending/running/finished）與 `ToolResult.phase`、`started_at`；`Job` 新增 `progress`（total/finished/running/pending/percent）與 `stage`（人類可讀當前步驟）。
+  - orchestrator 改用 `run_one` 包裝：工具開跑前設 RUNNING+起始時間、結束設 FINISHED，並在每個工具完成後即時 `compute_progress()`；改用 `as_completed` 讓完成順序即時反映。source 準備階段（clone/extract）設 `stage` 供「Preparing…」不定進度條。
+  - 前端新增進度條（百分比 + 準備中 indeterminate 動畫）、job 狀態 pill、每工具 phase 呈現（queued 灰標 / running 轉圈+即時秒數 / finished 狀態徽章+耗時）；輪詢由 1.5s 縮短為 1s。加上 `prefers-reduced-motion` 關閉動畫。
+- **QA / 驗證**：18 測試全通過（新增 progress/phase 斷言）。Playwright 實截三態：掃描中 50% 進度條 + semgrep 轉圈 1.1s + npm not_applicable；完成 100% 綠條 + 各工具耗時 + finding。
+- **過關狀態**：G1–G4 維持。
+
+### 教訓 / 準則
+- **情境**：要顯示「即時進度」，但工具是並行的黑箱子行程。
+  **準則**：把「執行階段（phase）」與「最終結果（status）」分成兩個維度——phase 給 UI 畫即時狀態，status 給最終結論；並行以 `as_completed` + 每完成一個就更新 progress，前端輪詢即可呈現即時感，不需 WebSocket（維持簡單）。
+- **情境**：source 準備（git clone）階段還沒有工具在跑，進度無法用「完成幾個工具」表示。
+  **準則**：用 `stage` 文字 + indeterminate（不定）進度條表示「準備中」，等有工具數才切成百分比進度條。
+
 ## [2026-08-16] 第 3 輪 — 加入 nginx 反向代理
 
 ### 本輪紀錄

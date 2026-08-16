@@ -169,7 +169,7 @@ function startPolling(jobId) {
       clearInterval(state.pollTimer);
       refreshScanList(jobId);
     }
-  }, 1500);
+  }, 1000);
 }
 
 async function loadJob(jobId) {
@@ -186,14 +186,61 @@ async function loadJob(jobId) {
 function renderJob(job) {
   const meta = $("#scan-meta");
   meta.innerHTML = "";
-  meta.appendChild(el("span", null,
-    `${job.target.kind}: ${job.target.display} — status: ${job.status}`));
+  meta.appendChild(el("span", null, `${job.target.kind}: ${job.target.display}`));
+  meta.appendChild(el("span", "jstatus " + job.status, job.status));
+  if (job.stage && job.status === "running") {
+    meta.appendChild(el("span", null, "· " + job.stage));
+  }
   if (job.error) meta.appendChild(el("div", "error", job.error));
 
+  renderProgress(job);
   renderSummary(job.summary || {});
   renderToolRows(job.results || {});
   populateToolFilter(job.results || {});
   renderFindings();
+}
+
+function renderProgress(job) {
+  const wrap = $("#progress-wrap");
+  const fill = $("#progress-fill");
+  const label = $("#progress-label");
+  const count = $("#progress-count");
+  const p = job.progress || {};
+
+  if (job.status === "queued" ||
+      (job.status === "running" && (p.total || 0) === 0)) {
+    // source is being prepared (clone/extract) — no tool counts yet
+    wrap.classList.remove("hidden");
+    fill.className = "progress-fill indet";
+    fill.style.width = "";
+    label.textContent = job.stage || "Preparing…";
+    count.textContent = "";
+    return;
+  }
+  if (job.status === "running") {
+    wrap.classList.remove("hidden");
+    fill.className = "progress-fill";
+    fill.style.width = (p.percent || 0) + "%";
+    label.textContent = "Scanning… " + (p.running || 0) + " running";
+    count.textContent = `${p.finished || 0}/${p.total || 0} tools · ${p.percent || 0}%`;
+    return;
+  }
+  if (job.status === "done") {
+    wrap.classList.remove("hidden");
+    fill.className = "progress-fill done";
+    fill.style.width = "100%";
+    label.textContent = "Scan complete";
+    count.textContent = `${p.total || 0}/${p.total || 0} tools · 100%`;
+    return;
+  }
+  // error
+  wrap.classList.add("hidden");
+}
+
+function elapsedText(startedIso) {
+  if (!startedIso) return "";
+  const secs = Math.max(0, (Date.now() - Date.parse(startedIso)) / 1000);
+  return secs.toFixed(secs < 10 ? 1 : 0) + "s";
 }
 
 function renderSummary(summary) {
@@ -217,10 +264,25 @@ function renderToolRows(results) {
   Object.values(results).forEach((r) => {
     const row = el("div", "tool-row");
     row.appendChild(el("span", "tname", r.tool));
+
+    if (r.phase === "running") {
+      row.appendChild(el("span", "spinner"));
+      row.appendChild(el("span", "tstat running", "running"));
+      row.appendChild(el("span", "telapsed", elapsedText(r.started_at)));
+      box.appendChild(row);
+      return;
+    }
+    if (r.phase === "pending") {
+      row.appendChild(el("span", "tstat pending", "queued"));
+      box.appendChild(row);
+      return;
+    }
+    // finished
     row.appendChild(el("span", "tstat " + r.status, r.status));
     if (r.status === "ok") {
       row.appendChild(el("span", "thint",
-        `${r.summary.total || 0} findings · ${r.duration_ms}ms`));
+        `${r.summary.total || 0} findings`));
+      row.appendChild(el("span", "telapsed", (r.duration_ms || 0) + "ms"));
     } else if (r.status === "unavailable") {
       row.appendChild(el("span", "thint", r.install_hint || ""));
     } else if (r.error) {

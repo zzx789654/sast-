@@ -297,6 +297,10 @@ def test_orchestrator_state_machine(monkeypatch, tmp_path):
     assert job.summary["high"] == 1
     assert job.summary["total"] == 1
     assert job.results["fake"].status == ToolStatus.OK
+    # progress + phase are populated for the live UI
+    assert job.results["fake"].phase.value == "finished"
+    assert job.progress["percent"] == 100
+    assert job.progress["finished"] == job.progress["total"] == 1
 
 
 def test_orchestrator_reports_source_error(tmp_path):

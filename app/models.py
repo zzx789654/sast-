@@ -62,6 +62,14 @@ class ToolStatus(str, enum.Enum):
     TIMEOUT = "timeout"
 
 
+class ToolPhase(str, enum.Enum):
+    """Live execution phase, independent of the final outcome (ToolStatus)."""
+
+    PENDING = "pending"      # queued, not started yet
+    RUNNING = "running"      # currently executing
+    FINISHED = "finished"    # done — see `status` for the outcome
+
+
 class Finding(BaseModel):
     tool: str
     rule_id: str = ""
@@ -82,8 +90,10 @@ class ToolResult(BaseModel):
     tool: str
     kind: ToolKind
     status: ToolStatus
+    phase: ToolPhase = ToolPhase.PENDING
     available: bool = False
     version: str = ""
+    started_at: str = ""
     duration_ms: int = 0
     findings: list[Finding] = Field(default_factory=list)
     error: str = ""
@@ -121,8 +131,25 @@ class Job(BaseModel):
     finished_at: str = ""
     results: dict[str, ToolResult] = Field(default_factory=dict)
     summary: dict[str, int] = Field(default_factory=dict)
+    progress: dict[str, int] = Field(default_factory=dict)
+    stage: str = ""            # human-readable current step (e.g. "cloning repo")
     error: str = ""
     logs: list[str] = Field(default_factory=list)
+
+    def compute_progress(self) -> "Job":
+        total = len(self.results)
+        finished = sum(1 for r in self.results.values()
+                       if r.phase == ToolPhase.FINISHED)
+        running = sum(1 for r in self.results.values()
+                      if r.phase == ToolPhase.RUNNING)
+        self.progress = {
+            "total": total,
+            "finished": finished,
+            "running": running,
+            "pending": total - finished - running,
+            "percent": int(finished * 100 / total) if total else 0,
+        }
+        return self
 
     def compute_summary(self) -> "Job":
         counts = {s.value: 0 for s in COUNTED_SEVERITIES}
