@@ -1,17 +1,24 @@
 # SAST Studio
 
-One web page, five security scanners. Point it at some code and it runs
-**Semgrep**, **CodeQL**, **npm audit**, **OSV-Scanner** and **Gitleaks**, then
-shows every finding in one severity-sorted report — no installing each tool,
-memorising its flags, or reading five different output formats.
+One web page, six free security scanners. Point it at some code and it runs
+**Semgrep**, **Bearer**, **Trivy**, **npm audit**, **OSV-Scanner** and
+**Gitleaks**, then shows every finding in one severity-sorted report — no
+installing each tool, memorising its flags, or reading six different output
+formats. Every tool is free to use (no paid licenses required).
 
 | Tool | What it does | Type |
 |------|--------------|------|
 | **Semgrep** | Pattern-based static analysis (Python engine) | SAST |
-| **CodeQL** | Semantic analysis via a query database | SAST |
+| **Bearer** | Semantic/dataflow SAST for security & privacy | SAST |
+| **Trivy** | Deps + secrets + IaC misconfiguration | SCA / Secret / IaC |
 | **npm audit** | Node dependency advisories (npm registry) | SCA |
 | **OSV-Scanner** | Multi-ecosystem deps vs. OSV.dev | SCA |
 | **Gitleaks** | Hardcoded secret detection | Secret |
+
+> **Why no CodeQL?** Its CLI is only free for open-source/research use and
+> requires a paid GitHub Advanced Security license to scan proprietary code.
+> **Bearer** (semantic SAST) and **Trivy** (which also adds IaC misconfig
+> scanning) replace it at zero cost. All six tools here are free.
 
 ## How it's built
 
@@ -41,10 +48,8 @@ docker compose up --build
 # open http://localhost:8000
 ```
 
-The image bundles Semgrep, npm audit, OSV-Scanner and Gitleaks. CodeQL is left
-out on purpose (its CLI bundle is hundreds of MB and its license restricts
-automated scanning of proprietary code) — mount it in to enable, see
-`docker-compose.yml`.
+The image bundles all six scanners (Semgrep, Bearer, Trivy, npm audit,
+OSV-Scanner, Gitleaks) — every one free to use.
 
 ### Option B — run locally
 

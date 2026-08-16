@@ -75,35 +75,72 @@ def test_semgrep_normalization(monkeypatch, tmp_path):
     assert result.summary["high"] == 1
 
 
-# ---------------------------------------------------------------- sarif (codeql)
-def test_sarif_parser(tmp_path):
-    from app.adapters.codeql import parse_sarif
+# ---------------------------------------------------------------- trivy
+def test_trivy_parser(tmp_path):
+    from app.adapters.trivy import _parse
 
-    sarif = {
-        "runs": [
+    data = {
+        "Results": [
             {
-                "tool": {"driver": {"rules": [
-                    {"id": "js/sql-injection", "name": "SQL injection",
-                     "properties": {"security-severity": "9.8",
-                                    "tags": ["security", "external/cwe/cwe-089"]},
-                     "helpUri": "https://codeql.github.com/x"}
-                ]}},
-                "results": [
-                    {"ruleId": "js/sql-injection", "level": "error",
-                     "message": {"text": "User input flows to SQL"},
-                     "locations": [{"physicalLocation": {
-                         "artifactLocation": {"uri": "src/db.js"},
-                         "region": {"startLine": 42, "endLine": 42}}}]}
+                "Target": "package-lock.json",
+                "Vulnerabilities": [
+                    {"VulnerabilityID": "CVE-2021-23337", "PkgName": "lodash",
+                     "InstalledVersion": "4.17.0", "FixedVersion": "4.17.21",
+                     "Severity": "HIGH", "Title": "Command injection in lodash",
+                     "PrimaryURL": "https://avd.aquasec.com/x",
+                     "CweIDs": ["CWE-77"]},
                 ],
-            }
+            },
+            {
+                "Target": "Dockerfile",
+                "Misconfigurations": [
+                    {"ID": "DS002", "Title": "root user", "Severity": "MEDIUM",
+                     "Message": "Specify a non-root USER",
+                     "CauseMetadata": {"StartLine": 1, "EndLine": 1}},
+                ],
+            },
+            {
+                "Target": "config.py",
+                "Secrets": [
+                    {"RuleID": "aws-access-key-id", "Category": "AWS",
+                     "Severity": "CRITICAL", "Title": "AWS Access Key",
+                     "StartLine": 3, "Match": "key = AKIAIOSFODNN7EXAMPLE"},
+                ],
+            },
         ]
     }
-    findings = parse_sarif(json.dumps(sarif), "codeql", tmp_path)
-    assert len(findings) == 1
-    f = findings[0]
-    assert f.severity == Severity.CRITICAL  # security-severity 9.8
-    assert f.file == "src/db.js" and f.start_line == 42
-    assert any("CWE-089" in c for c in f.cwe)
+    findings = _parse(data, tmp_path)
+    cats = sorted(f.extra["category"] for f in findings)
+    assert cats == ["misconfiguration", "secret", "vulnerability"]
+    vuln = next(f for f in findings if f.extra["category"] == "vulnerability")
+    assert vuln.severity == Severity.HIGH and "CWE-77" in vuln.cwe
+    secret = next(f for f in findings if f.extra["category"] == "secret")
+    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(secret.model_dump())
+
+
+# ---------------------------------------------------------------- bearer
+def test_bearer_parser(tmp_path):
+    from app.adapters.bearer import _parse
+
+    data = {
+        "high": [
+            {"id": "python_django_sql_injection", "title": "SQL injection",
+             "description": "Untrusted input in SQL", "line_number": 20,
+             "filename": "views.py", "cwe_ids": ["89"],
+             "documentation_url": "https://docs.bearer.com/x"}
+        ],
+        "warning": [
+            {"id": "python_logger", "title": "Sensitive data in logs",
+             "line_number": 5, "filename": "app.py", "cwe_ids": ["532"]}
+        ],
+    }
+    findings = _parse(data, tmp_path)
+    assert len(findings) == 2
+    high = next(f for f in findings if f.rule_id == "python_django_sql_injection")
+    assert high.severity == Severity.HIGH
+    assert "CWE-89" in high.cwe and high.start_line == 20
+    warn = next(f for f in findings if f.rule_id == "python_logger")
+    assert warn.severity == Severity.LOW  # warning maps to low
 
 
 # ---------------------------------------------------------------- npm audit
@@ -284,7 +321,8 @@ def client():
 def test_api_tools(client):
     data = client.get("/api/tools").json()
     names = {t["name"] for t in data["tools"]}
-    assert names == {"semgrep", "codeql", "npm_audit", "osv_scanner", "gitleaks"}
+    assert names == {"semgrep", "bearer", "trivy", "npm_audit",
+                     "osv_scanner", "gitleaks"}
     assert "allow_local_path" in data["config"]
 
 

@@ -6,6 +6,7 @@ FROM python:3.11-slim
 
 ARG OSV_SCANNER_VERSION=1.9.2
 ARG GITLEAKS_VERSION=8.21.2
+ARG TRIVY_VERSION=0.58.1
 
 ENV PYTHONUNBUFFERED=1 \
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
@@ -34,9 +35,13 @@ RUN arch="$(dpkg --print-architecture)"; \
     && tar -xzf /tmp/gitleaks.tgz -C /usr/local/bin gitleaks \
     && chmod +x /usr/local/bin/gitleaks && rm /tmp/gitleaks.tgz
 
-# NOTE: CodeQL is NOT bundled here — its CLI bundle is hundreds of MB and its
-# license restricts automated scanning of proprietary code. Mount it in or set
-# CODEQL on PATH to enable; the app degrades gracefully when it is absent.
+# --- Trivy (free, Apache-2.0; vuln + secret + IaC misconfig) ---
+RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+      | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+
+# --- Bearer (free, Elastic License; semantic SAST — CodeQL alternative) ---
+RUN curl -sSfL https://raw.githubusercontent.com/Bearer/bearer/main/contrib/install.sh \
+      | sh -s -- -b /usr/local/bin
 
 WORKDIR /app
 COPY requirements.txt .

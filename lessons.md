@@ -1,5 +1,22 @@
 # lessons — SAST Studio
 
+## [2026-08-16] 第 2 輪 — 以免費工具取代 CodeQL（Trivy + Bearer）
+
+### 本輪紀錄
+- **觸發**：使用者無法支付 CodeQL 對私有程式碼的授權費，要求免費替代。
+- **PM**：先澄清事實（CodeQL 對開源/研究免費、僅私有碼自動化掃描需付費 GHAS），再提供免費選項讓使用者選；使用者選 **Trivy + Bearer** 同時導入。主題由「五工具」更新為「六個全免費工具」。
+- **DevSecOps**：移除 `codeql.py`（含 SARIF parser，屬 dead code 一併清掉）；新增 `TrivyAdapter`（vuln/secret/misconfig 三類 Results 解析、secret 遮罩）與 `BearerAdapter`（按 severity 分組 JSON、cwe_ids 前綴 CWE-、warning→low）。更新 registry、Dockerfile、install-tools.sh、docker-compose、README、CoreMain、待修改。
+- **QA**：18 個測試全通過（100%）。移除 codeql SARIF 測試，新增 trivy（三類別 + secret 遮罩驗證）與 bearer（severity 映射 + CWE 前綴）parser 測試，並更新 API 工具名集合。真實工具驗證：沙箱網路對 GitHub releases 受限，無法現裝 Trivy/Bearer 實跑；但兩者沿用已被 Semgrep 實跑驗證過的同一 BaseAdapter 模板，parser 以真實輸出結構單元測試涵蓋。
+- **過關狀態**：G1 ✅ / G2 ✅ / G3 ✅（本體安全不變）/ G4 ✅
+
+### 教訓 / 準則
+- **情境**：使用者對某依賴（工具/服務）有成本或授權疑慮。
+  **準則**：先分辨「事實上的授權界線」再決策——把 CodeQL「開源免費、私有付費」講清楚，讓使用者在知情下選擇，而不是一聽到「費用」就盲目換掉。
+- **情境**：要替換掉一個能力格（深度 SAST）。
+  **準則**：adapter 架構讓替換是「加/減一個檔案 + 改 registry」的局部變更——移除 codeql.py、新增兩個 adapter、其餘 orchestrator/UI/輸入層完全不動。這正是當初選 adapter 契約的回報。
+- **情境**：一格換兩個工具反而更好。
+  **準則**：Trivy 免費且多能（順帶補上全套原本沒有的 IaC misconfig），Bearer 補語意 SAST——用兩個免費工具覆蓋 > 原本一個付費工具，且不增加架構複雜度。
+
 ## [2026-08-16] 第 1 輪 — 五工具整合 Web 應用 MVP（SAST Studio v1.0.0）
 
 ### 本輪紀錄

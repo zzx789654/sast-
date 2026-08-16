@@ -2,16 +2,18 @@
 from __future__ import annotations
 
 from .base import BaseAdapter
-from .codeql import CodeqlAdapter
+from .bearer import BearerAdapter
 from .gitleaks import GitleaksAdapter
 from .npm_audit import NpmAuditAdapter
 from .osv_scanner import OsvScannerAdapter
 from .semgrep import SemgrepAdapter
+from .trivy import TrivyAdapter
 
 # Order is display order in the UI.
 ADAPTERS: list[BaseAdapter] = [
     SemgrepAdapter(),
-    CodeqlAdapter(),
+    BearerAdapter(),
+    TrivyAdapter(),
     NpmAuditAdapter(),
     OsvScannerAdapter(),
     GitleaksAdapter(),

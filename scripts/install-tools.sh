@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Best-effort local install of the four bundle-free scanners (CodeQL excluded —
-# install its CLI bundle separately). Intended for a Debian/Ubuntu dev box.
-# Prefer the Docker image for a reproducible environment.
+# Best-effort local install of the six free scanners. Intended for a
+# Debian/Ubuntu dev box. Prefer the Docker image for a reproducible environment.
 set -euo pipefail
 
 OSV_SCANNER_VERSION="${OSV_SCANNER_VERSION:-1.9.2}"
 GITLEAKS_VERSION="${GITLEAKS_VERSION:-8.21.2}"
+TRIVY_VERSION="${TRIVY_VERSION:-0.58.1}"
 BIN_DIR="${BIN_DIR:-/usr/local/bin}"
 
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -36,11 +36,19 @@ if ! have gitleaks; then
   rm -rf "${tmp}"
 fi
 
-echo "==> CodeQL"
-have codeql || echo "   CodeQL not installed — download the CLI bundle from"
-have codeql || echo "   https://github.com/github/codeql-action/releases and add it to PATH"
+echo "==> Trivy ${TRIVY_VERSION} (free, Apache-2.0)"
+if ! have trivy; then
+  curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+    | sh -s -- -b "${BIN_DIR}" "v${TRIVY_VERSION}"
+fi
+
+echo "==> Bearer (free, Elastic License — semantic SAST)"
+if ! have bearer; then
+  curl -sSfL https://raw.githubusercontent.com/Bearer/bearer/main/contrib/install.sh \
+    | sh -s -- -b "${BIN_DIR}"
+fi
 
 echo "Done. Installed tools:"
-for t in semgrep npm osv-scanner gitleaks codeql; do
+for t in semgrep bearer trivy npm osv-scanner gitleaks; do
   printf "  %-14s %s\n" "$t" "$(command -v "$t" 2>/dev/null || echo 'not found')"
 done
