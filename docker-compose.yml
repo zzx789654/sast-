@@ -1,0 +1,28 @@
+# Free on Linux servers (Docker Engine + Compose are Apache-2.0).
+# Brings up SAST Studio with Semgrep, npm audit, OSV-Scanner and Gitleaks
+# pre-installed. CodeQL is optional — see the commented volume mount below.
+services:
+  sast-studio:
+    build: .
+    image: sast-studio:latest
+    ports:
+      - "8000:8000"
+    environment:
+      # "auto" needs network to fetch Semgrep's registry rules; pin a local
+      # ruleset path for fully-offline use.
+      SAST_SEMGREP_RULES: "auto"
+      SAST_ALLOW_LOCAL_PATH: "true"
+      SAST_TOOL_TIMEOUT: "900"
+    volumes:
+      - sast-workspaces:/data/workspaces
+      # Scan code that already lives on the host by mounting it read-only and
+      # using the "Local path" tab with e.g. /mounted/my-project.
+      # - ./my-project:/mounted/my-project:ro
+      #
+      # Enable CodeQL by mounting an extracted CodeQL CLI bundle and adding it
+      # to PATH (uncomment both lines):
+      # - ./codeql:/opt/codeql:ro
+    # entrypoint: ["sh","-c","export PATH=/opt/codeql:$PATH; exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+
+volumes:
+  sast-workspaces:

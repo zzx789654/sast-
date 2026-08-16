@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SAST Studio</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🛡️</span>
+      <div>
+        <h1>SAST Studio</h1>
+        <p class="tagline">One page, five security scanners.</p>
+      </div>
+    </div>
+    <div id="tool-status" class="tool-status" aria-label="tool availability"></div>
+  </header>
+
+  <main class="layout">
+    <!-- ---- scan configuration ------------------------------------- -->
+    <section class="panel" aria-labelledby="new-scan-h">
+      <h2 id="new-scan-h">New scan</h2>
+
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-kind="upload" role="tab">Upload zip</button>
+        <button class="tab" data-kind="git" role="tab">Git URL</button>
+        <button class="tab" data-kind="path" role="tab">Local path</button>
+      </div>
+
+      <div class="tabpane" data-pane="upload">
+        <label class="field">
+          <span>Source archive (.zip)</span>
+          <input type="file" id="file-input" accept=".zip" />
+        </label>
+      </div>
+      <div class="tabpane hidden" data-pane="git">
+        <label class="field">
+          <span>Repository URL (http/https)</span>
+          <input type="text" id="git-input" placeholder="https://github.com/org/repo" />
+        </label>
+      </div>
+      <div class="tabpane hidden" data-pane="path">
+        <label class="field">
+          <span>Server-local directory path</span>
+          <input type="text" id="path-input" placeholder="/srv/code/my-project" />
+        </label>
+        <p id="path-note" class="note hidden">Local path scanning is disabled by config.</p>
+      </div>
+
+      <fieldset class="tools-pick">
+        <legend>Tools</legend>
+        <div id="tool-checkboxes"></div>
+        <button type="button" id="select-all" class="linkbtn">select all available</button>
+      </fieldset>
+
+      <button id="start-btn" class="primary">Start scan</button>
+      <p id="form-error" class="error hidden" role="alert"></p>
+    </section>
+
+    <!-- ---- results ------------------------------------------------- -->
+    <section class="panel results" aria-labelledby="results-h">
+      <div class="results-head">
+        <h2 id="results-h">Results</h2>
+        <select id="scan-picker" aria-label="pick a scan"></select>
+      </div>
+
+      <div id="scan-meta" class="scan-meta"></div>
+      <div id="summary" class="summary"></div>
+      <div id="tool-results" class="tool-results"></div>
+
+      <div class="filters">
+        <select id="filter-severity"><option value="">All severities</option></select>
+        <select id="filter-tool"><option value="">All tools</option></select>
+        <input type="text" id="filter-file" placeholder="filter by file…" />
+      </div>
+
+      <div id="findings" class="findings"></div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

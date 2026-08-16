@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+*.egg-info/
+.pytest_cache/
+/data/
+sast-studio-workspaces/
+node_modules/
+.coverage
