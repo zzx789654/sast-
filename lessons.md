@@ -1,5 +1,21 @@
 # lessons — SAST Studio
 
+## [2026-08-16] 第 3 輪 — 加入 nginx 反向代理
+
+### 本輪紀錄
+- **需求**：使用者要求網頁走 nginx 代理，並要看網頁畫面。
+- **DevSecOps**：新增 `nginx/nginx.conf`（反向代理 FastAPI、`X-Forwarded-*` 標頭、`client_max_body_size 200m` 對齊上傳上限、proxy timeout 拉長給慢掃描、`/healthz` 健康檢查）；`docker-compose.yml` 新增 nginx 服務（對外 8080→80），後端改為 `expose` 不再對主機公開。修正 UI tagline「five→six」。
+- **QA / 驗證**：沙箱無 docker daemon，改以本機安裝 nginx + 修改 /etc/hosts 讓 `sast-studio` 解析到本機後端，用**已提交的 nginx.conf** 實跑：`nginx -t` 通過、經代理 `GET /`、`/healthz`、`/api/tools` 皆 200（Server: nginx）。並用 Playwright（指向環境內建 chromium）截圖落地頁與掃描結果頁，真實 Semgrep 掃到 eval 注入正確呈現。
+- **過關狀態**：G1–G4 維持；新增交付面（反向代理）已驗證。
+
+### 教訓 / 準則
+- **情境**：環境沒有 docker daemon，無法用 compose 驗證 nginx。
+  **準則**：不要因為「不能照原路徑驗證」就跳過驗證——換等效手段（本機裝 nginx + hosts 覆寫）實跑**同一份設定檔**，一樣拿到 `nginx -t` 通過 + 經代理 200 的證據。
+- **情境**：截圖工具版本與環境內建瀏覽器不符（Playwright 要下載新版被擋）。
+  **準則**：用 `executable_path` 指向環境既有的 chromium（/opt/pw-browsers/chromium-1194），不硬連網下載。
+- **情境**：截圖抓到掃描「running」中途狀態、且被前一個已完成 job 的殘留 DOM 誤判。
+  **準則**：截動態畫面要等到明確終態（`status: done` + 目標元素同時成立），並先清空既有 job（重啟後端）避免殘留 DOM 造成 race 誤判。
+
 ## [2026-08-16] 第 2 輪 — 以免費工具取代 CodeQL（Trivy + Bearer）
 
 ### 本輪紀錄

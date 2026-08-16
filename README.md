@@ -23,16 +23,21 @@ formats. Every tool is free to use (no paid licenses required).
 ## How it's built
 
 ```
-Browser (static SPA)  ──►  FastAPI  ──►  Orchestrator ──►  5 Adapters ──► tools
-   index/app.js/css        REST API      (job manager)     (one per tool)
+Browser ──► nginx (reverse proxy) ──► FastAPI ──► Orchestrator ──► 6 Adapters ──► tools
+             :8080  →  :8000          REST API     (job manager)    (one per tool)
 ```
 
+* **nginx reverse proxy.** In the Docker setup nginx is the public entry point
+  (`:8080`) and forwards to the FastAPI backend over the internal network; the
+  backend port is never published to the host. nginx sets `X-Forwarded-*`
+  headers, raises `client_max_body_size` to match the upload limit, and
+  extends proxy timeouts for slow scans. Config: `nginx/nginx.conf`.
 * **Adapter pattern.** Each tool has one adapter that does exactly three
   things: *detect availability*, *run*, *normalize output* into a shared
   `Finding` schema. The orchestrator never knows any tool's native format.
 * **Graceful degradation.** A tool that isn't installed is reported as
   `unavailable` with an install hint — the scan still runs every other tool.
-  So the app is useful whether you have all five tools or none.
+  So the app is useful whether you have all six tools or none.
 * **Simple by design.** In-memory job store, HTTP polling for progress, a
   no-framework vanilla-JS front end. No database, no build step.
 
@@ -45,11 +50,17 @@ carries a fee for large orgs, and a server deployment doesn't need it.
 
 ```bash
 docker compose up --build
-# open http://localhost:8000
+# open http://localhost:8080   (nginx -> FastAPI backend)
 ```
 
-The image bundles all six scanners (Semgrep, Bearer, Trivy, npm audit,
-OSV-Scanner, Gitleaks) — every one free to use.
+This starts two services: **nginx** (public, port 8080) reverse-proxying to
+the **backend** (internal). The backend image bundles all six scanners
+(Semgrep, Bearer, Trivy, npm audit, OSV-Scanner, Gitleaks) — every one free to
+use. To serve on the standard HTTP port, change the nginx mapping to `80:80`
+in `docker-compose.yml`.
+
+Running the backend on its own (no proxy) still works for local dev — see
+Option B — and serves the same UI directly on `:8000`.
 
 ### Option B — run locally
 

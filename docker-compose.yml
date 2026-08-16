@@ -1,12 +1,16 @@
 # Free on Linux servers (Docker Engine + Compose are Apache-2.0).
 # Brings up SAST Studio with all six free scanners pre-installed:
 # Semgrep, Bearer, Trivy, npm audit, OSV-Scanner and Gitleaks.
+#
+# nginx is the public entry point (http://localhost:8080) and reverse-proxies
+# to the FastAPI backend, which is not published to the host directly.
 services:
   sast-studio:
     build: .
     image: sast-studio:latest
-    ports:
-      - "8000:8000"
+    # Internal only — reachable by nginx over the compose network, not the host.
+    expose:
+      - "8000"
     environment:
       # "auto" needs network to fetch Semgrep's registry rules; pin a local
       # ruleset path for fully-offline use.
@@ -18,6 +22,18 @@ services:
       # Scan code that already lives on the host by mounting it read-only and
       # using the "Local path" tab with e.g. /mounted/my-project.
       # - ./my-project:/mounted/my-project:ro
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      # Host 8080 -> nginx 80. Change to "80:80" to serve on the standard port.
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - sast-studio
+    restart: unless-stopped
 
 volumes:
   sast-workspaces:
