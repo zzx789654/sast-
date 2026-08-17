@@ -10,6 +10,8 @@ const state = {
   currentJob: null,   // full job object
   pollTimer: null,
   inspect: null,      // {inventory, tools:[{name, applicable, reason}]} for a path
+  view: "scan",       // "scan" | "monitor"
+  monTimer: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -44,9 +46,107 @@ async function init() {
   wireTabs();
   wireForm();
   wireFilters();
+  wireViewNav();
   await loadTools();
   await refreshScanList();
 }
+
+// ---------------------------------------------------------------- views
+function wireViewNav() {
+  document.querySelectorAll(".viewtab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      document.querySelectorAll(".viewtab").forEach((t) => t.classList.remove("active"));
+      tab.classList.add("active");
+      state.view = tab.dataset.view;
+      $("#view-scan").classList.toggle("hidden", state.view !== "scan");
+      $("#view-monitor").classList.toggle("hidden", state.view !== "monitor");
+      if (state.view === "monitor") { renderMonitor(); startMonitorPolling(); }
+      else stopMonitorPolling();
+    });
+  });
+  $("#mon-refresh").addEventListener("click", renderMonitor);
+}
+
+async function renderMonitor() {
+  await loadTools();            // refresh installed versions/availability
+  renderMonitorTools();
+  await loadMonitorDocker();
+}
+
+function renderMonitorTools() {
+  const box = $("#mon-tools");
+  box.innerHTML = "";
+  const tools = state.toolsData ? state.toolsData.tools : [];
+  tools.forEach((tl) => {
+    const row = el("div", "mon-tool");
+    row.appendChild(el("span", "mt-dot " + (tl.available ? "on" : "off")));
+    row.appendChild(el("span", "mt-name", tl.name));
+    row.appendChild(el("span", "mt-ver",
+      tl.available ? (tl.version || t("mon.installed")) : t("notInstalled").trim()));
+    box.appendChild(row);
+  });
+}
+
+async function loadMonitorDocker() {
+  const box = $("#mon-docker");
+  let data;
+  try {
+    data = await (await fetch("/api/system")).json();
+  } catch (e) {
+    box.innerHTML = "";
+    box.appendChild(el("div", "mon-note", t("mon.dockerErr", { msg: e.message })));
+    return;
+  }
+  const d = data.docker || {};
+  box.innerHTML = "";
+  if (!d.available) {
+    box.appendChild(el("div", "mon-note", t("mon.dockerOff")));
+    box.appendChild(el("div", "mon-subnote", t("mon.enableHint")));
+    if (d.reason) box.appendChild(el("div", "mon-subnote", d.reason));
+    return;
+  }
+  if (!d.containers.length) {
+    box.appendChild(el("div", "mon-note", t("mon.noContainers")));
+    return;
+  }
+  const table = el("table", "mon-table");
+  const head = el("tr");
+  ["col.name", "col.image", "col.state", "col.cpu", "col.mem", "col.net"]
+    .forEach((k) => head.appendChild(el("th", null, t(k))));
+  table.appendChild(head);
+  d.containers.forEach((c) => {
+    const tr = el("tr", c.state === "running" ? "running" : "stopped");
+    tr.appendChild(el("td", "c-name", c.name));
+    tr.appendChild(el("td", "c-img", c.image));
+    tr.appendChild(el("td", null, c.status || c.state));
+    tr.appendChild(meterCell(c.cpu_pct, c.cpu_pct != null ? c.cpu_pct + "%" : "—"));
+    tr.appendChild(meterCell(c.mem_pct, c.mem_used != null
+      ? formatBytes(c.mem_used) + (c.mem_limit ? " / " + formatBytes(c.mem_limit) : "")
+      : "—"));
+    tr.appendChild(el("td", null, c.net_rx != null
+      ? formatBytes(c.net_rx) + " / " + formatBytes(c.net_tx) : "—"));
+    table.appendChild(tr);
+  });
+  box.appendChild(table);
+}
+
+function meterCell(pct, text) {
+  const td = el("td");
+  const wrap = el("div", "meter");
+  const bar = el("div", "meter-fill");
+  bar.style.width = (pct != null ? Math.min(100, pct) : 0) + "%";
+  if (pct != null && pct >= 80) bar.classList.add("hot");
+  wrap.appendChild(bar);
+  td.appendChild(wrap);
+  td.appendChild(el("span", "meter-txt", text));
+  return td;
+}
+
+function startMonitorPolling() {
+  clearInterval(state.monTimer);
+  state.monTimer = setInterval(loadMonitorDocker, 3000);
+}
+function stopMonitorPolling() { clearInterval(state.monTimer); }
 
 function wireTabs() {
   document.querySelectorAll(".tab").forEach((tab) => {
@@ -586,6 +686,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const cur = $("#scan-picker").value;
     if (cur) refreshScanList(cur);          // relabel picker + re-render job
     else if (state.currentJob) renderJob(state.currentJob);
+    if (state.view === "monitor") { renderMonitorTools(); loadMonitorDocker(); }
   };
   $("#lang-toggle").addEventListener("click",
     () => setLang(getLang() === "zh" ? "en" : "zh"));

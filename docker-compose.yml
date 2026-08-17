@@ -17,11 +17,18 @@ services:
       SAST_SEMGREP_RULES: "auto"
       SAST_ALLOW_LOCAL_PATH: "true"
       SAST_TOOL_TIMEOUT: "900"
+      # Monitor tab — per-container CPU/memory. Needs the docker.sock mount
+      # below, which grants Docker access: enable only on a trusted deployment.
+      # SAST_ENABLE_DOCKER_STATS: "true"
     volumes:
       - sast-workspaces:/data/workspaces
       # Scan code that already lives on the host by mounting it read-only and
       # using the "Local path" tab with e.g. /mounted/my-project.
       # - ./my-project:/mounted/my-project:ro
+      #
+      # Required for the Monitor tab (read-only). Mounting the docker socket is
+      # a privileged capability — only on a trusted deployment.
+      # - /var/run/docker.sock:/var/run/docker.sock:ro
     restart: unless-stopped
 
   nginx:

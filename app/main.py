@@ -26,6 +26,13 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+@app.get("/api/system")
+async def system_status() -> dict:
+    """Docker container performance for the Monitor tab."""
+    from . import docker_stats
+    return {"docker": await run_in_threadpool(docker_stats.collect)}
+
+
 @app.get("/api/tools")
 async def list_tools() -> dict:
     """Availability + metadata for every integrated tool."""

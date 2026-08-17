@@ -12,6 +12,7 @@
 #   ./setup.sh                 # full local setup (venv + deps + tools + verify)
 #   ./setup.sh --run           # ...then start the server on http://localhost:8000
 #   ./setup.sh --docker        # build & start via Docker Compose instead (http://localhost:8080)
+#   ./setup.sh --update        # update the scanners to their pinned/latest versions
 #   ./setup.sh --no-tools      # skip installing the scanners (Python app only)
 #   ./setup.sh --no-venv       # install Python deps into the current environment
 #   ./setup.sh --help
@@ -31,6 +32,7 @@ VENV_DIR="${VENV_DIR:-.venv}"
 for arg in "$@"; do
   case "$arg" in
     --docker)   MODE="docker" ;;
+    --update)   MODE="update" ;;
     --no-tools) DO_TOOLS=0 ;;
     --no-venv)  USE_VENV=0 ;;
     --run)      DO_RUN=1 ;;
@@ -63,6 +65,23 @@ if [ "$MODE" = "docker" ]; then
   say "Done. Open http://localhost:8080"
   echo "  logs:  $COMPOSE logs -f"
   echo "  stop:  $COMPOSE down"
+  exit 0
+fi
+
+# ------------------------------------------------------------------ update path
+if [ "$MODE" = "update" ]; then
+  say "Update mode — refreshing scanners to pinned/latest versions / 更新掃描工具"
+  if [ -d "$VENV_DIR" ]; then
+    # shellcheck disable=SC1091
+    source "$VENV_DIR/bin/activate"
+  fi
+  pip install -U semgrep || warn "semgrep update failed"
+  if [ -w /usr/local/bin ]; then BIN_DIR=/usr/local/bin;
+  else BIN_DIR="$HOME/.local/bin"; mkdir -p "$BIN_DIR"; fi
+  FORCE=1 BIN_DIR="$BIN_DIR" bash scripts/install-tools.sh \
+    || warn "some tools failed to update"
+  say "Update done. Check versions in the Monitor tab or: curl -s localhost:8000/api/tools"
+  echo "Tip: bump the pinned versions in scripts/install-tools.sh / Dockerfile to control what --update installs."
   exit 0
 fi
 

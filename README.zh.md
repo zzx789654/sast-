@@ -122,6 +122,30 @@ uvicorn app.main:app --reload        # http://localhost:8000
 `SAST_ALLOW_LOCAL_PATH`、允許的 git scheme、以及 `SAST_SEMGREP_RULES`
 （`auto` 需要網路；離線可指向本機規則集）。
 
+## 後續怎麼更新這些掃描工具
+
+- **弱點資料庫會自動更新**：Trivy 會拉自己的 DB、OSV-Scanner 查 OSV.dev、npm audit 查
+  npm registry，都在掃描時即時更新，所以 CVE／情資的新鮮度是自動的——只有工具**本體二進位**
+  需要管理版本。
+- **二進位版本固定**：`scripts/install-tools.sh` 與 `Dockerfile` 對 Trivy／OSV／Gitleaks
+  釘住版本，讓建置可重現。要升版就刻意改那些版本號；也可用 Renovate／Dependabot 自動開 PR 升版。
+- **就地更新**：`./setup.sh --update`（用 pip 更新 Semgrep、並重裝釘住版本的二進位），或重建 Docker 映像檔。
+- **隨時查看已安裝版本**：到**監控**分頁，或 `GET /api/tools`。
+
+## 監控
+
+**監控**分頁會顯示每個掃描器的已安裝版本，並可選擇顯示 Docker 佈署中每個容器的**即時效能**
+（CPU／記憶體／網路）。容器效能**預設關閉**，因為讀取它需要把 Docker daemon 的 socket
+掛進容器——這是高權限能力。要在信任的環境啟用，設定 `SAST_ENABLE_DOCKER_STATS=true`
+並以唯讀方式掛載 socket（兩者在 `docker-compose.yml` 都有註解）：
+
+```yaml
+    environment:
+      SAST_ENABLE_DOCKER_STATS: "true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+```
+
 ## 開發
 
 ```bash

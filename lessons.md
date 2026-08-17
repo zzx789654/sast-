@@ -1,5 +1,26 @@
 # lessons — SAST Studio
 
+## [2026-08-16] 第 9 輪 — 工具更新機制 + Docker 監控分頁
+
+### 本輪紀錄
+- **需求**：後續掃描工具更新怎麼處理；做一個分頁看每個 docker 的效能狀態。
+- **更新機制**：
+  - 釐清策略——弱點 DB 掃描時自動更新，只有工具二進位要管版本；二進位釘版於 install-tools.sh／Dockerfile。
+  - `scripts/install-tools.sh` 加 `FORCE`（`want()` 判斷）以支援重裝更新；`setup.sh --update` 用 pip -U 更新 Semgrep + FORCE 重裝二進位。
+  - 監控分頁顯示每個工具的已安裝版本；README（中英）新增「更新掃描工具」段（含 Renovate/Dependabot 建議）。
+- **Docker 監控**：
+  - `app/docker_stats.py`：用標準庫走 unix socket 讀 Docker Engine API（列容器 + 一次性 stats），自算 CPU%／記憶體／網路；預設關閉（`SAST_ENABLE_DOCKER_STATS`），因為掛 docker.sock 屬高權限。
+  - `GET /api/system` 回傳容器效能；前端新增「掃描／監控」view 切換 + 監控頁（工具版本 + 容器 CPU/記憶體/網路表，每 3 秒更新），中英雙語。
+  - docker-compose 加註解的 socket 掛載與 env 旗標並標警語。
+- **QA / 驗證**：30 測試全通過（+3：CPU%/記憶體計算、docker 預設關閉、/api/system）；`node --check`、`bash -n` 通過；Playwright 實截監控分頁（工具版本 + Docker 未啟用提示）中英兩版。
+- **安全界線**：誠實標示「掛 docker socket 是高權限」，預設關閉並要求明確開啟——不因為方便就預設暴露。
+
+### 教訓 / 準則
+- **情境**：要在會跑不受信任程式碼的服務裡加「看 Docker 效能」這種需要特權的功能。
+  **準則**：預設關閉 + 明確 opt-in（env 旗標 + 需手動掛 socket）+ 文件警語 + 唯讀用途；把風險說清楚交給部署者決定，而不是預設打開。
+- **情境**：不想為了讀 Docker stats 引入 docker SDK 相依。
+  **準則**：Docker Engine API 是 HTTP over unix socket，用標準庫 `http.client` 自訂連線即可，維持零新相依（符合簡單原則）。
+
 ## [2026-08-16] 第 8 輪 — 合併 main + 一鍵安裝腳本 + README 使用方式
 
 ### 本輪紀錄

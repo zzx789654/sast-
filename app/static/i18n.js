@@ -116,6 +116,20 @@ const DICT = {
     "err.noUrl": "請輸入儲存庫網址。",
     "err.noPath": "請輸入伺服器本機路徑。",
     "err.allInapplicable": "所選工具都不適用此專案（{tools}）。請改選符合其語言／鎖定檔的工具。",
+
+    "nav.scan": "掃描",
+    "nav.monitor": "監控",
+    "mon.tools": "掃描工具版本",
+    "mon.containers": "Docker 容器效能",
+    "mon.refresh": "重新整理",
+    "mon.installed": "已安裝",
+    "mon.updateHint": "提示：工具的弱點資料庫（Trivy／OSV／npm）會在掃描時自動更新；工具本身可用 ./setup.sh --update 更新。",
+    "mon.dockerOff": "Docker 監控未啟用。",
+    "mon.enableHint": "要啟用：設定 SAST_ENABLE_DOCKER_STATS=true 並把 docker.sock 掛進容器（見 docker-compose.yml 的註解）。注意：掛載 docker socket 屬高權限，僅在信任的環境開啟。",
+    "mon.dockerErr": "無法讀取 Docker：{msg}",
+    "mon.noContainers": "沒有容器。",
+    "col.name": "容器", "col.image": "映像", "col.state": "狀態",
+    "col.cpu": "CPU", "col.mem": "記憶體", "col.net": "網路 RX/TX",
   },
 
   en: {
@@ -219,6 +233,20 @@ const DICT = {
     "err.noUrl": "Enter a repository URL.",
     "err.noPath": "Enter a server-local path.",
     "err.allInapplicable": "None of the selected tools apply to this project ({tools}). Pick tools that match its languages/lockfiles.",
+
+    "nav.scan": "Scan",
+    "nav.monitor": "Monitor",
+    "mon.tools": "Scanner versions",
+    "mon.containers": "Docker container performance",
+    "mon.refresh": "refresh",
+    "mon.installed": "installed",
+    "mon.updateHint": "Note: tool vulnerability databases (Trivy/OSV/npm) refresh automatically at scan time; update the tool binaries with ./setup.sh --update.",
+    "mon.dockerOff": "Docker monitoring is not enabled.",
+    "mon.enableHint": "To enable: set SAST_ENABLE_DOCKER_STATS=true and mount docker.sock into the container (see the comments in docker-compose.yml). Note: mounting the docker socket is a privileged capability — only on a trusted deployment.",
+    "mon.dockerErr": "Cannot read Docker: {msg}",
+    "mon.noContainers": "No containers.",
+    "col.name": "Container", "col.image": "Image", "col.state": "State",
+    "col.cpu": "CPU", "col.mem": "Memory", "col.net": "Net RX/TX",
   },
 };
 

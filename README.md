@@ -155,6 +155,34 @@ per-tool timeouts, upload/extraction limits, `SAST_ALLOW_LOCAL_PATH`, allowed
 git schemes, and `SAST_SEMGREP_RULES` (`auto` needs network; point at a local
 ruleset for offline scanning).
 
+## Keeping the scanners up to date
+
+- **Vulnerability data updates itself.** Trivy pulls its DB, OSV-Scanner queries
+  OSV.dev and npm audit queries the npm registry at scan time, so CVE/advisory
+  freshness is automatic — only the tool *binaries* need version management.
+- **Binaries are version-pinned** in `scripts/install-tools.sh` and the
+  `Dockerfile` (Trivy/OSV/Gitleaks) so builds are reproducible. Bump those
+  versions deliberately; automate the bumps with Renovate/Dependabot if you like.
+- **Update in place** with `./setup.sh --update` (updates Semgrep via pip and
+  re-installs the pinned binaries), or rebuild the Docker image.
+- **See what's installed** any time in the **Monitor** tab or at `GET /api/tools`.
+
+## Monitoring
+
+The **Monitor** tab shows each scanner's installed version and, optionally,
+live per-container performance (CPU / memory / network) for the Docker
+deployment. Container stats are **off by default** because reading them needs
+the Docker daemon socket mounted into the container — a privileged capability.
+To enable on a trusted deployment, set `SAST_ENABLE_DOCKER_STATS=true` and mount
+the socket read-only (both are commented in `docker-compose.yml`):
+
+```yaml
+    environment:
+      SAST_ENABLE_DOCKER_STATS: "true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+```
+
 ## Development
 
 ```bash

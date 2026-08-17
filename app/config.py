@@ -61,5 +61,11 @@ class Config:
     # Retain at most this many finished jobs in memory.
     MAX_JOBS_RETAINED = _env_int("SAST_MAX_JOBS", 100)
 
+    # Docker container monitoring (Monitor tab). OFF by default: reading stats
+    # needs the Docker daemon socket mounted into this container, which is a
+    # privileged capability — only enable it on a trusted deployment.
+    ENABLE_DOCKER_STATS = _env_bool("SAST_ENABLE_DOCKER_STATS", False)
+    DOCKER_SOCKET = os.environ.get("SAST_DOCKER_SOCKET", "/var/run/docker.sock")
+
 
 config = Config()

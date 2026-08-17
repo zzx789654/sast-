@@ -21,7 +21,12 @@
     </div>
   </header>
 
-  <main class="layout">
+  <nav class="viewnav" role="tablist">
+    <button class="viewtab active" data-view="scan" data-i18n="nav.scan">掃描</button>
+    <button class="viewtab" data-view="monitor" data-i18n="nav.monitor">監控</button>
+  </nav>
+
+  <main id="view-scan" class="layout">
     <!-- ---- scan configuration ------------------------------------- -->
     <section class="panel" aria-labelledby="new-scan-h">
       <h2 id="new-scan-h" data-i18n="sec.newScan">新增掃描</h2>
@@ -100,6 +105,22 @@
       <div id="findings" class="findings"></div>
     </section>
   </main>
+
+  <!-- ---- monitor view ------------------------------------------- -->
+  <section id="view-monitor" class="monitor-wrap hidden">
+    <div class="panel">
+      <div class="mon-head">
+        <h2 data-i18n="mon.tools">掃描工具版本</h2>
+        <button id="mon-refresh" class="linkbtn" data-i18n="mon.refresh">重新整理</button>
+      </div>
+      <p class="mon-hint" data-i18n="mon.updateHint"></p>
+      <div id="mon-tools" class="mon-tools"></div>
+    </div>
+    <div class="panel">
+      <h2 data-i18n="mon.containers">Docker 容器效能</h2>
+      <div id="mon-docker"></div>
+    </div>
+  </section>
 
   <script src="/i18n.js"></script>
   <script src="/app.js"></script>

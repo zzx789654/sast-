@@ -483,6 +483,40 @@ def test_api_upload_awaits_then_confirms(client, monkeypatch):
     assert "semgrep" in job["results"]
 
 
+def test_docker_cpu_and_memory_math():
+    from app.docker_stats import _cpu_percent, _memory
+
+    stats = {
+        "cpu_stats": {"cpu_usage": {"total_usage": 200},
+                      "system_cpu_usage": 2000, "online_cpus": 2},
+        "precpu_stats": {"cpu_usage": {"total_usage": 100},
+                         "system_cpu_usage": 1000},
+        "memory_stats": {"usage": 1000, "limit": 2000, "stats": {"cache": 200}},
+    }
+    # cpu_delta=100, sys_delta=1000, online=2 -> 100/1000*2*100 = 20.0
+    assert _cpu_percent(stats) == 20.0
+    mem = _memory(stats)
+    assert mem["mem_used"] == 800 and mem["mem_limit"] == 2000
+    assert mem["mem_pct"] == 40.0
+
+
+def test_docker_stats_disabled_by_default():
+    from app import docker_stats
+    from app.config import config
+
+    assert config.ENABLE_DOCKER_STATS is False
+    result = docker_stats.collect()
+    assert result["available"] is False
+    assert "disabled" in result["reason"]
+    assert result["containers"] == []
+
+
+def test_api_system_reports_docker(client):
+    data = client.get("/api/system").json()
+    assert "docker" in data
+    assert data["docker"]["available"] is False   # not enabled in tests
+
+
 def test_api_confirm_wrong_state(client, tmp_path):
     # a local-path scan runs directly (no awaiting), so confirm is a 409
     import time
