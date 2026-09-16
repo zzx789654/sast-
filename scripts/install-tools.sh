@@ -1,59 +1,144 @@
 #!/usr/bin/env bash
-# Best-effort local install of the six free scanners. Intended for a
-# Debian/Ubuntu dev box. Prefer the Docker image for a reproducible environment.
+# Install the native scanner CLIs used by SAST Studio.
 #
-# Set FORCE=1 to (re)install even when a tool is already present — used by
-# `setup.sh --update` to pull the pinned/latest versions.
-set -euo pipefail
+# This script intentionally remains best-effort: one unavailable upstream
+# release must not prevent the other scanners from being installed. It exits
+# non-zero when one or more tools failed, so callers can report an honest
+# result without losing the successful installations.
+set -uo pipefail
 
 OSV_SCANNER_VERSION="${OSV_SCANNER_VERSION:-1.9.2}"
-GITLEAKS_VERSION="${GITLEAKS_VERSION:-8.21.2}"
-TRIVY_VERSION="${TRIVY_VERSION:-0.58.1}"
+GITLEAKS_VERSION="${GITLEAKS_VERSION:-8.30.1}"
+TRIVY_VERSION="${TRIVY_VERSION:-0.74.0}"
 BIN_DIR="${BIN_DIR:-/usr/local/bin}"
+PIP_CMD="${PIP_CMD:-pip3}"
+FORCE="${FORCE:-0}"
 
 have() { command -v "$1" >/dev/null 2>&1; }
-# want X == install X? true when forced, or when it isn't already present.
-want() { [ "${FORCE:-0}" = 1 ] || ! have "$1"; }
+installed() { have "$1" || [ -x "${BIN_DIR}/$1" ]; }
+want() { [ "$FORCE" = 1 ] || ! installed "$1"; }
 
-echo "==> Semgrep (pip)"
-if want semgrep; then pip install --user -U semgrep || pip install -U semgrep; fi
+failures=()
 
-echo "==> npm audit (needs Node.js/npm)"
-have npm || echo "   npm not found — install Node.js from https://nodejs.org"
+record_failure() {
+  failures+=("$1")
+  printf '   [warn] %s failed; continuing with the remaining tools\n' "$1" >&2
+}
+
+run_install() {
+  local name="$1"
+  shift
+  printf '==> %s\n' "$name"
+  if ! "$@"; then
+    record_failure "$name"
+  fi
+}
+
+download() {
+  local url="$1"
+  local dest="$2"
+  curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 600 \
+    -o "$dest.tmp" "$url" && mv -f "$dest.tmp" "$dest"
+}
+
+if ! have curl; then
+  echo "curl is required to install native scanner binaries." >&2
+  exit 1
+fi
+if ! have tar; then
+  echo "tar is required to install Gitleaks." >&2
+  exit 1
+fi
+if [ ! -d "$BIN_DIR" ] && ! mkdir -p "$BIN_DIR"; then
+  echo "Cannot create scanner directory: $BIN_DIR" >&2
+  exit 1
+fi
+if [ ! -w "$BIN_DIR" ]; then
+  echo "Scanner directory is not writable: $BIN_DIR (set BIN_DIR to a writable path)" >&2
+  exit 1
+fi
+
+if [ "$(uname -s)" != "Linux" ]; then
+  echo "scripts/install-tools.sh supports Ubuntu/Linux only. Use Docker on other hosts." >&2
+  exit 1
+fi
 
 arch="$(uname -m)"
-case "$arch" in x86_64) OSV_A=amd64; GL_A=x64;; aarch64|arm64) OSV_A=arm64; GL_A=arm64;; *) OSV_A=amd64; GL_A=x64;; esac
+case "$arch" in
+  x86_64) OSV_A=amd64; GL_A=x64; TRIVY_A=64bit ;;
+  aarch64|arm64) OSV_A=arm64; GL_A=arm64; TRIVY_A=ARM64 ;;
+  *) echo "Unsupported Linux architecture: $arch" >&2; exit 1 ;;
+esac
 
-echo "==> OSV-Scanner ${OSV_SCANNER_VERSION}"
-if want osv-scanner; then
-  curl -fsSL -o "${BIN_DIR}/osv-scanner" \
-    "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_${OSV_SCANNER_VERSION}_linux_${OSV_A}"
-  chmod +x "${BIN_DIR}/osv-scanner"
-fi
+install_semgrep() {
+  want semgrep || { echo "   already installed: $(command -v semgrep || echo "${BIN_DIR}/semgrep")"; return 0; }
+  "$PIP_CMD" install -U semgrep
+}
 
-echo "==> Gitleaks ${GITLEAKS_VERSION}"
-if want gitleaks; then
+install_osv() (
+  want osv-scanner || { echo "   already installed: ${BIN_DIR}/osv-scanner"; return 0; }
+  local tmp
   tmp="$(mktemp -d)"
-  curl -fsSL -o "${tmp}/gitleaks.tgz" \
-    "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${GL_A}.tar.gz"
-  tar -xzf "${tmp}/gitleaks.tgz" -C "${BIN_DIR}" gitleaks
-  chmod +x "${BIN_DIR}/gitleaks"
-  rm -rf "${tmp}"
-fi
+  trap 'rm -rf "$tmp"' EXIT
+  download \
+    "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_${OSV_A}" \
+    "${tmp}/osv-scanner"
+  install -m 0755 "${tmp}/osv-scanner" "${BIN_DIR}/osv-scanner"
+)
 
-echo "==> Trivy ${TRIVY_VERSION} (free, Apache-2.0)"
-if want trivy; then
-  curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-    | sh -s -- -b "${BIN_DIR}" "v${TRIVY_VERSION}"
-fi
+install_gitleaks() (
+  want gitleaks || { echo "   already installed: ${BIN_DIR}/gitleaks"; return 0; }
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  download \
+    "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${GL_A}.tar.gz" \
+    "${tmp}/gitleaks.tgz"
+  tar -xzf "${tmp}/gitleaks.tgz" -C "$tmp" gitleaks
+  install -m 0755 "${tmp}/gitleaks" "${BIN_DIR}/gitleaks"
+)
 
-echo "==> Bearer (free, Elastic License — semantic SAST)"
-if want bearer; then
+install_trivy() (
+  want trivy || { echo "   already installed: ${BIN_DIR}/trivy"; return 0; }
+  local tmp archive
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  archive="trivy_${TRIVY_VERSION}_Linux-${TRIVY_A}.tar.gz"
+  download "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${archive}" "${tmp}/${archive}"
+  tar -xzf "${tmp}/${archive}" -C "$tmp" trivy
+  install -m 0755 "${tmp}/trivy" "${BIN_DIR}/trivy"
+)
+
+install_bearer() {
+  want bearer || { echo "   already installed: ${BIN_DIR}/bearer"; return 0; }
+  # Bearer's official installer selects the matching Linux release and keeps
+  # the version decision in the upstream project.
   curl -sSfL https://raw.githubusercontent.com/Bearer/bearer/main/contrib/install.sh \
-    | sh -s -- -b "${BIN_DIR}"
-fi
+    | sh -s -- -b "$BIN_DIR"
+}
 
-echo "Done. Installed tools:"
-for t in semgrep bearer trivy npm osv-scanner gitleaks; do
-  printf "  %-14s %s\n" "$t" "$(command -v "$t" 2>/dev/null || echo 'not found')"
+run_install "Semgrep" install_semgrep
+if installed npm; then
+  echo "==> npm audit (provided by npm)"
+else
+  echo "==> npm audit"
+  echo "   [warn] npm not found — install Node.js/npm to enable npm audit" >&2
+fi
+run_install "OSV-Scanner ${OSV_SCANNER_VERSION}" install_osv
+run_install "Gitleaks ${GITLEAKS_VERSION}" install_gitleaks
+run_install "Trivy ${TRIVY_VERSION}" install_trivy
+run_install "Bearer" install_bearer
+
+echo "==> Installed tools"
+for tool in semgrep bearer trivy npm osv-scanner gitleaks; do
+  if installed "$tool"; then
+    printf '  %-14s %s\n' "$tool" "$(command -v "$tool" 2>/dev/null || echo "${BIN_DIR}/${tool}")"
+  else
+    printf '  %-14s not found\n' "$tool"
+  fi
 done
+
+if [ "${#failures[@]}" -gt 0 ]; then
+  printf '\nFailed tools: %s\n' "${failures[*]}" >&2
+  exit 1
+fi

@@ -47,6 +47,21 @@ say()  { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+if [ "$MODE" != "docker" ]; then
+  if [ "$(uname -s)" != "Linux" ]; then
+    echo "Local setup supports Ubuntu Linux only. Use ./setup.sh --docker on other hosts." >&2
+    exit 1
+  fi
+  if [ -r /etc/os-release ]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    if [ "${ID:-}" != "ubuntu" ]; then
+      echo "Local setup supports Ubuntu only. Use Docker on other distributions." >&2
+      exit 1
+    fi
+  fi
+fi
+
 # Run a command with sudo only if we are not already root and sudo exists.
 maybe_sudo() {
   if [ "$(id -u)" -eq 0 ]; then "$@"; elif have sudo; then sudo "$@"; else
@@ -75,10 +90,17 @@ if [ "$MODE" = "update" ]; then
     # shellcheck disable=SC1091
     source "$VENV_DIR/bin/activate"
   fi
-  pip install -U semgrep || warn "semgrep update failed"
+  if have pip; then PIP_CMD=pip;
+  elif have pip3; then PIP_CMD=pip3;
+  else PIP_CMD=""; fi
+  if [ -n "$PIP_CMD" ]; then
+    "$PIP_CMD" install -U semgrep || warn "semgrep update failed"
+  else
+    warn "pip is unavailable; semgrep was not updated"
+  fi
   if [ -w /usr/local/bin ]; then BIN_DIR=/usr/local/bin;
   else BIN_DIR="$HOME/.local/bin"; mkdir -p "$BIN_DIR"; fi
-  FORCE=1 BIN_DIR="$BIN_DIR" bash scripts/install-tools.sh \
+  FORCE=1 BIN_DIR="$BIN_DIR" PIP_CMD="${PIP_CMD:-pip3}" bash scripts/install-tools.sh \
     || warn "some tools failed to update"
   say "Update done. Check versions in the Monitor tab or: curl -s localhost:8000/api/tools"
   echo "Tip: bump the pinned versions in scripts/install-tools.sh / Dockerfile to control what --update installs."
@@ -110,22 +132,24 @@ if [ "${#NEED_APT[@]}" -gt 0 ]; then
 fi
 
 have python3 || { echo "Python 3 is required."; exit 1; }
-say "Python: $(python3 --version 2>&1)"
+PYTHON=python3
+say "Python: $($PYTHON --version 2>&1)"
 
 # ------------------------------------------------------------------ python deps
 PIP="pip3"
 if [ "$USE_VENV" -eq 1 ]; then
   say "Creating virtualenv at ./$VENV_DIR"
-  python3 -m venv "$VENV_DIR"
+  "$PYTHON" -m venv "$VENV_DIR"
   # shellcheck disable=SC1091
   source "$VENV_DIR/bin/activate"
   PIP="pip"
 fi
+export PIP_CMD="$PIP"
 
 say "Installing Python dependencies / 安裝 Python 相依套件"
-$PIP install --upgrade pip || warn "could not upgrade pip (continuing)"
-$PIP install -r requirements.txt
-$PIP install pytest            # for the verification step
+"$PIP" install --upgrade pip || warn "could not upgrade pip (continuing)"
+"$PIP" install -r requirements.txt
+"$PIP" install pytest            # for the verification step
 
 # ------------------------------------------------------------------ scanners
 if [ "$DO_TOOLS" -eq 1 ]; then
@@ -133,7 +157,7 @@ if [ "$DO_TOOLS" -eq 1 ]; then
 
   # Semgrep is a Python package — install it into this (venv) environment so it
   # is on PATH whenever the app runs.
-  $PIP install semgrep || warn "semgrep install failed"
+  "$PIP" install semgrep || warn "semgrep install failed"
 
   # Native binaries (Trivy, Bearer, OSV-Scanner, Gitleaks) via install-tools.sh.
   if [ -w /usr/local/bin ]; then
@@ -143,7 +167,7 @@ if [ "$DO_TOOLS" -eq 1 ]; then
     mkdir -p "$BIN_DIR"
   fi
   say "Installing scanner binaries into $BIN_DIR"
-  BIN_DIR="$BIN_DIR" bash scripts/install-tools.sh || warn "some tools failed to install"
+  BIN_DIR="$BIN_DIR" PIP_CMD="$PIP" bash scripts/install-tools.sh || warn "some tools failed to install"
 
   case ":$PATH:" in
     *":$BIN_DIR:"*) : ;;
@@ -157,17 +181,36 @@ fi
 
 # ------------------------------------------------------------------ verify
 say "Verifying the build (running tests) / 執行測試驗證"
-if python3 -m pytest -q; then
+TESTS_OK=1
+if "$PYTHON" -m pytest -q; then
   say "Build verified — all tests passed ✅"
 else
   warn "tests reported failures — see output above"
+  TESTS_OK=0
+fi
+
+if [ "$DO_TOOLS" -eq 1 ]; then
+  say "Checking scanner availability / 檢查掃描工具"
+  MISSING_TOOLS=()
+  for tool in semgrep bearer trivy npm osv-scanner gitleaks; do
+    if have "$tool" || [ -x "${BIN_DIR:-/usr/local/bin}/$tool" ]; then
+      echo "  $tool: available"
+    else
+      echo "  $tool: unavailable"
+      MISSING_TOOLS+=("$tool")
+    fi
+  done
 fi
 
 # ------------------------------------------------------------------ done
 ACTIVATE_HINT=""
 [ "$USE_VENV" -eq 1 ] && ACTIVATE_HINT="source $VENV_DIR/bin/activate && "
 
-say "Setup complete / 安裝完成 🎉"
+if [ "$TESTS_OK" -eq 1 ]; then
+  say "Setup complete / 安裝完成 🎉"
+else
+  warn "Setup finished with failed verification tests"
+fi
 echo "Start the server / 啟動服務："
 echo "    ${ACTIVATE_HINT}uvicorn app.main:app --host 0.0.0.0 --port 8000"
 echo "Then open / 然後開啟：  http://localhost:8000"
@@ -177,3 +220,5 @@ if [ "$DO_RUN" -eq 1 ]; then
   say "Starting server (Ctrl-C to stop) / 啟動服務中…"
   exec uvicorn app.main:app --host 0.0.0.0 --port 8000
 fi
+
+[ "$TESTS_OK" -eq 1 ] || exit 1

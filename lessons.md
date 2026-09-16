@@ -1,5 +1,24 @@
 # lessons — SAST Studio
 
+## [2026-09-16] 第 10 輪 — Ubuntu / Docker 自動安裝腳本補強
+
+### 本輪紀錄
+- **需求**：檢視整個 `sast-` 專案並完成可實際使用的自動安裝流程。
+- **專案盤點**：確認 FastAPI + adapter/orchestrator、六個掃描器、Docker Compose/nginx、30 個測試、CI workflow 與既有 `setup.sh`；安裝目標收斂為 Ubuntu 與 Docker。
+- **DevSecOps**：
+  - 強化 `setup.sh` 與 `scripts/install-tools.sh`：Ubuntu 平台檢查、逐工具繼續、原子下載、可寫安裝目錄、最終列出缺少工具；修正 OSV asset URL 與失效的 Trivy version pin。
+  - 保留 `uvicorn[standard]`，因部署目標固定為 Ubuntu 及 Python 3.11 Docker image。
+  - 更新 README（中英）、目前計畫與過時的五工具描述；保留歷史輪次紀錄不改寫。
+- **QA / 驗證**：
+  - Python 測試、Node.js `--check`、Docker Compose `config --quiet`、`git diff --check` 通過。
+  - Git Bash 的 `bash -n` 語法檢查通過；OSV-Scanner、Trivy、Gitleaks pinned release asset URL 回傳 HTTP 200。
+- **未完成的環境驗證**：本機沒有可用 Docker daemon，也不是 Ubuntu，因此未做 Docker build 或 Ubuntu 實際安裝；需在 Ubuntu 主機/CI 執行最後驗收。
+
+### 教訓 / 準則
+- 安裝器不能只驗證「指令跑完」；要驗證 release asset 仍存在、工具實際可被找到，並對 optional scanner 缺失做明確摘要。
+- 安裝器應把「必要的 app 相依」與「可降級的外部掃描器」分開：前者失敗即停，後者逐項繼續並誠實回報。
+- 固定部署目標為 Ubuntu/Docker 後，可以保留 `uvicorn[standard]` 與 Linux binary 路徑，避免為不在範圍內的平台增加分支。
+
 ## [2026-08-16] 第 9 輪 — 工具更新機制 + Docker 監控分頁
 
 ### 本輪紀錄

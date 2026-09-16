@@ -1,12 +1,12 @@
-# SAST Studio — bundles the web app together with all five scanners.
+# SAST Studio — bundles the web app together with all six scanners.
 #
 # Docker Engine + Compose on Linux are free (Apache-2.0); only the Docker
 # Desktop GUI carries a fee for large orgs, and a server image does not need it.
 FROM python:3.11-slim
 
 ARG OSV_SCANNER_VERSION=1.9.2
-ARG GITLEAKS_VERSION=8.21.2
-ARG TRIVY_VERSION=0.58.1
+ARG GITLEAKS_VERSION=8.30.1
+ARG TRIVY_VERSION=0.74.0
 
 ENV PYTHONUNBUFFERED=1 \
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
@@ -24,7 +24,7 @@ RUN pip install --no-cache-dir semgrep
 RUN arch="$(dpkg --print-architecture)"; \
     case "$arch" in amd64) A=amd64;; arm64) A=arm64;; *) A=amd64;; esac; \
     curl -fsSL -o /usr/local/bin/osv-scanner \
-      "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_${OSV_SCANNER_VERSION}_linux_${A}" \
+      "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_${A}" \
     && chmod +x /usr/local/bin/osv-scanner
 
 # --- Gitleaks (static Go binary) ---
