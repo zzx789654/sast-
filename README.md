@@ -56,14 +56,16 @@ Browser ──► nginx (reverse proxy) ──► FastAPI ──► Orchestrator
 
 `setup.sh` installs everything (system prerequisites, a Python virtualenv with
 all dependencies, and all six scanners), verifies the build by running the test
-suite, and tells you how to start:
+suite, and tells you how to start. In Docker mode it also installs Docker Engine
+and the Compose plugin on Ubuntu when they are missing:
 
 ```bash
 ./setup.sh              # full local setup: venv + deps + scanners + verify
 ./setup.sh --run        # ...and start the server on http://localhost:8000
 ```
 
-Other flags: `./setup.sh --docker` (build & start via Docker Compose instead),
+Other flags: `./setup.sh --docker` (install Docker if needed, then build & start
+via Docker Compose),
 `--no-tools` (Python app only — scanners degrade gracefully), `--no-venv`
 (install into the current environment), `--help`.
 

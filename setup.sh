@@ -68,13 +68,75 @@ maybe_sudo() {
     warn "need root to run: $*  (skipping)"; return 1; fi
 }
 
+install_docker() {
+  if have docker && { docker compose version >/dev/null 2>&1 || have docker-compose; }; then
+    return 0
+  fi
+
+  if [ "$(uname -s)" != "Linux" ] || [ ! -r /etc/os-release ]; then
+    echo "Docker auto-install supports Ubuntu Linux only." >&2
+    return 1
+  fi
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  if [ "${ID:-}" != "ubuntu" ]; then
+    echo "Docker auto-install supports Ubuntu only." >&2
+    return 1
+  fi
+  have apt-get || { echo "apt-get is required to install Docker." >&2; return 1; }
+
+  say "Installing Docker Engine and Compose from Docker's official repository"
+  maybe_sudo apt-get update -q
+  maybe_sudo apt-get install -y --no-install-recommends ca-certificates curl gnupg
+  maybe_sudo install -m 0755 -d /etc/apt/keyrings
+  maybe_sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+    -o /etc/apt/keyrings/docker.asc
+  maybe_sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+  DOCKER_CODENAME="${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}"
+  DOCKER_ARCH="$(dpkg --print-architecture)"
+  [ -n "$DOCKER_CODENAME" ] || { echo "Could not determine Ubuntu codename." >&2; return 1; }
+  printf '%s\n' \
+    'Types: deb' \
+    'URIs: https://download.docker.com/linux/ubuntu' \
+    "Suites: $DOCKER_CODENAME" \
+    'Components: stable' \
+    "Architectures: $DOCKER_ARCH" \
+    'Signed-By: /etc/apt/keyrings/docker.asc' \
+    | maybe_sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null
+
+  maybe_sudo apt-get update -q
+  if have docker; then
+    maybe_sudo apt-get install -y --no-install-recommends docker-compose-plugin
+  else
+    maybe_sudo apt-get install -y --no-install-recommends \
+      docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  fi
+
+  if have systemctl; then
+    maybe_sudo systemctl enable --now docker || warn "Docker service could not be started automatically"
+  fi
+  if [ "$(id -u)" -ne 0 ] && have sudo && ! id -nG "$USER" | tr ' ' '\n' | command grep -qx docker; then
+    maybe_sudo usermod -aG docker "$USER" || warn "could not add $USER to the docker group"
+    warn "log out and back in before using Docker without sudo"
+  fi
+}
+
 # ------------------------------------------------------------------ docker path
 if [ "$MODE" = "docker" ]; then
   say "Docker mode / 使用 Docker 建立"
-  have docker || { echo "Docker is not installed."; exit 1; }
-  if docker compose version >/dev/null 2>&1; then COMPOSE="docker compose";
-  elif have docker-compose; then COMPOSE="docker-compose";
-  else echo "Docker Compose is not available."; exit 1; fi
+  install_docker || { echo "Docker installation failed." >&2; exit 1; }
+  have docker || { echo "Docker is not available after installation."; exit 1; }
+  if docker info >/dev/null 2>&1; then
+    if docker compose version >/dev/null 2>&1; then COMPOSE="docker compose";
+    elif have docker-compose; then COMPOSE="docker-compose";
+    else echo "Docker Compose is not available."; exit 1; fi
+  elif have sudo && sudo docker info >/dev/null 2>&1 && sudo docker compose version >/dev/null 2>&1; then
+    COMPOSE="sudo docker compose"
+  else
+    echo "Docker daemon is not available to the current user." >&2
+    exit 1
+  fi
   say "Building and starting containers (this pulls the six scanners)…"
   $COMPOSE up --build -d
   say "Done. Open http://localhost:8080"
