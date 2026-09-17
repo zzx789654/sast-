@@ -94,8 +94,10 @@ jobs:
             fi
           }
 
-          # Source code and configuration scan.
-          run_scan semgrep semgrep scan --config auto --error --metrics=off --json .
+          # Source code scan without telemetry. Explicit language rules avoid
+          # Semgrep's auto-config metrics requirement while covering this repo.
+          run_scan semgrep semgrep scan --config p/python --config p/javascript \
+            --error --metrics=off --json .
 
           # Python dependency scan of the complete installed environment.
           run_scan pip-audit pip-audit --progress-spinner off --format json
