@@ -1,5 +1,24 @@
 # lessons — SAST Studio
 
+## [2026-09-17] 第 11 輪 — 完整掃描後的依賴與映像優化
+
+### 本輪計畫
+- 依完整 CI 掃描結果修正可確認的依賴與 Docker 安全問題，並重新驗證。
+- 保留 Bearer 的疑似誤報供人工複核，不直接關閉規則。
+
+### 掃描基線
+- Semgrep：0 個發現；Gitleaks：未發現密鑰。
+- Bearer：1 Critical、3 High，初步檢視為安全實作造成的疑似誤報。
+- OSV：`requirements.txt` 的 `python-multipart>=0.0.9` 允許已知弱點版本。
+- pip-audit：CI 工具環境的 setuptools 版本過舊。
+- Trivy：Dockerfile 缺少 HEALTHCHECK；映像內基礎套件與工具鏈仍有多項弱點。
+
+### 本輪修正
+- 將 `python-multipart` 下限提升至 `0.0.30`。
+- Dockerfile 與 Ubuntu `setup.sh` 升級 `pip/setuptools/wheel`。
+- Dockerfile 建置時更新 Debian 套件並加入 HTTP health check。
+- CI 測試與安全掃描同步使用新版 Python 打包工具鏈。
+
 ## [2026-09-16] 第 10 輪 — Ubuntu / Docker 自動安裝腳本補強
 
 ### 本輪紀錄

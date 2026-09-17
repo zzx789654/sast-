@@ -19,7 +19,14 @@ ENV PYTHONUNBUFFERED=1 \
 # --- OS packages: git (clone) + node/npm (npm audit) + curl (fetch tools) ---
 RUN apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
         git curl ca-certificates nodejs npm \
+    && apt-get -o Acquire::Retries=5 upgrade -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
+
+# Keep the packaging toolchain current so the runtime does not carry known
+# vulnerabilities from the base image's bundled pip/setuptools/wheel.
+RUN python -m pip install --no-cache-dir --upgrade \
+      --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" \
+      pip setuptools wheel
 
 # --- Semgrep (pip, pulls the Python engine) ---
 RUN python -m pip install --no-cache-dir --prefer-binary \
@@ -62,4 +69,6 @@ RUN useradd -m appuser && mkdir -p /data/workspaces && chown -R appuser /data
 USER appuser
 
 EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

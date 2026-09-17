@@ -212,7 +212,8 @@ PIP_RETRIES="${PIP_RETRIES:-10}"
 export PIP_DEFAULT_TIMEOUT="$PIP_TIMEOUT" PIP_RETRIES="$PIP_RETRIES"
 
 say "Installing Python dependencies / 安裝 Python 相依套件"
-"$PIP" install --upgrade pip --timeout "$PIP_TIMEOUT" --retries "$PIP_RETRIES" \
+"$PIP" install --upgrade pip setuptools wheel \
+  --timeout "$PIP_TIMEOUT" --retries "$PIP_RETRIES" \
   || warn "could not upgrade pip (continuing)"
 "$PIP" install --prefer-binary --timeout "$PIP_TIMEOUT" --retries "$PIP_RETRIES" \
   -r requirements.txt
