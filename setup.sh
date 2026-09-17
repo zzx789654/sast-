@@ -207,11 +207,17 @@ if [ "$USE_VENV" -eq 1 ]; then
   PIP="pip"
 fi
 export PIP_CMD="$PIP"
+PIP_TIMEOUT="${PIP_TIMEOUT:-600}"
+PIP_RETRIES="${PIP_RETRIES:-10}"
+export PIP_DEFAULT_TIMEOUT="$PIP_TIMEOUT" PIP_RETRIES="$PIP_RETRIES"
 
 say "Installing Python dependencies / 安裝 Python 相依套件"
-"$PIP" install --upgrade pip || warn "could not upgrade pip (continuing)"
-"$PIP" install -r requirements.txt
-"$PIP" install pytest            # for the verification step
+"$PIP" install --upgrade pip --timeout "$PIP_TIMEOUT" --retries "$PIP_RETRIES" \
+  || warn "could not upgrade pip (continuing)"
+"$PIP" install --prefer-binary --timeout "$PIP_TIMEOUT" --retries "$PIP_RETRIES" \
+  -r requirements.txt
+"$PIP" install --prefer-binary --timeout "$PIP_TIMEOUT" --retries "$PIP_RETRIES" \
+  pytest            # for the verification step
 
 # ------------------------------------------------------------------ scanners
 if [ "$DO_TOOLS" -eq 1 ]; then
@@ -219,7 +225,8 @@ if [ "$DO_TOOLS" -eq 1 ]; then
 
   # Semgrep is a Python package — install it into this (venv) environment so it
   # is on PATH whenever the app runs.
-  "$PIP" install semgrep || warn "semgrep install failed"
+  "$PIP" install --prefer-binary --timeout "$PIP_TIMEOUT" --retries "$PIP_RETRIES" \
+    semgrep || warn "semgrep install failed"
 
   # Native binaries (Trivy, Bearer, OSV-Scanner, Gitleaks) via install-tools.sh.
   if [ -w /usr/local/bin ]; then

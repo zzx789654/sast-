@@ -6,7 +6,11 @@
 # to the FastAPI backend, which is not published to the host directly.
 services:
   sast-studio:
-    build: .
+    build:
+      context: .
+      args:
+        PIP_TIMEOUT: ${PIP_TIMEOUT:-600}
+        PIP_RETRIES: ${PIP_RETRIES:-10}
     image: sast-studio:latest
     # Internal only — reachable by nginx over the compose network, not the host.
     expose:

@@ -69,6 +69,13 @@ via Docker Compose),
 `--no-tools` (Python app only — scanners degrade gracefully), `--no-venv`
 (install into the current environment), `--help`.
 
+If the network is slow while downloading Python packages, increase the retry
+window without editing the files:
+
+```bash
+PIP_TIMEOUT=1800 PIP_RETRIES=20 ./setup.sh --docker
+```
+
 ### Option B — Docker (free on Linux servers)
 
 Docker Engine + Compose are free (Apache-2.0); only the Docker **Desktop** GUI

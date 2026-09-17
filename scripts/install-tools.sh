@@ -12,6 +12,8 @@ GITLEAKS_VERSION="${GITLEAKS_VERSION:-8.30.1}"
 TRIVY_VERSION="${TRIVY_VERSION:-0.74.0}"
 BIN_DIR="${BIN_DIR:-/usr/local/bin}"
 PIP_CMD="${PIP_CMD:-pip3}"
+PIP_TIMEOUT="${PIP_TIMEOUT:-600}"
+PIP_RETRIES="${PIP_RETRIES:-10}"
 FORCE="${FORCE:-0}"
 
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -72,7 +74,8 @@ esac
 
 install_semgrep() {
   want semgrep || { echo "   already installed: $(command -v semgrep || echo "${BIN_DIR}/semgrep")"; return 0; }
-  "$PIP_CMD" install -U semgrep
+  "$PIP_CMD" install --prefer-binary --timeout "$PIP_TIMEOUT" \
+    --retries "$PIP_RETRIES" -U semgrep
 }
 
 install_osv() (
