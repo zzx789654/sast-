@@ -19,6 +19,11 @@
 - Dockerfile 建置時更新 Debian 套件並加入 HTTP health check。
 - CI 測試與安全掃描同步使用新版 Python 打包工具鏈。
 
+### 驗證結果
+- CI run `35220466017` 成功；測試、Docker build、報告上傳皆通過。
+- Semgrep、pip-audit、Trivy filesystem/IaC、Gitleaks、Bearer 均完成；OSV 已無發現。
+- Docker image 仍有基礎 Debian 與內嵌掃描器二進位檔的弱點，需持續隨上游版本更新；目前 CI 以報告警告、不阻擋建置。
+
 ## [2026-09-16] 第 10 輪 — Ubuntu / Docker 自動安裝腳本補強
 
 ### 本輪紀錄
