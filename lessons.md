@@ -1,5 +1,29 @@
 # lessons — SAST Studio
 
+## [2026-09-18] 第 13 輪 — CI 驗證（G5）與映像掃描結果判讀
+
+### 本輪紀錄
+- **需求**：執行 CI 驗證。使用者選定「直接推 main」。
+- **CI 執行**：
+  - Run `35350129044`（commit 8734e66）：Tests ✅、Full security scan ✅，整體綠燈。
+  - Run `35350605149`（commit 64fe7f5）：同上綠燈。
+- **原始碼面全數乾淨**：semgrep 0、pip-audit 0、osv-scanner 0、trivy-fs 0、gitleaks 0、bearer 0、docker-build 0。唯一非零是 `trivy-image: 1`（映像層掃描）。
+- **重要判讀**：workflow 刻意把掃描器失敗降級為 warning（不擋 build），所以**綠燈不等於掃描乾淨**，必須實際下載 artifact 判讀。本輪下載兩次 artifact 逐項確認。
+- **映像 11 個 CRITICAL 的歸屬**：0 個在本專案程式碼或 Python 相依；全部落在 Debian base image 的 Node.js 套件（`fix=none`，上游尚無修補）與**內嵌掃描器二進位檔自身**（osv-scanner / gitleaks / trivy 的 Go stdlib 與依賴）。
+- **一個真實但最終判定為誤報的追查**：Trivy 回報 Python 層 `setuptools 70.3.0`(HIGH) 與 `msgpack 1.1.2`(HIGH)。初判為「Dockerfile 先升級 setuptools，但之後裝 semgrep 又被降回」，遂加上「semgrep 之後重新升級」的修正並推 CI 驗證。結果版本數字**完全沒變**，逐層追查後才確認真相：這兩筆的 `FilePath = None`，與其他 16 個 pip 內嵌套件（CacheControl / distlib / resolvelib / truststore…）同屬 base image 的 SBOM 中繼資料，**不是映像檔案系統中的實體檔案**；磁碟上實際存在的是 `setuptools 84.0.0` 與 `msgpack 1.2.2`（皆有真實 FilePath）。
+- **修正保留與否**：`64fe7f5` 的 Dockerfile 修改保留——它確實把 msgpack 由 1.1.2 升到 1.2.2（有實體路徑佐證），對 setuptools 則是無害的冪等操作（早已是 84.0.0）。
+- **過關狀態**：G1–G4 ✅ 維持；**G5 ✅**（CI 綠燈 + 原始碼面零 Critical/High + 無硬編碼密鑰）。G6 ⏳ 未進行。
+
+### 教訓 / 準則
+- **情境**：CI 綠燈，但管線把掃描器失敗設成 warning。
+  **準則**：綠燈只證明「管線沒爆」，不證明「掃描乾淨」。設計成非阻擋的 gate，**必須搭配人工判讀 artifact** 才算真的過 G5；否則等於自己把安全 gate 關掉還以為過了。
+- **情境**：掃描器回報某套件版本過舊，但升級後版本數字完全沒變。
+  **準則**：先確認那筆發現**有沒有實體檔案路徑**。`FilePath = None` 通常來自 base image 的 SBOM 中繼資料或工具內嵌清單，不代表檔案系統真的有那個版本。用「同一份報告裡同名套件的另一筆有無路徑」交叉比對，比反覆改 Dockerfile 快得多。
+- **情境**：容器映像掃出上百個 Critical/High。
+  **準則**：先分層歸屬再決定行動——base image OS 套件（受上游擺布、可能 fix=none）、內嵌第三方二進位（本專案刻意打包的掃描器）、自己的應用相依（唯一完全可控）。本專案第三類為零，前兩類只能隨上游更新，硬追會變成無止境的噪音。
+- **情境**：想「先修再驗」時手邊沒有 Docker daemon。
+  **準則**：無法本機重現的建置類修正，就誠實走 CI 驗證一輪，並且**驗證後要回頭確認數字真的變了**——不要推完看到綠燈就當作修好。本輪正是靠這一步才發現原判斷是錯的。
+
 ## [2026-09-18] 第 12 輪 — 掃描政策（Policy Gate）收尾
 
 ### 本輪紀錄
