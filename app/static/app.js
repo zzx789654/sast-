@@ -551,8 +551,13 @@ function renderJob(job) {
   meta.appendChild(el("span", null, `${job.target.kind}: ${job.target.display}`));
   meta.appendChild(el("span", "jstatus " + job.status, t("status." + job.status)));
   if (job.policy) {
-    meta.appendChild(el("span", "policy-pill",
-      t("policy.pill", { name: job.policy.name || job.policy_id })));
+    // Localize via the template id; a customized policy keeps the "_custom"
+    // suffix, so fall back to its base template's label.
+    const baseId = String(job.policy_id || "").replace(/_custom$/, "");
+    const key = "policy.tpl." + baseId;
+    const localized = t(key);
+    const name = localized !== key ? localized : (job.policy.name || job.policy_id);
+    meta.appendChild(el("span", "policy-pill", t("policy.pill", { name })));
   }
   if (job.policy_evaluation && job.policy_evaluation.decision) {
     const decision = job.policy_evaluation.decision;
