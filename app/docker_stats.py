@@ -60,6 +60,7 @@ def collect() -> dict:
         return {"available": False, "reason": f"cannot reach docker: {exc}",
                 "containers": []}
 
+    host_total = _host_memory_total()
     out = []
     for c in containers:
         names = c.get("Names") or []
@@ -76,16 +77,82 @@ def collect() -> dict:
                 item.update(_stats(c["Id"]))
             except Exception:  # noqa: BLE001 - stats are best-effort
                 pass
+        item["capacity"] = _capacity(item, host_total)
         out.append(item)
     return {"available": True, "reason": "", "containers": out}
 
 
+#: Headroom thresholds for the capacity verdict, in percent of the limit.
+WARN_PCT = 75.0
+TIGHT_PCT = 90.0
+
+
+def _capacity(item: dict, host_total: int | None = None) -> dict:
+    """Judge whether a container has enough headroom, not just its raw usage.
+
+    A percentage on its own does not answer "is this enough?": 90% CPU is fine
+    for a scanner that is meant to saturate its cores, while memory at 90% of a
+    hard limit is how a scan gets OOM-killed. So memory is judged against its
+    limit, CPU is reported for load, and an unset memory limit is called out
+    because the container can then exhaust the host instead of itself.
+    """
+    if item.get("state") != "running":
+        return {"level": "idle", "reasons": []}
+
+    reasons: list[str] = []
+    level = "ok"
+    mem_pct, limit = item.get("mem_pct"), item.get("mem_limit")
+
+    # A "limit" equal to host memory means no limit was actually set.
+    unlimited = bool(limit and host_total and limit >= host_total * 0.95)
+    if unlimited:
+        reasons.append("mem_unlimited")
+        level = "warn"
+    elif mem_pct is not None:
+        if mem_pct >= TIGHT_PCT:
+            reasons.append("mem_tight")
+            level = "tight"
+        elif mem_pct >= WARN_PCT:
+            reasons.append("mem_warn")
+            level = "warn"
+
+    if item.get("oom_killed"):
+        reasons.append("oom_killed")
+        level = "tight"
+    if item.get("throttled"):
+        reasons.append("cpu_throttled")
+        level = "tight" if level != "tight" else level
+
+    cpu = item.get("cpu_pct")
+    if cpu is not None and cpu >= TIGHT_PCT and level == "ok":
+        # Sustained high CPU is worth surfacing, but it is not a failure on its
+        # own — scanners are expected to use the cores they are given.
+        reasons.append("cpu_busy")
+        level = "warn"
+
+    return {"level": level, "reasons": reasons, "mem_unlimited": unlimited}
+
+
+def _host_memory_total() -> int | None:
+    try:
+        return int(_get("/info").get("MemTotal") or 0) or None
+    except Exception:  # noqa: BLE001 - informational only
+        return None
+
+
 def _stats(container_id: str) -> dict:
     s = _get(f"/containers/{container_id}/stats?stream=false")
+    # These two are the honest "was it actually short of resources?" signals:
+    # a failed memory allocation, or CPU time taken away by the quota.
+    mem_failcnt = (s.get("memory_stats") or {}).get("failcnt") or 0
+    throttled = ((s.get("cpu_stats") or {}).get("throttling_data") or {}
+                 ).get("throttled_periods") or 0
     return {
         "cpu_pct": _cpu_percent(s),
         **_memory(s),
         **_network(s),
+        "oom_killed": bool(mem_failcnt),
+        "throttled": bool(throttled),
     }
 
 

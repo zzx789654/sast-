@@ -3,11 +3,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import datetime, timezone
+import csv
+import io
 import json
 from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
@@ -258,11 +260,81 @@ async def list_scans() -> dict:
                 "status": j.status.value,
                 "target": j.target.model_dump(),
                 "created_at": j.created_at,
+                "finished_at": j.finished_at,
                 "summary": j.summary,
+                # the report list shows each scan's verdict, so send it along
+                "policy_id": j.policy_id,
+                "decision": (j.policy_evaluation or {}).get("decision", ""),
             }
             for j in jobs
         ]
     }
+
+
+def _csv_safe(value):
+    """Defuse spreadsheet formula injection (CWE-1236).
+
+    Finding text comes from scanned code, so a file name or message could start
+    with =, +, - or @ and be executed as a formula when the CSV is opened. A
+    leading apostrophe makes the cell literal text.
+    """
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
+
+
+#: Column order for the CSV export — stable, so saved files stay comparable.
+_CSV_COLUMNS = [
+    "scan_id", "scanned_at", "target", "policy", "decision",
+    "tool", "severity", "rule_id", "title", "file", "start_line", "end_line",
+    "package", "installed_version", "fixed_version", "cwe", "owasp", "message",
+]
+
+
+@app.get("/api/scans/{job_id}/export.csv")
+async def export_scan_csv(job_id: str) -> Response:
+    """Download one scan's findings as CSV (stdlib csv, no extra dependency)."""
+    job = manager.get(job_id)
+    if job is None:
+        raise HTTPException(404, "scan not found")
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=_CSV_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    decision = (job.policy_evaluation or {}).get("decision", "")
+    for result in job.results.values():
+        for f in result.findings:
+            extra = f.extra or {}
+            writer.writerow({k: _csv_safe(v) for k, v in {
+                "scan_id": job.id,
+                "scanned_at": job.finished_at or job.created_at,
+                "target": job.target.display,
+                "policy": job.policy_id,
+                "decision": decision,
+                "tool": f.tool,
+                "severity": f.severity.value,
+                "rule_id": f.rule_id,
+                "title": f.title,
+                "file": f.file,
+                "start_line": f.start_line if f.start_line is not None else "",
+                "end_line": f.end_line if f.end_line is not None else "",
+                "package": extra.get("package", ""),
+                "installed_version": extra.get("installed_version",
+                                               extra.get("version", "")),
+                "fixed_version": extra.get("fixed_version", ""),
+                "cwe": " ".join(f.cwe),
+                "owasp": " ".join(f.owasp),
+                "message": f.message,
+            }.items()})
+
+    # UTF-8 BOM so Excel opens non-ASCII findings in the right encoding.
+    body = "﻿" + buf.getvalue()
+    return Response(
+        content=body,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition":
+                 f'attachment; filename="sast-scan-{job.id}.csv"'},
+    )
 
 
 @app.get("/api/scans/{job_id}")

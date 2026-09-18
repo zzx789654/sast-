@@ -11,8 +11,10 @@ const state = {
   currentJob: null,   // full job object
   pollTimer: null,
   inspect: null,      // {inventory, tools:[{name, applicable, reason}]} for a path
-  view: "scan",       // "scan" | "monitor"
+  view: "scan",       // "scan" | "report" | "monitor"
   monTimer: null,
+  jobs: [],           // scan history, for the report list
+  selectedJob: null,  // id of the report shown on the right
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -103,33 +105,86 @@ function renderPolicy() {
   const box = $("#policy-rules");
   box.innerHTML = "";
 
+  // A policy is judged on the COMBINED findings of every selected tool, so say
+  // so once up front — "which tool does this rule belong to?" is the single
+  // most common misreading of this panel.
+  box.appendChild(el("p", "policy-scope", t("policy.scope")));
+
   state.policies.rules.forEach((rule) => {
+    const row = el("div", "policy-rule-row");
+
     if (rule.id === "report_retention") {
-      const label = el("label", "policy-rule");
-      label.appendChild(document.createTextNode(t("policy.rule.report_retention") + ": "));
+      const head = el("label", "policy-rule");
+      head.appendChild(document.createTextNode(t("policy.rule.report_retention") + ": "));
       const input = document.createElement("input");
       input.type = "number";
       input.id = "policy-rule-report_retention_days";
       input.min = "1";
       input.max = "3650";
       input.value = selected.report_retention_days;
-      label.appendChild(input);
-      label.appendChild(document.createTextNode(" " + t("policy.days")));
-      box.appendChild(label);
+      head.appendChild(input);
+      head.appendChild(document.createTextNode(" " + t("policy.days")));
+      row.appendChild(head);
+      row.appendChild(el("div", "policy-why", t("policy.why.report_retention")));
+      box.appendChild(row);
       return;
     }
+
     (POLICY_FIELDS[rule.id] || []).forEach((field) => {
-      const label = el("label", "policy-rule");
+      const head = el("label", "policy-rule");
       const input = document.createElement("input");
       input.type = "checkbox";
       input.id = "policy-rule-" + field;
       input.checked = Boolean(selected[field]);
-      label.appendChild(input);
-      label.appendChild(document.createTextNode(
-        " " + t(POLICY_FIELD_LABEL[field] || "policy.rule." + rule.id)));
-      box.appendChild(label);
+      head.appendChild(input);
+      head.appendChild(el("span", "policy-rule-title",
+        t(POLICY_FIELD_LABEL[field] || "policy.rule." + rule.id)));
+      row.appendChild(head);
+
+      // "when X happens -> this scan is judged Y", in plain words.
+      // keyed by field name, which is unique across every rule
+      const key = "policy.why." + field;
+      const why = t(key);
+      if (why !== key) row.appendChild(el("div", "policy-why", why));
+
+      // Which tools can actually produce this kind of finding.
+      if ((rule.sources || []).length) {
+        const src = el("div", "policy-src");
+        src.appendChild(document.createTextNode(t("policy.from") + " "));
+        rule.sources.forEach((name) => {
+          const installed = toolIsAvailable(name);
+          const chip = el("span", "policy-srcchip" + (installed ? "" : " off"), name);
+          if (!installed) chip.title = t("notInstalled").trim();
+          src.appendChild(chip);
+        });
+        row.appendChild(src);
+      }
+
+      // How many findings of this kind the currently shown scan has.
+      const hit = currentRuleHits(rule);
+      if (hit !== null) {
+        row.appendChild(el("div", "policy-hit" + (hit ? " on" : ""),
+          t("policy.hits", { n: hit })));
+      }
+      box.appendChild(row);
     });
   });
+}
+
+function toolIsAvailable(name) {
+  const tools = (state.toolsData && state.toolsData.tools) || [];
+  const tool = tools.find((x) => x.name === name);
+  return tool ? tool.available : true;
+}
+
+// Findings of this rule's kind in the scan currently shown, so the policy panel
+// says what it would mean for *this* project rather than in the abstract.
+function currentRuleHits(rule) {
+  if (!rule.counter || !state.currentJob) return null;
+  const counts = (state.currentJob.policy_evaluation || {}).counts;
+  if (counts && counts[rule.counter] !== undefined) return counts[rule.counter];
+  const summary = state.currentJob.summary || {};
+  return summary[rule.counter] !== undefined ? summary[rule.counter] : null;
 }
 
 function readPolicyOverrides() {
@@ -149,14 +204,31 @@ function wireViewNav() {
     tab.addEventListener("click", () => {
       document.querySelectorAll(".viewtab").forEach((t) => t.classList.remove("active"));
       tab.classList.add("active");
-      state.view = tab.dataset.view;
-      $("#view-scan").classList.toggle("hidden", state.view !== "scan");
-      $("#view-monitor").classList.toggle("hidden", state.view !== "monitor");
-      if (state.view === "monitor") { renderMonitor(); startMonitorPolling(); }
-      else stopMonitorPolling();
+      showView(tab.dataset.view);
     });
   });
   $("#mon-refresh").addEventListener("click", renderMonitor);
+  $("#report-refresh").addEventListener("click", () => refreshScanList(state.selectedJob));
+  $("#export-csv").addEventListener("click", exportCsv);
+  $("#export-pdf").addEventListener("click", () => window.print());
+}
+
+function showView(view) {
+  state.view = view;
+  document.querySelectorAll(".viewtab").forEach((t) =>
+    t.classList.toggle("active", t.dataset.view === view));
+  $("#view-scan").classList.toggle("hidden", view !== "scan");
+  $("#view-report").classList.toggle("hidden", view !== "report");
+  $("#view-monitor").classList.toggle("hidden", view !== "monitor");
+  if (view === "monitor") { renderMonitor(); startMonitorPolling(); }
+  else stopMonitorPolling();
+  if (view === "report") refreshScanList(state.selectedJob);
+}
+
+function exportCsv() {
+  if (!state.selectedJob) return;
+  // A plain navigation lets the browser handle the download + filename.
+  window.location.href = `/api/scans/${state.selectedJob}/export.csv`;
 }
 
 async function renderMonitor() {
@@ -201,9 +273,11 @@ async function loadMonitorDocker() {
     box.appendChild(el("div", "mon-note", t("mon.noContainers")));
     return;
   }
+  box.appendChild(el("div", "mon-subnote", t("cap.hint")));
   const table = el("table", "mon-table");
   const head = el("tr");
-  ["col.name", "col.image", "col.state", "col.cpu", "col.mem", "col.net"]
+  ["col.name", "col.image", "col.state", "col.cpu", "col.mem", "col.net",
+   "col.capacity"]
     .forEach((k) => head.appendChild(el("th", null, t(k))));
   table.appendChild(head);
   d.containers.forEach((c) => {
@@ -217,9 +291,25 @@ async function loadMonitorDocker() {
       : "—"));
     tr.appendChild(el("td", null, c.net_rx != null
       ? formatBytes(c.net_rx) + " / " + formatBytes(c.net_tx) : "—"));
+    tr.appendChild(capacityCell(c.capacity));
     table.appendChild(tr);
   });
   box.appendChild(table);
+}
+
+// Turn the backend's capacity verdict into a badge plus the concrete reasons,
+// so the tab answers "is this container big enough?" rather than just showing
+// numbers the reader still has to interpret.
+function capacityCell(cap) {
+  const td = el("td", "c-cap");
+  if (!cap) { td.textContent = "—"; return td; }
+  td.appendChild(el("span", "cap-badge cap-" + cap.level, t("cap." + cap.level)));
+  (cap.reasons || []).forEach((r) => {
+    const key = "cap." + r;
+    const text = t(key);
+    if (text !== key) td.appendChild(el("div", "cap-why", text));
+  });
+  return td;
 }
 
 function meterCell(pct, text) {
@@ -267,7 +357,6 @@ function wireForm() {
       .forEach((cb) => (cb.checked = true));
     updateToolWarnings();
   });
-  $("#scan-picker").addEventListener("change", (e) => loadJob(e.target.value));
   $("#inspect-btn").addEventListener("click", inspectProject);
   $("#path-input").addEventListener("change", inspectProject);
   $("#tool-checkboxes").addEventListener("change", updateToolWarnings);
@@ -490,6 +579,8 @@ async function startScan() {
     const res = await fetch("/api/scans", { method: "POST", body: fd });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "scan failed to start");
+    // The results live on the Report tab now, so follow the scan over there.
+    showView("report");
     await refreshScanList(data.id);
     startPolling(data.id);
   } catch (e) {
@@ -508,17 +599,94 @@ function showError(msg) {
 async function refreshScanList(selectId) {
   const res = await fetch("/api/scans");
   const data = await res.json();
-  const picker = $("#scan-picker");
-  picker.innerHTML = "";
-  data.jobs.forEach((j) => {
-    const label = `${j.target.display} · ${t("status." + j.status)}`;
-    picker.appendChild(new Option(label.slice(0, 60), j.id));
-  });
+  state.jobs = data.jobs;
   const target = selectId || (data.jobs[0] && data.jobs[0].id);
-  if (target) {
-    picker.value = target;
-    await loadJob(target);
+  state.selectedJob = target || null;
+  renderReportList();
+  if (target) await loadJob(target);
+}
+
+function renderReportList() {
+  const box = $("#report-list");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!state.jobs || !state.jobs.length) {
+    box.appendChild(el("p", "mon-note", t("report.empty")));
+    return;
   }
+  state.jobs.forEach((j) => {
+    const row = el("button", "report-row" +
+      (j.id === state.selectedJob ? " active" : ""));
+    row.appendChild(el("div", "rr-target", shortTarget(j.target.display)));
+
+    const meta = el("div", "rr-meta");
+    meta.appendChild(el("span", "jstatus " + j.status, t("status." + j.status)));
+    if (j.decision) {
+      meta.appendChild(el("span", "policy-decision gate-" + j.decision,
+        t("policy.decision." + j.decision)));
+    }
+    row.appendChild(meta);
+
+    const s = j.summary || {};
+    const counts = el("div", "rr-counts");
+    ["critical", "high", "medium", "low"].forEach((sev) => {
+      if (s[sev]) counts.appendChild(el("span", "rr-c " + sev, `${s[sev]}`));
+    });
+    if (!counts.children.length) counts.appendChild(el("span", "rr-c none", "0"));
+    row.appendChild(counts);
+
+    row.appendChild(el("div", "rr-time", localTime(j.finished_at || j.created_at)));
+    row.addEventListener("click", () => {
+      state.selectedJob = j.id;
+      renderReportList();
+      loadJob(j.id);
+    });
+    box.appendChild(row);
+  });
+}
+
+function shortTarget(display) {
+  const s = String(display || "");
+  return s.length > 42 ? "…" + s.slice(-41) : s;
+}
+
+function localTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString();
+}
+
+//: Severity order and share for the summary bar at the top of a report.
+function renderSevBar(job) {
+  const wrap = $("#sev-bar-wrap");
+  if (!wrap) return;
+  const s = job.summary || {};
+  const order = ["critical", "high", "medium", "low", "info", "unknown"];
+  const total = order.reduce((n, k) => n + (s[k] || 0), 0);
+  if (!total) { wrap.classList.add("hidden"); return; }
+
+  wrap.classList.remove("hidden");
+  const bar = $("#sev-bar");
+  const legend = $("#sev-bar-legend");
+  bar.innerHTML = "";
+  legend.innerHTML = "";
+  bar.setAttribute("aria-label", t("sevbar.label", { n: total }));
+
+  order.forEach((sev) => {
+    const n = s[sev] || 0;
+    if (!n) return;
+    const pct = (n / total) * 100;
+    const seg = el("div", "sev-seg " + sev);
+    seg.style.width = pct.toFixed(2) + "%";
+    seg.title = `${t("sev." + sev)}: ${n} (${pct.toFixed(1)}%)`;
+    bar.appendChild(seg);
+
+    const item = el("span", "sev-leg");
+    item.appendChild(el("span", "sev-dot " + sev));
+    item.appendChild(document.createTextNode(`${t("sev." + sev)} ${n}`));
+    legend.appendChild(item);
+  });
+  legend.appendChild(el("span", "sev-leg total", t("sevbar.total", { n: total })));
 }
 
 function startPolling(jobId) {
@@ -576,6 +744,7 @@ function renderJob(job) {
   if (job.error) meta.appendChild(el("div", "error", job.error));
 
   renderProgress(job);
+  renderSevBar(job);
   renderConfirmBox(job);
   renderSummary(job.summary || {});
   renderToolRows(job.results || {});
@@ -948,9 +1117,8 @@ document.addEventListener("DOMContentLoaded", () => {
     if (state.policies) renderPolicy();
     updateToolWarnings();
     if (state.inspect) renderInspectPanel(state.inspect);
-    const cur = $("#scan-picker").value;
-    if (cur) refreshScanList(cur);          // relabel picker + re-render job
-    else if (state.currentJob) renderJob(state.currentJob);
+    renderReportList();                     // relabel status/verdict chips
+    if (state.currentJob) renderJob(state.currentJob);
     if (state.view === "monitor") { renderMonitorTools(); loadMonitorDocker(); }
   };
   $("#lang-toggle").addEventListener("click",

@@ -36,40 +36,69 @@ class PolicyDefinition(BaseModel):
         return data
 
 
+# Each rule is stated as "when any tool reports X, this scan is judged Y", plus
+# which tools can produce that kind of finding. Rules apply to the *combined*
+# results of every selected tool, never to one tool in particular — saying so
+# explicitly is the point of `sources` and `trigger`/`effect`.
+#
+# "verdict" wording is deliberate: a verdict labels the scan, it does not stop
+# anything. The scan has already finished by the time a policy is evaluated.
 RULE_CATALOG = [
-    {"id": "critical_block", "title": "Critical findings / Critical 一律阻擋",
-     "description": "A Critical finding changes the scan decision to blocked."},
-    {"id": "high_manual_review", "title": "High findings / High 需要人工審查",
-     "description": "A High finding changes a clean decision to manual review."},
-    {"id": "secret_block", "title": "Secrets / Secret 一律阻擋",
-     "description": "A secret finding changes the scan decision to blocked."},
-    {"id": "false_positive_exception", "title": "False-positive exception / 誤報例外",
-     "description": "Exceptions must record an owner, reason, and expiry date."},
-    {"id": "report_retention", "title": "Report retention / 報告保存期限",
-     "description": "Requested report retention period in days."},
-    {"id": "pipeline_events", "title": "PR and release scans / PR 與 Release 前掃描",
-     "description": "Declares whether scans are required before pull requests and releases."},
+    {"id": "critical_block",
+     "trigger": "severity:critical",
+     "effect": "blocked",
+     "sources": ["semgrep", "bearer", "trivy", "npm_audit", "osv_scanner"],
+     "counter": "critical"},
+    {"id": "high_manual_review",
+     "trigger": "severity:high",
+     "effect": "manual_review",
+     "sources": ["semgrep", "bearer", "trivy", "npm_audit", "osv_scanner",
+                 "gitleaks"],
+     "counter": "high"},
+    {"id": "secret_block",
+     "trigger": "kind:secret",
+     "effect": "blocked",
+     "sources": ["gitleaks", "trivy"],
+     "counter": "secrets"},
+    {"id": "false_positive_exception",
+     "trigger": "exception",
+     "effect": "recorded",
+     "sources": [],
+     "counter": "excepted"},
+    {"id": "report_retention",
+     "trigger": "retention",
+     "effect": "metadata",
+     "sources": [],
+     "counter": None},
+    {"id": "pipeline_events",
+     "trigger": "pipeline",
+     "effect": "metadata",
+     "sources": [],
+     "counter": None},
 ]
 
 
 POLICY_TEMPLATES = {
     "standard": PolicyDefinition(
-        id="standard", name="Standard / 標準",
-        description="阻擋 Critical 與 Secret；High 需要人工審查；適合一般團隊日常掃描。",
+        id="standard", name="Standard",
+        description="Critical findings and secrets fail the scan; High findings "
+                    "need a reviewer. Suits everyday team scanning.",
         block_critical=True, high_requires_review=True, block_secrets=True,
         exception_requires_owner_reason_expiry=True, report_retention_days=30,
         require_pull_request_scan=False, require_release_scan=False,
     ),
     "strict": PolicyDefinition(
-        id="strict", name="Strict / 嚴格",
-        description="所有 PR 與 Release 前都必須掃描，並阻擋 Critical、Secret，High 需審查。",
+        id="strict", name="Strict",
+        description="Same verdicts as Standard, and additionally declares that a "
+                    "scan is required before every pull request and release.",
         block_critical=True, high_requires_review=True, block_secrets=True,
         exception_requires_owner_reason_expiry=True, report_retention_days=90,
         require_pull_request_scan=True, require_release_scan=True,
     ),
     "report_only": PolicyDefinition(
-        id="report_only", name="Report-only / 僅報告",
-        description="只產生報告，不阻擋掃描；適合導入初期建立基準線。",
+        id="report_only", name="Report-only",
+        description="Every scan passes; findings are only listed. Suits "
+                    "establishing a baseline when first adopting scanning.",
         block_critical=False, high_requires_review=False, block_secrets=False,
         exception_requires_owner_reason_expiry=True, report_retention_days=7,
         require_pull_request_scan=False, require_release_scan=False,

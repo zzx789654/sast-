@@ -292,3 +292,84 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 .finding .ftags { display: flex; gap: .3rem; flex-wrap: wrap; margin-top: .3rem; }
 .finding .ftag { font-size: .68rem; background: var(--bg); border: 1px solid var(--line); padding: .05rem .35rem; border-radius: 4px; }
 .empty { color: var(--muted); font-size: .88rem; padding: .8rem 0; }
+
+/* ---------------------------------------------------------------- report view
+   Master/detail: scan history on the left, the selected report on the right. */
+.layout-single { grid-template-columns: minmax(0, 560px); justify-content: start; }
+.report-wrap {
+  display: grid; grid-template-columns: 300px 1fr; gap: 1rem;
+  padding: 1rem 1.25rem; align-items: start;
+}
+@media (max-width: 900px) { .report-wrap { grid-template-columns: 1fr; } }
+
+.report-list-panel { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow-y: auto; }
+.report-list { display: flex; flex-direction: column; gap: .35rem; }
+.report-row {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  padding: .5rem .6rem; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: var(--ink); font: inherit;
+}
+.report-row:hover { border-color: var(--accent); }
+.report-row.active { border-color: var(--accent); background: var(--panel); box-shadow: inset 3px 0 0 var(--accent); }
+.rr-target { font-size: .82rem; font-weight: 600; word-break: break-all; margin-bottom: .25rem; }
+.rr-meta { display: flex; gap: .3rem; flex-wrap: wrap; align-items: center; margin-bottom: .25rem; }
+.rr-counts { display: flex; gap: .25rem; flex-wrap: wrap; margin-bottom: .2rem; }
+.rr-c { font-size: .68rem; padding: .02rem .3rem; border-radius: 4px; color: #fff; }
+.rr-c.critical { background: var(--crit); } .rr-c.high { background: var(--high); }
+.rr-c.medium { background: var(--med); } .rr-c.low { background: var(--low); }
+.rr-c.none { background: var(--unknown); }
+.rr-time { font-size: .7rem; color: var(--muted); }
+.export-btns { display: flex; gap: .5rem; }
+
+/* severity breakdown bar */
+.sev-bar-wrap { margin: .1rem 0 .8rem; }
+.sev-bar { display: flex; height: 14px; border-radius: 999px; overflow: hidden; background: var(--line); }
+.sev-seg { height: 100%; }
+.sev-seg.critical { background: var(--crit); } .sev-seg.high { background: var(--high); }
+.sev-seg.medium { background: var(--med); } .sev-seg.low { background: var(--low); }
+.sev-seg.info { background: var(--info); } .sev-seg.unknown { background: var(--unknown); }
+.sev-bar-legend { display: flex; gap: .7rem; flex-wrap: wrap; margin-top: .35rem; font-size: .74rem; color: var(--muted); }
+.sev-leg { display: inline-flex; align-items: center; gap: .25rem; }
+.sev-leg.total { font-weight: 600; color: var(--ink); }
+.sev-dot { width: .55rem; height: .55rem; border-radius: 50%; display: inline-block; }
+.sev-dot.critical { background: var(--crit); } .sev-dot.high { background: var(--high); }
+.sev-dot.medium { background: var(--med); } .sev-dot.low { background: var(--low); }
+.sev-dot.info { background: var(--info); } .sev-dot.unknown { background: var(--unknown); }
+
+/* policy panel: one block per rule, explained in plain words */
+.policy-scope { font-size: .74rem; color: var(--muted); margin: 0 0 .5rem; line-height: 1.5; }
+.policy-rule-row { padding: .4rem 0; border-top: 1px solid var(--line); }
+.policy-rule-row:first-of-type { border-top: none; }
+.policy-rule-title { font-size: .82rem; color: var(--ink); }
+.policy-why { font-size: .73rem; color: var(--muted); margin: .2rem 0 .15rem 1.35rem; line-height: 1.5; }
+.policy-src { font-size: .7rem; color: var(--muted); margin-left: 1.35rem; display: flex; flex-wrap: wrap; gap: .25rem; align-items: center; }
+.policy-srcchip { font-family: ui-monospace, monospace; font-size: .66rem; border: 1px solid var(--line); border-radius: 4px; padding: .02rem .28rem; background: var(--bg); }
+.policy-srcchip.off { opacity: .45; text-decoration: line-through; }
+.policy-hit { font-size: .7rem; color: var(--muted); margin: .2rem 0 0 1.35rem; }
+.policy-hit.on { color: var(--high); font-weight: 600; }
+
+/* docker capacity verdict */
+.c-cap { min-width: 150px; }
+.cap-badge { display: inline-block; font-size: .7rem; padding: .05rem .4rem; border-radius: 999px; border: 1px solid var(--line); }
+.cap-ok { color: var(--ok); border-color: var(--ok); }
+.cap-warn { color: var(--high); border-color: var(--high); }
+.cap-tight { color: var(--crit); border-color: var(--crit); }
+.cap-idle { color: var(--unknown); }
+.cap-why { font-size: .68rem; color: var(--muted); margin-top: .2rem; line-height: 1.4; }
+
+/* ---------------------------------------------------------------- print / PDF
+   "Export PDF" is the browser's own print-to-PDF, so the printed page drops the
+   chrome and keeps the report itself readable in black and white. */
+@media print {
+  .topbar, .viewnav, #view-scan, #view-monitor,
+  .report-list-panel, .export-btns, .filters, #confirm-box,
+  #progress-wrap { display: none !important; }
+  body { background: #fff; color: #000; }
+  .report-wrap { display: block; padding: 0; }
+  .panel { border: none; box-shadow: none; padding: 0; }
+  .finding { break-inside: avoid; page-break-inside: avoid; border: 1px solid #ccc; margin-bottom: .5rem; }
+  .fsnippet { background: #f6f6f6; border-color: #ccc; white-space: pre-wrap; }
+  .sev-bar { border: 1px solid #999; }
+  .report-detail-panel { max-width: 100%; }
+  a[href]::after { content: ""; }
+}

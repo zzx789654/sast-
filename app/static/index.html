@@ -23,10 +23,11 @@
 
   <nav class="viewnav" role="tablist">
     <button class="viewtab active" data-view="scan" data-i18n="nav.scan">掃描</button>
+    <button class="viewtab" data-view="report" data-i18n="nav.report">報告</button>
     <button class="viewtab" data-view="monitor" data-i18n="nav.monitor">監控</button>
   </nav>
 
-  <main id="view-scan" class="layout">
+  <main id="view-scan" class="layout layout-single">
     <!-- ---- scan configuration ------------------------------------- -->
     <section class="panel" aria-labelledby="new-scan-h">
       <h2 id="new-scan-h" data-i18n="sec.newScan">新增掃描</h2>
@@ -82,14 +83,35 @@
       <p id="form-error" class="error hidden" role="alert"></p>
     </section>
 
-    <!-- ---- results ------------------------------------------------- -->
-    <section class="panel results" aria-labelledby="results-h">
+  </main>
+
+
+  <!-- ---- report view (scan history + detail) --------------------- -->
+  <section id="view-report" class="report-wrap hidden">
+    <aside class="panel report-list-panel">
+      <div class="results-head">
+        <h2 data-i18n="sec.reports">掃描報告</h2>
+        <button id="report-refresh" class="linkbtn" data-i18n="mon.refresh">重新整理</button>
+      </div>
+      <div id="report-list" class="report-list"></div>
+    </aside>
+
+    <section class="panel report-detail-panel" aria-labelledby="results-h">
       <div class="results-head">
         <h2 id="results-h" data-i18n="sec.results">結果</h2>
-        <select id="scan-picker" aria-label="pick a scan"></select>
+        <div class="export-btns">
+          <button id="export-csv" class="linkbtn" data-i18n="export.csv">匯出 CSV</button>
+          <button id="export-pdf" class="linkbtn" data-i18n="export.pdf">匯出 PDF</button>
+        </div>
       </div>
 
       <div id="scan-meta" class="scan-meta"></div>
+
+      <!-- severity breakdown as a single proportional bar -->
+      <div id="sev-bar-wrap" class="sev-bar-wrap hidden">
+        <div id="sev-bar" class="sev-bar" role="img"></div>
+        <div id="sev-bar-legend" class="sev-bar-legend"></div>
+      </div>
 
       <div id="progress-wrap" class="progress-wrap hidden">
         <div class="progress-head">
@@ -114,7 +136,7 @@
 
       <div id="findings" class="findings"></div>
     </section>
-  </main>
+  </section>
 
   <!-- ---- monitor view ------------------------------------------- -->
   <section id="view-monitor" class="monitor-wrap hidden">

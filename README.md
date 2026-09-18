@@ -134,17 +134,32 @@ Any tool you don't install simply shows as unavailable.
 > tool's own wording (usually English); the UI adds a localized severity note
 > alongside it.
 
+### Tabs
+
+* **Scan** — pick a target, the tools and the policy, then start a scan.
+* **Reports** — scan history on the left, the selected report on the right,
+  with a severity breakdown bar, CSV export and PDF export (the browser's own
+  print-to-PDF, styled for print).
+* **Monitor** — scanner versions plus Docker container performance and a
+  capacity verdict (see below).
+
 ### Scan policy templates
 
 Before starting a scan, choose a built-in policy template. The selected policy
-is copied into the job and its gate decision is shown with the results.
+is copied into the job and its verdict is shown with the results.
 
-* **Standard / 標準**: block Critical and secrets; require manual review for
-  High findings; retain the policy target for 30 days.
-* **Strict / 嚴格**: the Standard gates plus required pull-request and release
-  scans; retain the policy target for 90 days.
-* **Report-only / 僅報告**: collect findings without blocking; useful for an
-  initial baseline; retain the policy target for 7 days.
+A policy is judged on the **combined findings of every tool you selected** — no
+rule belongs to one particular tool, and the panel lists which tools can report
+each kind of finding. The verdict labels the scan; it does not stop the scan or
+block a deployment, because the tools have already finished by the time the
+policy runs.
+
+* **Standard**: a Critical finding or a leaked secret fails the scan; a High
+  finding needs a reviewer. Retention target 30 days.
+* **Strict**: the same verdicts as Standard, and additionally declares that a
+  scan is required before every pull request and release. Retention 90 days.
+* **Report-only**: every scan passes and findings are only listed — useful for
+  an initial baseline. Retention 7 days.
 
 The six policy rules are independent fields: Critical blocking, High manual
 review, secret blocking, false-positive exception metadata (owner/reason/expiry),
@@ -155,6 +170,21 @@ A **manual review** decision needs a reviewer name and a note before it can be
 approved or rejected. A **blocked** decision can be cleared by recording a
 time-limited false-positive exception (owner and reason required) against a
 specific finding; once the exception expires, that finding counts again.
+
+### Docker capacity (Monitor tab)
+
+Raw CPU and memory percentages do not answer "is this container big enough?",
+so each running container also gets a verdict:
+
+* **Memory** is judged against its limit, because hitting the limit is what
+  gets a scan OOM-killed. A limit equal to host memory means no limit was set,
+  which is flagged too: the container can then starve the host.
+* **CPU** is reported for load and flagged only when the quota actually
+  throttles it — a busy scanner using its cores is normal, just slower.
+* A failed allocation (OOM) or an observed throttle outranks any percentage,
+  since those are evidence rather than a prediction.
+
+Check the tab while a scan is running: that is when a container is under load.
 
 The application records retention and PR/release requirements in the policy
 metadata. Enforcing repository retention and GitHub PR/release checks still
@@ -172,6 +202,7 @@ The UI is a thin client over a small JSON API — handy for scripting/CI:
 | `POST /api/inspect` | inventory a local path + per-tool applicability |
 | `POST /api/scans` | start a scan (`source_kind`=`upload`/`git`/`path`, `tools`, …) |
 | `GET /api/scans/{id}` | scan status, progress, results |
+| `GET /api/scans/{id}/export.csv` | download that scan's findings as CSV |
 | `POST /api/scans/{id}/review` | approve or reject a High-finding policy review |
 | `POST /api/scans/{id}/exceptions` | add a time-limited false-positive exception |
 | `POST /api/scans/{id}/confirm` \| `/cancel` | run or discard a scan awaiting confirmation |

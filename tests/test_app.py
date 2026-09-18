@@ -722,3 +722,77 @@ def test_api_path_scan_end_to_end(client, tmp_path, monkeypatch):
     # both requested tools reported (as unavailable, since none are installed)
     assert set(job["results"].keys()) == {"semgrep", "gitleaks"}
     assert all(r["status"] == "unavailable" for r in job["results"].values())
+
+
+# ---------------------------------------------------------------- capacity
+def test_docker_capacity_verdicts():
+    """Capacity answers "is this enough?", not just "what is the usage?"."""
+    from app.docker_stats import _capacity
+
+    host = 16 * 10**9
+    base = {"state": "running", "mem_limit": 2 * 10**9}
+
+    assert _capacity({**base, "mem_pct": 30.0, "cpu_pct": 25.0}, host)["level"] == "ok"
+    assert _capacity({**base, "mem_pct": 80.0}, host)["level"] == "warn"
+    assert _capacity({**base, "mem_pct": 94.0}, host)["level"] == "tight"
+
+    # a limit equal to host memory means no limit was really set
+    unset = _capacity({"state": "running", "mem_pct": 5.0, "mem_limit": host}, host)
+    assert unset["mem_unlimited"] is True and unset["level"] == "warn"
+
+    # hard evidence of running short outranks a merely high percentage
+    assert _capacity({**base, "mem_pct": 40.0, "oom_killed": True}, host)["level"] == "tight"
+    assert _capacity({**base, "mem_pct": 40.0, "throttled": True}, host)["level"] == "tight"
+
+    # busy CPU alone is a note, not a failure: scanners are meant to use cores
+    busy = _capacity({**base, "mem_pct": 20.0, "cpu_pct": 97.0}, host)
+    assert busy["level"] == "warn" and "cpu_busy" in busy["reasons"]
+
+    assert _capacity({"state": "exited"}, host)["level"] == "idle"
+
+
+# ---------------------------------------------------------------- CSV export
+def test_csv_export(client, tmp_path, monkeypatch):
+    from app import orchestrator
+    from app.adapters.base import BaseAdapter
+
+    class A(BaseAdapter):
+        name = "semgrep"
+        kind = ToolKind.SAST
+        binary = "semgrep"
+
+        def probe(self):
+            return True, "1.0"
+
+        def applicable(self, d):
+            return True
+
+        def _execute(self, d):
+            return [
+                Finding(tool="semgrep", rule_id="r1", severity=Severity.HIGH,
+                        title="eval used", file="a.py", start_line=4,
+                        cwe=["CWE-95"]),
+                # a file name that Excel would otherwise run as a formula
+                Finding(tool="semgrep", rule_id="r2", severity=Severity.LOW,
+                        title="odd", file="=cmd|'/c calc'!A1", start_line=1),
+            ]
+
+    monkeypatch.setattr(orchestrator, "get_adapters", lambda names: [A()])
+    (tmp_path / "a.py").write_text("x=1\n")
+    res = client.post("/api/scans", data={
+        "source_kind": "path", "tools": "semgrep", "local_path": str(tmp_path),
+    })
+    job_id = res.json()["id"]
+
+    csv_res = client.get(f"/api/scans/{job_id}/export.csv")
+    assert csv_res.status_code == 200
+    assert "text/csv" in csv_res.headers["content-type"]
+    assert f"sast-scan-{job_id}.csv" in csv_res.headers["content-disposition"]
+
+    body = csv_res.text
+    assert body.startswith("\ufeff")          # BOM so Excel reads UTF-8
+    assert "eval used" in body and "CWE-95" in body
+    # formula injection is defused (CWE-1236)
+    assert "'=cmd" in body and "\n=cmd" not in body
+
+    assert client.get("/api/scans/nope/export.csv").status_code == 404
