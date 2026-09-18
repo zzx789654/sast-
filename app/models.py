@@ -115,6 +115,8 @@ class JobStatus(str, enum.Enum):
     RUNNING = "running"
     AWAITING = "awaiting_confirmation"   # source prepared; waiting for user to run
     DONE = "done"
+    POLICY_REVIEW = "policy_review"
+    BLOCKED = "blocked"
     ERROR = "error"
     CANCELLED = "cancelled"
 
@@ -129,6 +131,8 @@ class Job(BaseModel):
     status: JobStatus = JobStatus.QUEUED
     target: ScanTarget
     requested_tools: list[str] = Field(default_factory=list)
+    policy_id: str = "standard"
+    policy: dict = Field(default_factory=dict)
     created_at: str = Field(default_factory=lambda: _now())
     started_at: str = ""
     finished_at: str = ""
@@ -140,6 +144,8 @@ class Job(BaseModel):
     stage: str = ""            # human-readable current step (e.g. "cloning repo")
     error: str = ""
     logs: list[str] = Field(default_factory=list)
+    policy_evaluation: dict = Field(default_factory=dict)
+    exceptions: list[dict] = Field(default_factory=list)
 
     def compute_progress(self) -> "Job":
         total = len(self.results)

@@ -18,6 +18,7 @@ from .inventory import inventory
 from .models import (
     Job, JobStatus, ScanTarget, ToolPhase, ToolResult, ToolStatus,
 )
+from .policies import PolicyDefinition, evaluate_policy, get_policy
 from .source import clone_git, extract_zip, resolve_local_path
 
 
@@ -34,9 +35,15 @@ class JobManager:
         config.WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
     # ---- lifecycle ----------------------------------------------------
-    def new_job(self, target: ScanTarget, tools: list[str]) -> Job:
+    def new_job(self, target: ScanTarget, tools: list[str],
+                policy: "PolicyDefinition | str" = "standard") -> Job:
         job_id = uuid.uuid4().hex[:12]
-        job = Job(id=job_id, target=target, requested_tools=tools)
+        # Accept either a built-in template name or an already-resolved policy,
+        # so per-scan customizations survive instead of being looked up again.
+        if isinstance(policy, str):
+            policy = get_policy(policy)
+        job = Job(id=job_id, target=target, requested_tools=tools,
+                  policy_id=policy.id, policy=policy.as_dict())
         with self._lock:
             self._jobs[job_id] = job
             self._prune_locked()
@@ -79,6 +86,41 @@ class JobManager:
     def get(self, job_id: str) -> Job | None:
         with self._lock:
             return self._jobs.get(job_id)
+
+    def review(self, job_id: str, decision: str, reviewer: str, note: str) -> bool:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.status != JobStatus.POLICY_REVIEW:
+                return False
+            job.policy_evaluation["review"] = {
+                "decision": decision, "reviewer": reviewer, "note": note,
+            }
+            if decision == "approve":
+                job.status = JobStatus.DONE
+                job.stage = "done (policy approved)"
+            else:
+                job.status = JobStatus.BLOCKED
+                job.stage = "blocked by policy review"
+            return True
+
+    def add_exception(self, job_id: str, exception: dict) -> bool:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return False
+            job.exceptions.append(exception)
+            job.policy_evaluation = evaluate_policy(job)
+            decision = job.policy_evaluation["decision"]
+            if decision == "blocked":
+                job.status = JobStatus.BLOCKED
+                job.stage = "blocked by policy"
+            elif decision == "manual_review":
+                job.status = JobStatus.POLICY_REVIEW
+                job.stage = "awaiting policy review"
+            else:
+                job.status = JobStatus.DONE
+                job.stage = "done (policy exception accepted)"
+            return True
 
     def list_jobs(self) -> list[Job]:
         with self._lock:
@@ -134,8 +176,17 @@ class JobManager:
             job.stage = "scanning"
             self._run_adapters(job, Path(scan_root))
             job.compute_summary().compute_progress()
-            job.stage = "done"
-            job.status = JobStatus.DONE
+            job.policy_evaluation = evaluate_policy(job)
+            decision = job.policy_evaluation["decision"]
+            if decision == "blocked":
+                job.stage = "blocked by policy"
+                job.status = JobStatus.BLOCKED
+            elif decision == "manual_review":
+                job.stage = "awaiting policy review"
+                job.status = JobStatus.POLICY_REVIEW
+            else:
+                job.stage = "done"
+                job.status = JobStatus.DONE
         except Exception as exc:  # noqa: BLE001
             job.status = JobStatus.ERROR
             job.stage = "error"
@@ -220,7 +271,8 @@ class JobManager:
             return
         finished = sorted(
             (j for j in self._jobs.values()
-             if j.status in (JobStatus.DONE, JobStatus.ERROR, JobStatus.CANCELLED)),
+             if j.status in (JobStatus.DONE, JobStatus.BLOCKED,
+                             JobStatus.ERROR, JobStatus.CANCELLED)),
             key=lambda j: j.created_at,
         )
         while len(self._jobs) > config.MAX_JOBS_RETAINED and finished:

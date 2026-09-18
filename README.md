@@ -128,6 +128,33 @@ Any tool you don't install simply shows as unavailable.
 > tool's own wording (usually English); the UI adds a localized severity note
 > alongside it.
 
+### Scan policy templates
+
+Before starting a scan, choose a built-in policy template. The selected policy
+is copied into the job and its gate decision is shown with the results.
+
+* **Standard / 標準**: block Critical and secrets; require manual review for
+  High findings; retain the policy target for 30 days.
+* **Strict / 嚴格**: the Standard gates plus required pull-request and release
+  scans; retain the policy target for 90 days.
+* **Report-only / 僅報告**: collect findings without blocking; useful for an
+  initial baseline; retain the policy target for 7 days.
+
+The six policy rules are independent fields: Critical blocking, High manual
+review, secret blocking, false-positive exception metadata (owner/reason/expiry),
+report retention, and required PR/release scans. Each rule can be adjusted after
+picking a template, and the scan runs under the rules you set.
+
+A **manual review** decision needs a reviewer name and a note before it can be
+approved or rejected. A **blocked** decision can be cleared by recording a
+time-limited false-positive exception (owner and reason required) against a
+specific finding; once the exception expires, that finding counts again.
+
+The application records retention and PR/release requirements in the policy
+metadata. Enforcing repository retention and GitHub PR/release checks still
+requires a persistent report store and CI/GitHub integration; the current
+repository does not provide those external services.
+
 ### REST API
 
 The UI is a thin client over a small JSON API — handy for scripting/CI:
@@ -135,9 +162,12 @@ The UI is a thin client over a small JSON API — handy for scripting/CI:
 | Method & path | Purpose |
 |---|---|
 | `GET /api/tools` | tool availability + what each tool needs |
+| `GET /api/policies` | policy rules and built-in templates |
 | `POST /api/inspect` | inventory a local path + per-tool applicability |
 | `POST /api/scans` | start a scan (`source_kind`=`upload`/`git`/`path`, `tools`, …) |
 | `GET /api/scans/{id}` | scan status, progress, results |
+| `POST /api/scans/{id}/review` | approve or reject a High-finding policy review |
+| `POST /api/scans/{id}/exceptions` | add a time-limited false-positive exception |
 | `POST /api/scans/{id}/confirm` \| `/cancel` | run or discard a scan awaiting confirmation |
 | `GET /api/health` | health check |
 

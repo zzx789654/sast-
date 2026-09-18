@@ -9,3 +9,4 @@ venv/
 sast-studio-workspaces/
 node_modules/
 .coverage
+scan-reports-*/

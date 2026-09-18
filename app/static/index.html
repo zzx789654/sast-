@@ -68,6 +68,16 @@
 
       <div id="tool-warnings" class="tool-warnings hidden"></div>
 
+      <fieldset class="policy-pick">
+        <legend data-i18n="policy.legend">掃描政策</legend>
+        <label class="field">
+          <span data-i18n="policy.template">政策範本</span>
+          <select id="policy-select" aria-describedby="policy-desc"></select>
+        </label>
+        <p id="policy-desc" class="note"></p>
+        <div id="policy-rules" class="policy-rules"></div>
+      </fieldset>
+
       <button id="start-btn" class="primary" data-i18n="btn.start">開始掃描</button>
       <p id="form-error" class="error hidden" role="alert"></p>
     </section>

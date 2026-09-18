@@ -329,7 +329,7 @@ def test_orchestrator_state_machine(monkeypatch, tmp_path):
     assert job.status.value == "queued"
     mgr._prepare_and_maybe_scan(job.id, {"kind": "path", "path": str(tmp_path)}, False)
 
-    assert job.status.value == "done"
+    assert job.status.value == "policy_review"
     assert job.summary["high"] == 1
     assert job.summary["total"] == 1
     assert job.results["fake"].status == ToolStatus.OK
@@ -337,6 +337,59 @@ def test_orchestrator_state_machine(monkeypatch, tmp_path):
     assert job.results["fake"].phase.value == "finished"
     assert job.progress["percent"] == 100
     assert job.progress["finished"] == job.progress["total"] == 1
+    assert mgr.review(job.id, "approve", "security", "Reviewed and accepted") is True
+    assert job.status.value == "done"
+    # a review only applies while the job is awaiting one
+    assert mgr.review(job.id, "approve", "security", "again") is False
+
+
+def test_blocked_job_unblocks_via_exception(monkeypatch, tmp_path):
+    """A Critical finding blocks the scan; recording a time-limited exception
+    clears the block. This is the flow the blocked-state UI drives."""
+    from app import orchestrator
+    from app.adapters.base import BaseAdapter
+    from app.models import ScanTarget
+
+    class CriticalAdapter(BaseAdapter):
+        name = "fake"
+        kind = ToolKind.SAST
+        binary = "fake"
+
+        def probe(self):
+            return True, "1.0"
+
+        def applicable(self, target_dir):
+            return True
+
+        def _execute(self, target_dir):
+            return [Finding(tool="fake", rule_id="BOOM", severity=Severity.CRITICAL,
+                            title="boom")]
+
+    monkeypatch.setattr(orchestrator, "get_adapters", lambda names: [CriticalAdapter()])
+    mgr = orchestrator.JobManager()
+    job = mgr.new_job(ScanTarget(kind="path", display=str(tmp_path)), ["fake"])
+    mgr._prepare_and_maybe_scan(job.id, {"kind": "path", "path": str(tmp_path)}, False)
+
+    assert job.status.value == "blocked"
+    blocking = job.policy_evaluation["blocking_findings"]
+    assert len(blocking) == 1 and blocking[0]["rule_id"] == "BOOM"
+
+    assert mgr.add_exception(job.id, {
+        "tool": "fake", "rule_id": "BOOM", "file": "", "start_line": None,
+        "owner": "security", "reason": "false positive",
+        "expires_at": "2099-01-01T00:00:00+00:00",
+    }) is True
+    assert job.status.value == "done"
+    assert job.policy_evaluation["counts"]["excepted"] == 1
+
+    # an expired exception must not keep the finding suppressed
+    job.exceptions = [{
+        "tool": "fake", "rule_id": "BOOM", "file": "", "start_line": None,
+        "owner": "security", "reason": "stale",
+        "expires_at": "2000-01-01T00:00:00+00:00",
+    }]
+    from app.policies import evaluate_policy
+    assert evaluate_policy(job)["decision"] == "blocked"
 
 
 def test_confirm_flow(monkeypatch, tmp_path):
@@ -373,8 +426,10 @@ def test_confirm_flow(monkeypatch, tmp_path):
     # phase 2: confirm -> scan runs
     pending = mgr._pending.pop(job.id)
     mgr._scan(job, pending["scan_root"], pending["external"])
-    assert job.status == JobStatus.DONE
+    assert job.status == JobStatus.POLICY_REVIEW
     assert job.summary["high"] == 1
+    assert mgr.review(job.id, "reject", "security", "Fix required") is True
+    assert job.status == JobStatus.BLOCKED
 
 
 def test_cancel_flow(monkeypatch, tmp_path):
@@ -419,6 +474,94 @@ def test_api_tools(client):
     assert "allow_local_path" in data["config"]
     # each tool advertises its languages + requirement for the picker
     assert all("languages" in t and "requirement" in t for t in data["tools"])
+
+
+def test_api_policies(client):
+    data = client.get("/api/policies").json()
+    assert data["default"] == "standard"
+    assert {p["id"] for p in data["templates"]} == {"standard", "strict", "report_only"}
+    assert {r["id"] for r in data["rules"]} == {
+        "critical_block", "high_manual_review", "secret_block",
+        "false_positive_exception", "report_retention", "pipeline_events",
+    }
+    bad = client.post("/api/scans", data={
+        "source_kind": "path", "tools": "semgrep", "local_path": ".",
+        "policy": "does-not-exist",
+    })
+    assert bad.status_code == 400
+
+    bad_rule = client.post("/api/scans", data={
+        "source_kind": "path", "tools": "semgrep", "local_path": ".",
+        "policy": "standard", "policy_rules": json.dumps({"no_such_rule": True}),
+    })
+    assert bad_rule.status_code == 400
+
+
+def test_custom_policy_rules_reach_the_job(client, tmp_path):
+    """Per-scan rule overrides must survive into the job, not be looked up again
+    by id (a custom policy has no entry in the template table)."""
+    (tmp_path / "x.py").write_text("print(1)\n")
+    res = client.post("/api/scans", data={
+        "source_kind": "path", "tools": "semgrep", "local_path": str(tmp_path),
+        "policy": "standard",
+        "policy_rules": json.dumps({
+            "block_critical": False, "report_retention_days": 45,
+            "require_pull_request_scan": True,
+        }),
+    })
+    assert res.status_code == 201
+    job = client.get(f"/api/scans/{res.json()['id']}").json()
+    assert job["policy_id"] == "standard_custom"
+    assert job["policy"]["block_critical"] is False
+    assert job["policy"]["report_retention_days"] == 45
+    assert job["policy"]["required_events"] == ["pull_request"]
+
+
+def test_policy_evaluation():
+    from app.models import Job, ScanTarget, ToolResult
+    from app.policies import customize_policy, evaluate_policy
+
+    custom = customize_policy("standard", {
+        "block_critical": False, "report_retention_days": 45,
+        "require_pull_request_scan": True,
+    })
+    assert custom.id == "standard_custom"
+    assert custom.block_critical is False
+    assert custom.report_retention_days == 45
+    assert custom.required_events == ["pull_request"]
+
+    job = Job(
+        id="policy-test",
+        target=ScanTarget(kind="upload", display="x.zip"),
+        policy_id="standard",
+        results={
+            "semgrep": ToolResult(
+                tool="semgrep", kind=ToolKind.SAST, status=ToolStatus.OK,
+                findings=[Finding(tool="semgrep", rule_id="r1", severity=Severity.HIGH)],
+            ),
+        },
+    )
+    result = evaluate_policy(job)
+    assert result["decision"] == "manual_review"
+    assert result["counts"]["high"] == 1
+
+    critical = Finding(tool="trivy", rule_id="CVE-TEST", severity=Severity.CRITICAL,
+                       extra={"category": "vulnerability"})
+    job.results["trivy"] = ToolResult(
+        tool="trivy", kind=ToolKind.SCA, status=ToolStatus.OK,
+        findings=[critical],
+    )
+    result = evaluate_policy(job)
+    assert result["decision"] == "blocked"
+
+    job.exceptions = [{
+        "tool": "trivy", "rule_id": "CVE-TEST", "file": "",
+        "start_line": None, "owner": "security", "reason": "false positive",
+        "expires_at": "2099-01-01T00:00:00+00:00",
+    }]
+    result = evaluate_policy(job)
+    assert result["decision"] == "manual_review"
+    assert result["counts"]["excepted"] == 1
 
 
 def test_api_inspect(client, tmp_path):

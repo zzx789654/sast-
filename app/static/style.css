@@ -118,6 +118,15 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 .note { font-size: .8rem; color: var(--high); }
 
 .tools-pick { border: 1px solid var(--line); border-radius: 8px; padding: .6rem .7rem; margin: .5rem 0 .8rem; }
+.policy-pick { border: 1px solid var(--line); border-radius: 8px; padding: .6rem .7rem; margin: .5rem 0 .8rem; }
+.policy-pick legend { font-size: .82rem; color: var(--muted); padding: 0 .3rem; }
+.policy-pick select { width: 100%; padding: .45rem; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); }
+.policy-rules { display: grid; gap: .2rem; font-size: .76rem; color: var(--muted); }
+.policy-rule { padding-left: .2rem; }
+.policy-pill, .policy-decision { padding: .1rem .45rem; border: 1px solid var(--line); border-radius: 999px; font-size: .72rem; }
+.policy-decision.gate-passed { color: var(--ok); border-color: var(--ok); }
+.policy-decision.gate-manual_review { color: var(--high); border-color: var(--high); }
+.policy-decision.gate-blocked { color: var(--crit); border-color: var(--crit); }
 .tools-pick legend { font-size: .82rem; color: var(--muted); padding: 0 .3rem; }
 .tool-check { display: flex; align-items: center; gap: .45rem; padding: .18rem 0; font-size: .88rem; }
 .tool-check input:disabled + span { color: var(--unknown); }
@@ -174,6 +183,8 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 .confirm-box .cb-inv { font-size: .84rem; color: var(--muted); margin-bottom: .3rem; }
 .confirm-box .cb-warn-title { color: var(--high); font-weight: 600; font-size: .82rem; margin-top: .35rem; }
 .confirm-box .cb-warn { color: var(--muted); font-size: .8rem; margin-left: .2rem; }
+.confirm-box input, .confirm-box textarea { display: block; width: 100%; box-sizing: border-box; margin: .45rem 0; padding: .45rem; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); font: inherit; }
+.confirm-box textarea { min-height: 4rem; resize: vertical; }
 .cb-btns { display: flex; gap: .5rem; margin-top: .7rem; }
 .cb-btns .primary { width: auto; padding: .45rem 1.1rem; }
 .ghostbtn { padding: .45rem 1.1rem; border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 8px; cursor: pointer; font-size: .9rem; }

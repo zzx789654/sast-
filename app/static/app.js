@@ -7,6 +7,7 @@ const SEVERITIES = ["critical", "high", "medium", "low", "info", "unknown"];
 const state = {
   sourceKind: "upload",
   toolsData: null,    // full /api/tools response
+  policies: null,     // /api/policies response
   currentJob: null,   // full job object
   pollTimer: null,
   inspect: null,      // {inventory, tools:[{name, applicable, reason}]} for a path
@@ -48,7 +49,98 @@ async function init() {
   wireFilters();
   wireViewNav();
   await loadTools();
+  await loadPolicies();
   await refreshScanList();
+}
+
+// ---------------------------------------------------------------- policies
+async function loadPolicies() {
+  const res = await fetch("/api/policies");
+  state.policies = await res.json();
+  const select = $("#policy-select");
+  select.innerHTML = "";
+  state.policies.templates.forEach((p) => select.appendChild(new Option(policyLabel(p), p.id)));
+  select.value = state.policies.default;
+  select.addEventListener("change", renderPolicy);
+  renderPolicy();
+}
+
+// Each policy rule maps to one boolean field, except retention (a number) and
+// pipeline_events (two booleans). One table drives both rendering and reading,
+// so the form and the submitted payload cannot drift apart.
+const POLICY_FIELDS = {
+  critical_block: ["block_critical"],
+  high_manual_review: ["high_requires_review"],
+  secret_block: ["block_secrets"],
+  false_positive_exception: ["exception_requires_owner_reason_expiry"],
+  pipeline_events: ["require_pull_request_scan", "require_release_scan"],
+};
+const POLICY_FIELD_LABEL = {
+  require_pull_request_scan: "policy.rule.requirePr",
+  require_release_scan: "policy.rule.requireRelease",
+};
+
+// Template names/descriptions come from the backend in one language; prefer a
+// localized string when we have one, otherwise show what the backend sent.
+function policyLabel(policy, suffix) {
+  const key = "policy.tpl." + policy.id + (suffix || "");
+  const localized = t(key);
+  if (localized !== key) return localized;
+  return suffix ? policy.description : (policy.name || policy.id);
+}
+
+function renderPolicy() {
+  if (!state.policies) return;
+  const select = $("#policy-select");
+  // Relabel options in place so a language switch keeps the current selection.
+  Array.from(select.options).forEach((opt) => {
+    const tpl = state.policies.templates.find((p) => p.id === opt.value);
+    if (tpl) opt.textContent = policyLabel(tpl);
+  });
+  const selected = state.policies.templates.find((p) => p.id === select.value)
+    || state.policies.templates[0];
+  $("#policy-desc").textContent = policyLabel(selected, ".desc");
+  const box = $("#policy-rules");
+  box.innerHTML = "";
+
+  state.policies.rules.forEach((rule) => {
+    if (rule.id === "report_retention") {
+      const label = el("label", "policy-rule");
+      label.appendChild(document.createTextNode(t("policy.rule.report_retention") + ": "));
+      const input = document.createElement("input");
+      input.type = "number";
+      input.id = "policy-rule-report_retention_days";
+      input.min = "1";
+      input.max = "3650";
+      input.value = selected.report_retention_days;
+      label.appendChild(input);
+      label.appendChild(document.createTextNode(" " + t("policy.days")));
+      box.appendChild(label);
+      return;
+    }
+    (POLICY_FIELDS[rule.id] || []).forEach((field) => {
+      const label = el("label", "policy-rule");
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.id = "policy-rule-" + field;
+      input.checked = Boolean(selected[field]);
+      label.appendChild(input);
+      label.appendChild(document.createTextNode(
+        " " + t(POLICY_FIELD_LABEL[field] || "policy.rule." + rule.id)));
+      box.appendChild(label);
+    });
+  });
+}
+
+function readPolicyOverrides() {
+  const out = {};
+  Object.values(POLICY_FIELDS).forEach((fields) => fields.forEach((field) => {
+    const input = $("#policy-rule-" + field);
+    if (input) out[field] = input.checked;
+  }));
+  const retention = $("#policy-rule-report_retention_days");
+  if (retention) out.report_retention_days = Number(retention.value);
+  return out;
 }
 
 // ---------------------------------------------------------------- views
@@ -376,6 +468,8 @@ async function startScan() {
   const fd = new FormData();
   fd.append("source_kind", state.sourceKind);
   fd.append("tools", tools.join(","));
+  fd.append("policy", $("#policy-select").value || "standard");
+  fd.append("policy_rules", JSON.stringify(readPolicyOverrides()));
 
   if (state.sourceKind === "upload") {
     const f = $("#file-input").files[0];
@@ -431,7 +525,8 @@ function startPolling(jobId) {
   clearInterval(state.pollTimer);
   state.pollTimer = setInterval(async () => {
     const job = await loadJob(jobId);
-    const terminal = ["done", "error", "awaiting_confirmation", "cancelled"];
+    const terminal = ["done", "error", "awaiting_confirmation", "cancelled",
+                      "policy_review", "blocked"];
     if (job && terminal.includes(job.status)) {
       clearInterval(state.pollTimer);
       refreshScanList(jobId);
@@ -455,6 +550,18 @@ function renderJob(job) {
   meta.innerHTML = "";
   meta.appendChild(el("span", null, `${job.target.kind}: ${job.target.display}`));
   meta.appendChild(el("span", "jstatus " + job.status, t("status." + job.status)));
+  if (job.policy) {
+    meta.appendChild(el("span", "policy-pill",
+      t("policy.pill", { name: job.policy.name || job.policy_id })));
+  }
+  if (job.policy_evaluation && job.policy_evaluation.decision) {
+    const decision = job.policy_evaluation.decision;
+    const pill = el("span", "policy-decision gate-" + decision,
+      t("policy.gate", { decision: t("policy.decision." + decision) }));
+    meta.appendChild(pill);
+    const excepted = (job.policy_evaluation.counts || {}).excepted;
+    if (excepted) meta.appendChild(el("span", "policy-pill", t("policy.excepted", { n: excepted })));
+  }
   const inv = job.inventory;
   if (inv && inv.total_files) {
     const langs = Object.keys(inv.languages || {}).slice(0, 4).join(", ");
@@ -473,6 +580,36 @@ function renderJob(job) {
 
 function renderConfirmBox(job) {
   const box = $("#confirm-box");
+  if (job.status === "policy_review") {
+    box.classList.remove("hidden");
+    box.innerHTML = "";
+    box.appendChild(el("div", "cb-title", t("policy.review.title")));
+    const refs = (job.policy_evaluation || {}).manual_review_findings || [];
+    refs.forEach((f) => box.appendChild(el("div", "cb-warn", findingRefLabel(f))));
+    const reviewer = document.createElement("input");
+    reviewer.id = "policy-reviewer";
+    reviewer.placeholder = t("policy.review.reviewer");
+    reviewer.required = true;
+    const note = document.createElement("textarea");
+    note.id = "policy-review-note";
+    note.placeholder = t("policy.review.note");
+    note.required = true;
+    box.appendChild(reviewer);
+    box.appendChild(note);
+    const btns = el("div", "cb-btns");
+    const approve = el("button", "primary", t("policy.review.approve"));
+    approve.addEventListener("click", () => submitPolicyReview(job.id, "approve"));
+    const reject = el("button", "ghostbtn", t("policy.review.reject"));
+    reject.addEventListener("click", () => submitPolicyReview(job.id, "reject"));
+    btns.appendChild(approve);
+    btns.appendChild(reject);
+    box.appendChild(btns);
+    return;
+  }
+  if (job.status === "blocked") {
+    renderBlockedBox(job, box);
+    return;
+  }
   if (job.status !== "awaiting_confirmation") {
     box.classList.add("hidden");
     box.innerHTML = "";
@@ -504,6 +641,95 @@ function renderConfirmBox(job) {
   btns.appendChild(run);
   btns.appendChild(cancel);
   box.appendChild(btns);
+}
+
+function findingRefLabel(f) {
+  const where = f.file ? ` ${f.file}:${f.start_line || ""}` : "";
+  return `${t("sev." + f.severity)} ${f.tool} ${f.rule_id}${where}`;
+}
+
+async function submitPolicyReview(id, decision) {
+  const reviewer = $("#policy-reviewer").value.trim();
+  const note = $("#policy-review-note").value.trim();
+  if (!reviewer || !note) { showError(t("policy.review.required")); return; }
+  const fd = new FormData();
+  fd.append("decision", decision);
+  fd.append("reviewer", reviewer);
+  fd.append("note", note);
+  const res = await fetch(`/api/scans/${id}/review`, { method: "POST", body: fd });
+  if (res.ok) await loadJob(id);
+  else showError((await res.json()).detail || t("policy.review.failed"));
+}
+
+// A blocked scan can still be unblocked by recording an auditable, time-limited
+// false-positive exception for the finding that blocked it.
+function renderBlockedBox(job, box) {
+  box.classList.remove("hidden");
+  box.innerHTML = "";
+  box.appendChild(el("div", "cb-title", t("policy.blocking.title")));
+  const refs = (job.policy_evaluation || {}).blocking_findings || [];
+  refs.forEach((f) => {
+    const row = el("div", "cb-warn", findingRefLabel(f) + " ");
+    const btn = el("button", "linkbtn", t("policy.except.btn"));
+    btn.addEventListener("click", () => renderExceptionForm(job, f, box));
+    row.appendChild(btn);
+    box.appendChild(row);
+  });
+  const review = (job.policy_evaluation || {}).review;
+  if (review) {
+    box.appendChild(el("div", "cb-inv", t("policy.reviewedBy", {
+      reviewer: review.reviewer,
+      decision: t("policy.review." + (review.decision === "approve" ? "approve" : "reject")),
+      note: review.note,
+    })));
+  }
+}
+
+function renderExceptionForm(job, finding, box) {
+  box.innerHTML = "";
+  box.appendChild(el("div", "cb-title", t("policy.except.title")));
+  box.appendChild(el("div", "cb-warn", findingRefLabel(finding)));
+  const owner = document.createElement("input");
+  owner.id = "exc-owner";
+  owner.placeholder = t("policy.except.owner");
+  const reason = document.createElement("textarea");
+  reason.id = "exc-reason";
+  reason.placeholder = t("policy.except.reason");
+  const expires = document.createElement("input");
+  expires.id = "exc-expires";
+  expires.type = "date";
+  expires.title = t("policy.except.expires");
+  box.appendChild(owner);
+  box.appendChild(reason);
+  box.appendChild(expires);
+  const btns = el("div", "cb-btns");
+  const submit = el("button", "primary", t("policy.except.submit"));
+  submit.addEventListener("click", () => submitException(job.id, finding));
+  const cancel = el("button", "ghostbtn", t("policy.except.cancel"));
+  cancel.addEventListener("click", () => renderBlockedBox(job, box));
+  btns.appendChild(submit);
+  btns.appendChild(cancel);
+  box.appendChild(btns);
+}
+
+async function submitException(id, finding) {
+  const owner = $("#exc-owner").value.trim();
+  const reason = $("#exc-reason").value.trim();
+  const expires = $("#exc-expires").value;
+  if (!owner || !reason || !expires) { showError(t("policy.except.required")); return; }
+  const fd = new FormData();
+  fd.append("tool", finding.tool);
+  fd.append("rule_id", finding.rule_id || "");
+  fd.append("file", finding.file || "");
+  if (finding.start_line !== null && finding.start_line !== undefined) {
+    fd.append("start_line", finding.start_line);
+  }
+  fd.append("owner", owner);
+  fd.append("reason", reason);
+  fd.append("expires_at", expires);
+  const res = await fetch(`/api/scans/${id}/exceptions`, { method: "POST", body: fd });
+  if (res.ok) await loadJob(id);
+  else showError((await res.json()).detail || t("policy.except.failed"));
 }
 
 async function confirmScan(id) {
@@ -544,7 +770,9 @@ function renderProgress(job) {
       { f: p.finished || 0, t: p.total || 0, p: p.percent || 0 });
     return;
   }
-  if (job.status === "done") {
+  // policy_review / blocked mean the tools finished and the gate decided,
+  // so the bar stays at 100% rather than disappearing.
+  if (["done", "policy_review", "blocked"].includes(job.status)) {
     wrap.classList.remove("hidden");
     fill.className = "progress-fill done";
     fill.style.width = "100%";
@@ -681,6 +909,7 @@ document.addEventListener("DOMContentLoaded", () => {
   window.onLangChange = () => {
     buildSeverityFilter();
     if (state.toolsData) { renderToolHeader(); renderToolPickers(); }
+    if (state.policies) renderPolicy();
     updateToolWarnings();
     if (state.inspect) renderInspectPanel(state.inspect);
     const cur = $("#scan-picker").value;

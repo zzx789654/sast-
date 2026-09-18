@@ -93,6 +93,26 @@ uvicorn app.main:app --reload        # http://localhost:8000
 
 > 發現的內文來自掃描工具本身，所以是該工具的原文（多為英文）；介面會在旁邊補一行中文嚴重度說明。
 
+### 掃描政策範本
+
+開始掃描前可以選一個內建的政策範本。選定的政策會複製進該次掃描，
+判定結果會和掃描結果一起顯示。
+
+* **標準**：阻擋 Critical 與 Secret；High 需要人工審查；報告保存 30 天。
+* **嚴格**：在標準之上，另要求 PR 與 Release 前都必須掃描；報告保存 90 天。
+* **僅報告**：只收集發現、不阻擋；適合導入初期建立基準線；報告保存 7 天。
+
+六條政策規則都是獨立欄位：Critical 阻擋、High 人工審查、Secret 阻擋、
+誤報例外需記錄（負責人／理由／到期日）、報告保存期限、PR／Release 前必須掃描。
+選好範本後可以逐條調整，該次掃描會套用你調整後的規則。
+
+判定為**需人工審查**時，要填審查者與備註才能核准或封鎖；判定為**阻擋**時，
+可以對特定發現新增**有到期日的誤報例外**（需填負責人與理由），例外過期後該發現會重新生效。
+
+> 誠實界線：報告保存期限與 PR／Release 必掃是記錄在政策中繼資料裡的「宣告」。
+> 真正落實保存與 GitHub PR／Release 檢查，還需要持久化的報告儲存與 CI／GitHub 整合，
+> 目前這個專案不提供那些外部服務。
+
 ### REST API
 
 介面只是這個小型 JSON API 的前端，方便你寫腳本／接 CI：
@@ -103,6 +123,9 @@ uvicorn app.main:app --reload        # http://localhost:8000
 | `POST /api/inspect` | 盤點本機路徑 + 每工具適用性 |
 | `POST /api/scans` | 開始掃描（`source_kind`=`upload`/`git`/`path`、`tools`…） |
 | `GET /api/scans/{id}` | 掃描狀態、進度、結果 |
+| `GET /api/policies` | 政策規則與內建範本 |
+| `POST /api/scans/{id}/review` | 核准或封鎖等待人工審查的掃描 |
+| `POST /api/scans/{id}/exceptions` | 新增有到期日的誤報例外 |
 | `POST /api/scans/{id}/confirm` \| `/cancel` | 執行或放棄等待確認的掃描 |
 | `GET /api/health` | 健康檢查 |
 
