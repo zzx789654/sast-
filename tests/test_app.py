@@ -796,3 +796,26 @@ def test_csv_export(client, tmp_path, monkeypatch):
     assert "'=cmd" in body and "\n=cmd" not in body
 
     assert client.get("/api/scans/nope/export.csv").status_code == 404
+
+
+def test_semgrep_ruleset_is_compatible_with_metrics_off(monkeypatch, tmp_path):
+    """Regression: semgrep refuses to build the "auto" config while metrics are
+    off, so the scan errors out on every run. We always pass --metrics=off (no
+    code data leaves the host), so the ruleset must never be "auto"."""
+    from app.adapters import semgrep
+    from app.config import config
+
+    assert config.SEMGREP_RULES != "auto"
+
+    captured = {}
+
+    def fake_run(args, **kw):
+        captured["args"] = args
+        return CommandResult(0, '{"results": []}', "")
+
+    monkeypatch.setattr(semgrep, "run_command", fake_run)
+    semgrep.SemgrepAdapter()._execute(tmp_path)
+
+    args = captured["args"]
+    assert "--metrics=off" in args
+    assert args[args.index("--config") + 1] != "auto"

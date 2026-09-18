@@ -228,8 +228,10 @@ This runs other people's code through scanners, so its own hardening matters:
 
 All optional, via environment variables (see `.env.example`): workspace dir,
 per-tool timeouts, upload/extraction limits, `SAST_ALLOW_LOCAL_PATH`, allowed
-git schemes, and `SAST_SEMGREP_RULES` (`auto` needs network; point at a local
-ruleset for offline scanning).
+git schemes, and `SAST_SEMGREP_RULES` (defaults to `p/default`, which needs
+network; point at a local ruleset for offline scanning). Do not set it to
+`auto` — semgrep rejects that config because scans always run with
+`--metrics=off`, so no code data leaves the host.
 
 ## Keeping the scanners up to date
 

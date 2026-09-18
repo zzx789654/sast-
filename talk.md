@@ -40,3 +40,16 @@
 - **影響範圍**：`app/policies.py`（規則文案與中繼資料）、`app/main.py`（CSV 匯出、docker 額度判讀）、`app/static/*`（三分頁、報告頁、列印樣式）、`app/docker_stats.py`、測試、README 中英。
 - **後續動作**：實作後跑測試 + 瀏覽器實測三分頁與匯出。
 
+
+## [2026-09-19] #004 — CD 部署到 VM 192.168.99.145（G6）
+
+- **使用者指令（提示詞原意）**：接續 sast- 專案，CI 已過，請進行 CD 部署；VM 已裝過前幾版，請更新到目前版本。
+- **對照既有決議**：與 #002 一致——#002 結尾記著「G6（CD 上線）尚未進行，待使用者決定」，本次即為執行。
+- **盤點結果**：VM 在 `30ef0e8`（落後 9 個 commit），本機另有 **3 個未推送**的 UI 改版 commit。「目前版本」因此有歧義。
+- **決議回應**：
+  1. **先推送 + 過 CI 再部署**（使用者選定）。推 `6d105c1` → CI run 35403653584 綠燈；依 #002 既有紀律下載 artifact 判讀，原始碼面六項全數 0，映像層 11 CRITICAL 與 G5 基線完全相同（7 個 Debian base image 且 `fixed=NONE`、4 個掃描器二進位），確認 3 個 UI commit 未引入新曝險。
+  2. **先建映像再切換**（使用者選定）：先把線上映像標記 `sast-studio:rollback-30ef0e8`，再 build，成功後才 `up -d`，中斷僅數秒。
+- **E2E 發現的既有缺陷（本次部署未造成）**：Semgrep 每次掃描都失敗——`app/adapters/semgrep.py` 寫死 `--metrics=off`（隱私考量），但設定預設 `SAST_SEMGREP_RULES=auto`，semgrep 1.177 拒絕「metrics 關閉時建立 auto config」。兩個各自正確的決定互相衝突，且因 workflow 把掃描器失敗降為 warning 而長期無人察覺。
+- **理由**：修正選 `p/default` 而非開啟 metrics——本專案是「跑別人程式碼的資安工具」，`CoreMain.md` 的安全紀律要求不讓程式碼資料外流，故保留 `--metrics=off`，改動規則集。已在容器內實測 `p/default` + `--metrics=off` 可正常執行並抓到漏洞。
+- **影響範圍**：`app/config.py`、`docker-compose.yml`、`.env.example`、`README.md`、`README.zh.md`、`tests/test_app.py`（新增回歸測試，實測還原 `auto` 會失敗）。
+- **後續動作**：修正推上 CI 後重新部署並複驗 Semgrep。

@@ -52,8 +52,10 @@ class Config:
         if s.strip()
     }
 
-    # Semgrep ruleset. "auto" needs network; point at a local ruleset offline.
-    SEMGREP_RULES = os.environ.get("SAST_SEMGREP_RULES", "auto")
+    # Semgrep ruleset. Needs network; point at a local ruleset offline.
+    # Not "auto": semgrep refuses to build the auto config while metrics are
+    # off, and we always scan with --metrics=off so no code data leaves the box.
+    SEMGREP_RULES = os.environ.get("SAST_SEMGREP_RULES", "p/default")
 
     # Keep job workspaces after completion (debugging). Default: clean up.
     KEEP_WORKSPACES = _env_bool("SAST_KEEP_WORKSPACES", False)

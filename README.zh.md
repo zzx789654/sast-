@@ -171,7 +171,9 @@ uvicorn app.main:app --reload        # http://localhost:8000
 
 全部可選，透過環境變數（見 `.env.example`）：工作區目錄、各工具 timeout、上傳／解壓上限、
 `SAST_ALLOW_LOCAL_PATH`、允許的 git scheme、以及 `SAST_SEMGREP_RULES`
-（`auto` 需要網路；離線可指向本機規則集）。
+（預設 `p/default`，需要網路；離線可指向本機規則集）。請勿設成 `auto`：
+本專案掃描一律加上 `--metrics=off`（不讓任何程式碼資料外流），
+semgrep 在關閉 metrics 時會拒絕建立 auto 設定。
 
 ## 後續怎麼更新這些掃描工具
 

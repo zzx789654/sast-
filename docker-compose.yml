@@ -16,9 +16,10 @@ services:
     expose:
       - "8000"
     environment:
-      # "auto" needs network to fetch Semgrep's registry rules; pin a local
-      # ruleset path for fully-offline use.
-      SAST_SEMGREP_RULES: "auto"
+      # Registry ruleset; needs network. Pin a local ruleset path for
+      # fully-offline use. Do not set "auto": semgrep rejects it because we
+      # scan with --metrics=off (no code data leaves this host).
+      SAST_SEMGREP_RULES: "p/default"
       SAST_ALLOW_LOCAL_PATH: "true"
       SAST_TOOL_TIMEOUT: "900"
       # Monitor tab — per-container CPU/memory. Needs the docker.sock mount

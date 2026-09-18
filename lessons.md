@@ -293,3 +293,54 @@
 - **情境**：Docker 授權疑慮。
   **準則**：先釐清事實再決策——Linux 伺服器的 Docker Engine/Compose 免費，只有 Desktop GUI 對大型企業收費；伺服器部署不需 Desktop。誠實回答比直接改方案更有價值。
 - **過程原始輸出位置**：測試與 smoke test 於對話中執行，結論已落地本檔與 `待修改.md`；如需重跑：`pytest -q`。
+
+---
+
+## 第 15 輪（2026-09-19）— CD 部署到 VM，並揪出潛伏已久的 Semgrep 失效
+
+### 背景
+CI 已綠燈，使用者要求把既有 VM（192.168.99.145，跑前幾版）更新到目前版本。
+
+### 做了什麼
+1. 發現「目前版本」有歧義：VM 在 `30ef0e8`，`origin/main` 在 `25e794a`，本機還有 3 個**未推送**的 UI 改版 commit。先問清楚再動作，使用者選「推送 + 過 CI 再部署」。
+2. 推 `6d105c1`，CI run 35403653584 綠燈；依第 13 輪紀律下載 artifact 逐項判讀，而非相信綠燈。
+3. 部署採「先建後換」：先把線上映像標成 `sast-studio:rollback-30ef0e8`，build 成功才 `up -d`。
+4. Smoke test + E2E（上傳 zip → 確認閘門 → 完成 → 政策判定）。
+
+### 最重要的教訓：綠燈、健康檢查、通過的 E2E，都可能同時掩蓋「工具根本沒跑起來」
+
+E2E 跑完是 `status=done`、政策判定 `passed`、summary 全 0——**看起來完美**。
+但 `tools_run: 1` 而我要求了兩個工具。追進去才發現 Semgrep 每次都 error：
+
+```
+Cannot create auto config when metrics are off.
+```
+
+`app/adapters/semgrep.py` 寫死 `--metrics=off`（第 1 輪的隱私決定，正確），
+設定預設 `SAST_SEMGREP_RULES=auto`（也很合理）。**兩個各自正確的決定互相衝突**，
+而且是在 semgrep 某次版本更新後才變成硬錯誤。
+
+為什麼長期沒人發現：
+- CI workflow 刻意把掃描器失敗降為 warning（第 13 輪就記過這件事），所以 CI 不會紅。
+- 容器 healthcheck 只看 HTTP 有沒有回應，不看掃描器能不能用。
+- 「0 findings」在資安工具裡看起來像好消息，其實是最危險的假訊號。
+
+**準則**：對一個「整合 N 個工具」的系統，驗收條件不能只有「掃描完成」，
+必須是「**每個被要求的工具都回報 ok**」。`tools_run` 少於 requested 就該是紅燈。
+
+### 修法與取捨
+改 `p/default` 而不是開啟 metrics。理由回到 `CoreMain.md` 的安全紀律：
+這是「跑別人程式碼的資安工具」，不該把被掃描專案的資料回傳給第三方。
+保留 `--metrics=off`，換掉規則集。已在容器內實測 `p/default` + `--metrics=off` 可正常執行並抓到 shell injection。
+
+同步修 `config.py` / `docker-compose.yml` / `.env.example` / README 中英四處，
+避免只修 compose、下次有人照文件設 `auto` 又壞掉。
+
+### 新增的防線
+回歸測試 `test_semgrep_ruleset_is_compatible_with_metrics_off`，
+斷言「規則集不是 auto」且「`--metrics=off` 仍在」。
+**實測過**：`SAST_SEMGREP_RULES=auto` 時測試會失敗——會失敗的測試才是有效的測試。
+
+### 下一輪建議
+CI 把掃描器失敗降為 warning 是這次缺陷能潛伏的根因。
+建議區分兩種失敗：「掃到漏洞」（可警告）vs「工具沒跑起來」（應擋 build）。
