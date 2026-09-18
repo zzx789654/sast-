@@ -29,8 +29,14 @@ RUN python -m pip install --no-cache-dir --upgrade \
       pip setuptools wheel
 
 # --- Semgrep (pip, pulls the Python engine) ---
+# Semgrep pins older transitive packaging deps, so re-upgrade setuptools and
+# msgpack afterwards; upgrading before this step alone leaves the old versions
+# in the image. Semgrep does not constrain either at runtime.
 RUN python -m pip install --no-cache-dir --prefer-binary \
-      --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" semgrep
+      --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" semgrep \
+    && python -m pip install --no-cache-dir --upgrade \
+      --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" \
+      "setuptools>=78.1.1" "msgpack>=1.2.1"
 
 # --- OSV-Scanner (static Go binary) ---
 RUN arch="$(dpkg --print-architecture)"; \
