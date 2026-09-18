@@ -67,7 +67,10 @@ class SemgrepAdapter(BaseAdapter):
                     cwe=_as_list(meta.get("cwe")),
                     owasp=_as_list(meta.get("owasp")),
                     references=_as_list(meta.get("references")),
-                    extra={"category": meta.get("category", "")},
+                    extra={"category": meta.get("category", ""),
+                           # Semgrep returns the offending source line(s); keep
+                           # them so the UI can show the code, not just a path.
+                           "snippet": _snippet(extra.get("lines"))},
                 )
             )
         return findings
@@ -79,6 +82,23 @@ def _as_list(value) -> list[str]:
     if isinstance(value, list):
         return [str(v) for v in value]
     return [str(value)]
+
+
+#: Snippets come from scanned (untrusted) files, so bound how much is kept.
+MAX_SNIPPET_LINES = 12
+MAX_SNIPPET_CHARS = 1200
+
+
+def _snippet(lines) -> str:
+    """Trim the scanner-supplied source excerpt to a displayable size."""
+    if not lines or not isinstance(lines, str):
+        return ""
+    text = lines.strip("\n")
+    if text.strip() == "requires login":   # semgrep's placeholder for pro rules
+        return ""
+    kept = text.splitlines()[:MAX_SNIPPET_LINES]
+    out = "\n".join(kept)
+    return out[:MAX_SNIPPET_CHARS]
 
 
 def _relpath(path: str, target_dir: Path) -> str:

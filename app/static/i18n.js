@@ -96,6 +96,13 @@ const DICT = {
     "tstat.notApplicableFallback": "此工具在這個專案沒有可掃描的內容",
     "findings.count": "{n} 個發現",
 
+    // finding detail: where the problem is
+    "find.installed": "已安裝 {v}",
+    "find.vulnRange": "受影響版本 {r}",
+    "find.fixedIn": "修補版本 {v}",
+    "find.noFix": "尚無修補版本",
+    "find.fix": "建議處置：{r}",
+
     // severities
     "sev.critical": "嚴重", "sev.high": "高", "sev.medium": "中",
     "sev.low": "低", "sev.info": "資訊", "sev.unknown": "未知",
@@ -266,6 +273,12 @@ const DICT = {
     "tstat.ok": "ok",
     "tstat.notApplicableFallback": "nothing to scan for this tool",
     "findings.count": "{n} findings",
+
+    "find.installed": "installed {v}",
+    "find.vulnRange": "affected {r}",
+    "find.fixedIn": "fixed in {v}",
+    "find.noFix": "no fix available",
+    "find.fix": "Resolution: {r}",
 
     "sev.critical": "critical", "sev.high": "high", "sev.medium": "medium",
     "sev.low": "low", "sev.info": "info", "sev.unknown": "unknown",

@@ -121,6 +121,12 @@ Any tool you don't install simply shows as unavailable.
    row (findings count / duration, or `unavailable` / `not applicable` with the
    reason), and one card per finding with its severity, tool, file:line, and any
    CWE/OWASP tags. Filter by severity, tool, or file name.
+
+   Each card also pinpoints the problem itself. A code finding shows the
+   offending source line(s) the scanner reported, next to the line number. A
+   dependency finding names the package, the installed version and the version
+   that fixes it (or says no fix is available). Secret findings show a masked
+   preview only — the secret value is never sent to the browser.
 6. Switch the interface between **中文 / English** with the toggle in the top-
    right corner (your choice is remembered).
 

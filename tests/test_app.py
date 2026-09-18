@@ -45,6 +45,7 @@ def test_semgrep_normalization(monkeypatch, tmp_path):
                 "extra": {
                     "severity": "ERROR",
                     "message": "Possible SQL injection",
+                    "lines": "    cur.execute(\"SELECT * FROM t WHERE id=\" + uid)",
                     "metadata": {
                         "cwe": ["CWE-89: SQL Injection"],
                         "owasp": ["A03:2021 - Injection"],
@@ -72,7 +73,20 @@ def test_semgrep_normalization(monkeypatch, tmp_path):
     assert f.start_line == 10 and f.end_line == 12
     assert "CWE-89: SQL Injection" in f.cwe
     assert f.file == "a.py"
+    # the offending source line is kept so the UI can show the code itself
+    assert "cur.execute" in f.extra["snippet"]
     assert result.summary["high"] == 1
+
+
+def test_semgrep_snippet_is_bounded():
+    """Snippets come from scanned files, so they must not be unbounded."""
+    from app.adapters.semgrep import MAX_SNIPPET_CHARS, MAX_SNIPPET_LINES, _snippet
+
+    assert _snippet(None) == ""
+    assert _snippet("requires login") == ""          # semgrep pro placeholder
+    many = chr(10).join(f"line {i}" for i in range(200))
+    assert len(_snippet(many).splitlines()) == MAX_SNIPPET_LINES
+    assert len(_snippet("x" * 9000)) <= MAX_SNIPPET_CHARS
 
 
 # ---------------------------------------------------------------- trivy

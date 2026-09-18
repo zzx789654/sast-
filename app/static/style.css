@@ -262,6 +262,33 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 .finding .fsevnote { font-size: .76rem; color: var(--muted); margin: .2rem 0 0; font-style: italic; }
 .finding .fmsg { font-size: .85rem; color: var(--muted); margin: .3rem 0; }
 .finding .floc { font-size: .78rem; font-family: ui-monospace, monospace; color: var(--muted); }
+/* the offending source line(s), as reported by the scanner */
+.finding .fsnippet {
+  position: relative; margin: .4rem 0 .1rem; padding: .45rem .6rem;
+  background: var(--bg); border: 1px solid var(--line);
+  border-left: 3px solid var(--line); border-radius: 6px;
+  overflow-x: auto; font-size: .78rem; line-height: 1.45;
+}
+.finding .fsnippet code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre; color: var(--ink);
+}
+.finding .fsnippet[data-start]::before {
+  content: attr(data-start); position: absolute; top: .2rem; right: .45rem;
+  font-size: .66rem; color: var(--muted);
+}
+.finding.critical .fsnippet { border-left-color: var(--crit); }
+.finding.high .fsnippet { border-left-color: var(--high); }
+.finding.medium .fsnippet { border-left-color: var(--med); }
+
+/* dependency findings: which package, which version, what fixes it */
+.finding .fpkg { display: flex; flex-wrap: wrap; gap: .3rem; align-items: center; margin: .35rem 0 .1rem; font-size: .78rem; }
+.finding .fpkg-name { font-family: ui-monospace, monospace; font-weight: 600; }
+.finding .fpkg-ver, .finding .fpkg-range { color: var(--muted); }
+.finding .fpkg-fix { color: var(--ok); }
+.finding .fpkg-nofix { color: var(--high); }
+.finding .ffix { font-size: .78rem; color: var(--muted); margin-top: .25rem; }
+
 .finding .ftags { display: flex; gap: .3rem; flex-wrap: wrap; margin-top: .3rem; }
 .finding .ftag { font-size: .68rem; background: var(--bg); border: 1px solid var(--line); padding: .05rem .35rem; border-radius: 4px; }
 .empty { color: var(--muted); font-size: .88rem; padding: .8rem 0; }

@@ -898,6 +898,37 @@ function renderFinding(f) {
   const loc = [f.file, f.start_line ? "L" + f.start_line : ""].filter(Boolean).join(":");
   if (loc) card.appendChild(el("div", "floc", loc));
 
+  const x = f.extra || {};
+
+  // Dependency findings point at a package, not a line of code: say which
+  // package, which version is installed, and which version fixes it.
+  if (x.package) {
+    const pkg = el("div", "fpkg");
+    pkg.appendChild(el("span", "fpkg-name", x.package));
+    const installed = x.installed_version || x.version;
+    if (installed) pkg.appendChild(el("span", "fpkg-ver", t("find.installed", { v: installed })));
+    if (x.vulnerable_range || x.range) {
+      pkg.appendChild(el("span", "fpkg-range",
+        t("find.vulnRange", { r: x.vulnerable_range || x.range })));
+    }
+    if (x.fixed_version) {
+      pkg.appendChild(el("span", "fpkg-fix", t("find.fixedIn", { v: x.fixed_version })));
+    } else if (x.fix_available === false) {
+      pkg.appendChild(el("span", "fpkg-nofix", t("find.noFix")));
+    }
+    card.appendChild(pkg);
+  }
+
+  // Code findings: show the offending source line(s) the scanner reported.
+  if (x.snippet) {
+    const pre = el("pre", "fsnippet");
+    pre.appendChild(el("code", null, x.snippet));
+    if (f.start_line) pre.setAttribute("data-start", "L" + f.start_line);
+    card.appendChild(pre);
+  }
+
+  if (x.resolution) card.appendChild(el("div", "ffix", t("find.fix", { r: x.resolution })));
+
   const tags = el("div", "ftags");
   (f.cwe || []).forEach((c) => tags.appendChild(el("span", "ftag", c)));
   (f.owasp || []).forEach((o) => tags.appendChild(el("span", "ftag", o)));
