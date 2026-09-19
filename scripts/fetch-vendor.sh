@@ -133,6 +133,10 @@ if [ "${PRINT_HASHES}" -eq 1 ]; then
   exit 0
 fi
 
+# A .part left by an interrupted run is never a valid cache entry, and
+# keeping it around only wastes disk and confuses anyone reading the dir.
+rm -f "${VENDOR}"/*.part 2>/dev/null || true
+
 echo "Caching scanner binaries into ${VENDOR}"
 
 rc=0
