@@ -1518,3 +1518,34 @@ def test_startup_requests_are_not_serialised():
     assert "Promise.all" in init
     # And one failing endpoint must not blank the rest of the page.
     assert ".catch(" in init
+
+
+def test_cached_tools_response_is_identical_to_an_uncached_one(client):
+    """A cache must be invisible to callers.
+
+    Caching only the tools list meant a hit returned {tools, cached} while a
+    miss returned {tools, config}. The UI read .config.allow_local_path, so
+    every page load after the first threw and took the Monitor tab's version
+    list down with it -- while the header, rendered earlier, still worked.
+    """
+    from app.main import _tool_cache
+
+    _tool_cache.clear()
+    miss = client.get("/api/tools").json()      # populates the cache
+    hit = client.get("/api/tools").json()       # served from it
+
+    assert sorted(miss.keys()) == sorted(hit.keys())
+    assert miss == hit
+    # The field the UI actually depends on.
+    assert "config" in hit
+    assert "allow_local_path" in hit["config"]
+
+
+def test_monitor_tab_survives_a_response_without_config():
+    """Defence in depth: the page should degrade, not blank out."""
+    src = (Path(__file__).resolve().parents[1] / "app/static/app.js").read_text("utf-8")
+    load = src[src.index("async function loadTools()"):]
+    load = load[:load.index("\n}")]
+    # Never dereference .config directly; it must be guarded.
+    assert "state.toolsData.config.allow_local_path" not in load
+    assert "state.toolsData.config || {}" in load

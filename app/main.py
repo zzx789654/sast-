@@ -157,16 +157,16 @@ class _ToolCache:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._value: Optional[list[dict]] = None
+        self._value: Optional[dict] = None
         self._at = 0.0
 
-    def get(self) -> Optional[list[dict]]:
+    def get(self) -> Optional[dict]:
         with self._lock:
             if self._value is None or time.monotonic() - self._at > self.TTL:
                 return None
             return self._value
 
-    def set(self, value: list[dict]) -> None:
+    def set(self, value: dict) -> None:
         with self._lock:
             self._value = value
             self._at = time.monotonic()
@@ -205,13 +205,16 @@ async def list_tools() -> dict:
     # A scanner's version only changes when someone updates it, which happens
     # from the Maintenance panel and clears this cache. Re-probing on every
     # page load spent a second re-learning something that had not changed.
+    #
+    # Cache the whole payload, not just the tools: returning a different shape
+    # on a hit than on a miss broke the Monitor tab, because the client read a
+    # field that only existed on a miss. A cache must be invisible to callers.
     cached = _tool_cache.get()
     if cached is not None:
-        return {"tools": cached, "cached": True}
+        return cached
 
     tools = await run_in_threadpool(probe_all)
-    _tool_cache.set(tools)
-    return {
+    payload = {
         "tools": tools,
         "config": {
             "allow_local_path": config.ALLOW_LOCAL_PATH,
@@ -219,6 +222,8 @@ async def list_tools() -> dict:
             "max_upload_bytes": config.MAX_UPLOAD_BYTES,
         },
     }
+    _tool_cache.set(payload)
+    return payload
 
 
 @app.get("/api/policies")

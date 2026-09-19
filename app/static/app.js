@@ -661,7 +661,11 @@ async function loadTools() {
   state.toolsData = await res.json();
   renderToolHeader();
   renderToolPickers();
-  if (!state.toolsData.config.allow_local_path) {
+  // Defensive: one unexpected response shape should not stop the rest of the
+  // page rendering. A cache bug once returned this object without `config`
+  // and took the whole Monitor tab down with it.
+  const cfg = state.toolsData.config || {};
+  if (cfg.allow_local_path === false) {
     $("#path-note").classList.remove("hidden");
   }
 }
