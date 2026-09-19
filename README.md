@@ -136,40 +136,38 @@ Any tool you don't install simply shows as unavailable.
 
 ### Tabs
 
-* **Scan** — pick a target, the tools and the policy, then start a scan.
+* **Scan** — pick a target and the tools, then start a scan.
 * **Reports** — scan history on the left, the selected report on the right,
   with a severity breakdown bar, CSV export and PDF export (the browser's own
   print-to-PDF, styled for print).
 * **Monitor** — scanner versions plus Docker container performance and a
   capacity verdict (see below).
 
-### Scan policy templates
+### How a scan is judged
 
-Before starting a scan, choose a built-in policy template. The selected policy
-is copied into the job and its verdict is shown with the results.
+There is one fixed rule. There is nothing to configure before a scan, and the
+rule is stated above the scan button rather than hidden in a settings panel.
 
-A policy is judged on the **combined findings of every tool you selected** — no
-rule belongs to one particular tool, and the panel lists which tools can report
-each kind of finding. The verdict labels the scan; it does not stop the scan or
-block a deployment, because the tools have already finished by the time the
-policy runs.
+| What any tool found | Verdict |
+|---|---|
+| Critical or High severity | **must not go live** |
+| A leaked secret, at any severity | **must not go live** |
+| Medium severity | **needs a reviewer** |
+| Low, informational, or nothing | **passes** |
 
-* **Standard**: a Critical finding or a leaked secret fails the scan; a High
-  finding needs a reviewer. Retention target 30 days.
-* **Strict**: the same verdicts as Standard, and additionally declares that a
-  scan is required before every pull request and release. Retention 90 days.
-* **Report-only**: every scan passes and findings are only listed — useful for
-  an initial baseline. Retention 7 days.
+Two things about this rule are easy to misread, so they are worth stating
+plainly:
 
-The six policy rules are independent fields: Critical blocking, High manual
-review, secret blocking, false-positive exception metadata (owner/reason/expiry),
-report retention, and required PR/release scans. Each rule can be adjusted after
-picking a template, and the scan runs under the rules you set.
+* It applies to the **combined findings of every tool that ran**. No rule
+  belongs to one particular tool: a High from `npm audit` blocks exactly as a
+  High from `semgrep` does.
+* The verdict **labels the scan**. It does not stop a build or a deployment —
+  every tool has already finished by the time the verdict is computed, and
+  nothing downstream consumes it. Wiring it into CI is a separate job.
 
-A **manual review** decision needs a reviewer name and a note before it can be
-approved or rejected. A **blocked** decision can be cleared by recording a
-time-limited false-positive exception (owner and reason required) against a
-specific finding; once the exception expires, that finding counts again.
+A **needs a reviewer** verdict requires a reviewer name and a note before it can
+be approved or rejected. A **must not go live** verdict has no override in the
+application: fix the finding and scan again.
 
 ### Docker capacity (Monitor tab)
 
@@ -186,11 +184,6 @@ so each running container also gets a verdict:
 
 Check the tab while a scan is running: that is when a container is under load.
 
-The application records retention and PR/release requirements in the policy
-metadata. Enforcing repository retention and GitHub PR/release checks still
-requires a persistent report store and CI/GitHub integration; the current
-repository does not provide those external services.
-
 ### REST API
 
 The UI is a thin client over a small JSON API — handy for scripting/CI:
@@ -198,12 +191,12 @@ The UI is a thin client over a small JSON API — handy for scripting/CI:
 | Method & path | Purpose |
 |---|---|
 | `GET /api/tools` | tool availability + what each tool needs |
-| `GET /api/policies` | policy rules and built-in templates |
+| `GET /api/policies` | the fixed rule used to judge a scan |
 | `POST /api/inspect` | inventory a local path + per-tool applicability |
 | `POST /api/scans` | start a scan (`source_kind`=`upload`/`git`/`path`, `tools`, …) |
 | `GET /api/scans/{id}` | scan status, progress, results |
 | `GET /api/scans/{id}/export.csv` | download that scan's findings as CSV |
-| `POST /api/scans/{id}/review` | approve or reject a High-finding policy review |
+| `POST /api/scans/{id}/review` | approve or reject a scan awaiting review |
 | `POST /api/scans/{id}/exceptions` | add a time-limited false-positive exception |
 | `POST /api/scans/{id}/confirm` \| `/cancel` | run or discard a scan awaiting confirmation |
 | `GET /api/health` | health check |

@@ -18,7 +18,7 @@ from .inventory import inventory
 from .models import (
     Job, JobStatus, ScanTarget, ToolPhase, ToolResult, ToolStatus,
 )
-from .policies import PolicyDefinition, evaluate_policy, get_policy
+from .policies import evaluate_policy
 from .source import clone_git, extract_zip, resolve_local_path
 
 
@@ -35,15 +35,9 @@ class JobManager:
         config.WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
     # ---- lifecycle ----------------------------------------------------
-    def new_job(self, target: ScanTarget, tools: list[str],
-                policy: "PolicyDefinition | str" = "standard") -> Job:
+    def new_job(self, target: ScanTarget, tools: list[str]) -> Job:
         job_id = uuid.uuid4().hex[:12]
-        # Accept either a built-in template name or an already-resolved policy,
-        # so per-scan customizations survive instead of being looked up again.
-        if isinstance(policy, str):
-            policy = get_policy(policy)
-        job = Job(id=job_id, target=target, requested_tools=tools,
-                  policy_id=policy.id, policy=policy.as_dict())
+        job = Job(id=job_id, target=target, requested_tools=tools)
         with self._lock:
             self._jobs[job_id] = job
             self._prune_locked()
@@ -101,25 +95,6 @@ class JobManager:
             else:
                 job.status = JobStatus.BLOCKED
                 job.stage = "blocked by policy review"
-            return True
-
-    def add_exception(self, job_id: str, exception: dict) -> bool:
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if job is None:
-                return False
-            job.exceptions.append(exception)
-            job.policy_evaluation = evaluate_policy(job)
-            decision = job.policy_evaluation["decision"]
-            if decision == "blocked":
-                job.status = JobStatus.BLOCKED
-                job.stage = "blocked by policy"
-            elif decision == "manual_review":
-                job.status = JobStatus.POLICY_REVIEW
-                job.stage = "awaiting policy review"
-            else:
-                job.status = JobStatus.DONE
-                job.stage = "done (policy exception accepted)"
             return True
 
     def list_jobs(self) -> list[Job]:

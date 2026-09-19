@@ -1,208 +1,100 @@
-"""Built-in scan policy templates and result evaluation."""
+"""The single, fixed rule for judging a scan.
+
+There used to be selectable policy templates with per-rule checkboxes. They
+made the scan form long and asked the user to decide something that has one
+sensible answer, so the rule is now fixed and the form is gone.
+
+A verdict labels the scan. It does not stop a build or a deployment: by the
+time it is computed the scan has already finished, and nothing downstream
+consumes it. The wording says so rather than implying an enforcement that
+does not exist.
+"""
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any
-
-from pydantic import BaseModel, Field
 
 from .models import Finding, Job, Severity
 
-
-class PolicyDefinition(BaseModel):
-    id: str
-    name: str
-    description: str
-    block_critical: bool
-    high_requires_review: bool
-    block_secrets: bool
-    exception_requires_owner_reason_expiry: bool
-    report_retention_days: int = Field(ge=1)
-    require_pull_request_scan: bool
-    require_release_scan: bool
-
-    @property
-    def required_events(self) -> list[str]:
-        events: list[str] = []
-        if self.require_pull_request_scan:
-            events.append("pull_request")
-        if self.require_release_scan:
-            events.append("release")
-        return events
-
-    def as_dict(self) -> dict[str, Any]:
-        data = self.model_dump()
-        data["required_events"] = self.required_events
-        return data
-
-
-# Each rule is stated as "when any tool reports X, this scan is judged Y", plus
-# which tools can produce that kind of finding. Rules apply to the *combined*
-# results of every selected tool, never to one tool in particular — saying so
-# explicitly is the point of `sources` and `trigger`/`effect`.
+# Severity is judged on the combined findings of every tool that ran, never on
+# one tool in particular. A single High from any of them fails the scan.
 #
-# "verdict" wording is deliberate: a verdict labels the scan, it does not stop
-# anything. The scan has already finished by the time a policy is evaluated.
+#   critical / high  -> blocked        (must not go live)
+#   medium           -> manual_review  (a person decides)
+#   low / info / none-> passed
+#
+# Secrets are treated as blocking whatever severity the tool gave them: a
+# leaked credential is already public, and grading it does not change that.
+BLOCKING = (Severity.CRITICAL, Severity.HIGH)
+REVIEW = (Severity.MEDIUM,)
+
+# Which tools can produce each kind of finding. Shown in the UI so it is clear
+# the rule spans all tools rather than belonging to one of them.
+SEVERITY_SOURCES = ["semgrep", "bearer", "trivy", "npm_audit", "osv_scanner"]
+SECRET_SOURCES = ["gitleaks", "trivy"]
+
+# The rules, in the order they are evaluated, for the UI to render.
 RULE_CATALOG = [
-    {"id": "critical_block",
-     "trigger": "severity:critical",
+    {"id": "block_high_and_above",
+     "trigger": "severity:critical_high",
      "effect": "blocked",
-     "sources": ["semgrep", "bearer", "trivy", "npm_audit", "osv_scanner"],
-     "counter": "critical"},
-    {"id": "high_manual_review",
-     "trigger": "severity:high",
-     "effect": "manual_review",
-     "sources": ["semgrep", "bearer", "trivy", "npm_audit", "osv_scanner",
-                 "gitleaks"],
-     "counter": "high"},
+     "sources": SEVERITY_SOURCES,
+     "counter": "blocking"},
     {"id": "secret_block",
      "trigger": "kind:secret",
      "effect": "blocked",
-     "sources": ["gitleaks", "trivy"],
+     "sources": SECRET_SOURCES,
      "counter": "secrets"},
-    {"id": "false_positive_exception",
-     "trigger": "exception",
-     "effect": "recorded",
-     "sources": [],
-     "counter": "excepted"},
-    {"id": "report_retention",
-     "trigger": "retention",
-     "effect": "metadata",
-     "sources": [],
-     "counter": None},
-    {"id": "pipeline_events",
-     "trigger": "pipeline",
-     "effect": "metadata",
-     "sources": [],
-     "counter": None},
+    {"id": "medium_manual_review",
+     "trigger": "severity:medium",
+     "effect": "manual_review",
+     "sources": SEVERITY_SOURCES,
+     "counter": "medium"},
+    {"id": "low_passes",
+     "trigger": "severity:low_or_none",
+     "effect": "passed",
+     "sources": SEVERITY_SOURCES,
+     "counter": "low"},
 ]
 
 
-POLICY_TEMPLATES = {
-    "standard": PolicyDefinition(
-        id="standard", name="Standard",
-        description="Critical findings and secrets fail the scan; High findings "
-                    "need a reviewer. Suits everyday team scanning.",
-        block_critical=True, high_requires_review=True, block_secrets=True,
-        exception_requires_owner_reason_expiry=True, report_retention_days=30,
-        require_pull_request_scan=False, require_release_scan=False,
-    ),
-    "strict": PolicyDefinition(
-        id="strict", name="Strict",
-        description="Same verdicts as Standard, and additionally declares that a "
-                    "scan is required before every pull request and release.",
-        block_critical=True, high_requires_review=True, block_secrets=True,
-        exception_requires_owner_reason_expiry=True, report_retention_days=90,
-        require_pull_request_scan=True, require_release_scan=True,
-    ),
-    "report_only": PolicyDefinition(
-        id="report_only", name="Report-only",
-        description="Every scan passes; findings are only listed. Suits "
-                    "establishing a baseline when first adopting scanning.",
-        block_critical=False, high_requires_review=False, block_secrets=False,
-        exception_requires_owner_reason_expiry=True, report_retention_days=7,
-        require_pull_request_scan=False, require_release_scan=False,
-    ),
-}
-
-_OVERRIDE_KEYS = {
-    "block_critical", "high_requires_review", "block_secrets",
-    "exception_requires_owner_reason_expiry", "report_retention_days",
-    "require_pull_request_scan", "require_release_scan",
-}
-
-
-def get_policy(policy_id: str) -> PolicyDefinition:
-    try:
-        return POLICY_TEMPLATES[policy_id]
-    except KeyError as exc:
-        choices = ", ".join(sorted(POLICY_TEMPLATES))
-        raise ValueError(f"unknown policy '{policy_id}'; choose one of: {choices}") from exc
-
-
-def customize_policy(policy_id: str, overrides: dict[str, Any]) -> PolicyDefinition:
-    """Create a validated, per-scan policy from a built-in template."""
-    base = get_policy(policy_id)
-    unknown = set(overrides) - _OVERRIDE_KEYS
-    if unknown:
-        raise ValueError(f"unknown policy rule(s): {', '.join(sorted(unknown))}")
-    data = base.model_dump()
-    for key, value in overrides.items():
-        if key == "report_retention_days":
-            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 3650:
-                raise ValueError("report_retention_days must be an integer from 1 to 3650")
-        elif not isinstance(value, bool):
-            raise ValueError(f"{key} must be a boolean")
-        data[key] = value
-    data["id"] = f"{base.id}_custom"
-    data["name"] = f"{base.name} / Custom"
-    data["description"] = f"Customized from {base.name}; each policy rule is independently configured."
-    return PolicyDefinition(**data)
-
-
-def list_policies() -> dict[str, Any]:
-    return {
-        "rules": RULE_CATALOG,
-        "templates": [
-            {**policy.as_dict(), "rules": _rule_values(policy)}
-            for policy in POLICY_TEMPLATES.values()
-        ],
-        "default": "standard",
-    }
-
-
-def _rule_values(policy: PolicyDefinition) -> dict[str, Any]:
-    return {
-        "critical_block": policy.block_critical,
-        "high_manual_review": policy.high_requires_review,
-        "secret_block": policy.block_secrets,
-        "false_positive_exception": policy.exception_requires_owner_reason_expiry,
-        "report_retention_days": policy.report_retention_days,
-        "require_pull_request_scan": policy.require_pull_request_scan,
-        "require_release_scan": policy.require_release_scan,
-    }
-
-
 def evaluate_policy(job: Job) -> dict[str, Any]:
-    """Evaluate normalized findings and return an auditable policy decision."""
-    policy = PolicyDefinition(**job.policy) if job.policy else get_policy(job.policy_id)
-    findings = [finding for result in job.results.values() for finding in result.findings]
-    active_exceptions = [e for e in job.exceptions if _exception_active(e)]
-    exceptioned = [f for f in findings if _is_excepted(f, active_exceptions)]
-    findings = [f for f in findings if f not in exceptioned]
-    critical = [f for f in findings if f.severity == Severity.CRITICAL]
-    high = [f for f in findings if f.severity == Severity.HIGH]
-    secrets = [f for f in findings if _is_secret(f)]
+    """Judge the combined findings of every tool that ran."""
+    findings = [f for result in job.results.values() for f in result.findings]
 
-    blocking: list[Finding] = []
-    if policy.block_critical:
-        blocking.extend(critical)
-    if policy.block_secrets:
-        blocking.extend(f for f in secrets if f not in blocking)
+    blocking_sev = [f for f in findings if f.severity in BLOCKING]
+    secrets = [f for f in findings if _is_secret(f)]
+    medium = [f for f in findings if f.severity in REVIEW]
+    low = [f for f in findings
+           if f.severity in (Severity.LOW, Severity.INFO, Severity.UNKNOWN)]
+
+    # A secret counts as blocking even when its tool graded it lower.
+    blocking = list(blocking_sev)
+    blocking.extend(f for f in secrets if f not in blocking)
 
     if blocking:
         decision = "blocked"
-    elif policy.high_requires_review and high:
+    elif medium:
         decision = "manual_review"
     else:
+        # Low, info or nothing at all. Zero findings passes: a clean project is
+        # not less safe than one with a single low-severity note.
         decision = "passed"
 
     return {
-        "policy_id": policy.id,
         "decision": decision,
         "blocking_findings": [_finding_ref(f) for f in blocking],
-        "manual_review_findings": [_finding_ref(f) for f in high] if decision == "manual_review" else [],
-        "counts": {"critical": len(critical), "high": len(high),
-                    "secrets": len(secrets), "total": len(findings),
-                    "excepted": len(exceptioned)},
-        "exceptions": active_exceptions,
-        "exception_requirements": {
-            "owner": policy.exception_requires_owner_reason_expiry,
-            "reason": policy.exception_requires_owner_reason_expiry,
-            "expiry": policy.exception_requires_owner_reason_expiry,
+        "manual_review_findings": [_finding_ref(f) for f in medium]
+                                  if decision == "manual_review" else [],
+        "counts": {
+            "critical": sum(1 for f in findings if f.severity == Severity.CRITICAL),
+            "high": sum(1 for f in findings if f.severity == Severity.HIGH),
+            "blocking": len(blocking),
+            "medium": len(medium),
+            "low": len(low),
+            "secrets": len(secrets),
+            "total": len(findings),
         },
-        "report_retention_days": policy.report_retention_days,
-        "required_events": policy.required_events,
+        "rules": RULE_CATALOG,
     }
 
 
@@ -210,27 +102,12 @@ def _is_secret(finding: Finding) -> bool:
     return finding.tool == "gitleaks" or finding.extra.get("category") == "secret"
 
 
-def _is_excepted(finding: Finding, exceptions: list[dict]) -> bool:
-    return any(
-        item.get("tool") == finding.tool
-        and item.get("rule_id") == finding.rule_id
-        and item.get("file") == finding.file
-        and item.get("start_line") == finding.start_line
-        for item in exceptions
-    )
-
-
-def _exception_active(item: dict) -> bool:
-    try:
-        expiry = datetime.fromisoformat(str(item["expires_at"]).replace("Z", "+00:00"))
-        if expiry.tzinfo is None:
-            expiry = expiry.replace(tzinfo=timezone.utc)
-        return expiry > datetime.now(timezone.utc)
-    except (KeyError, TypeError, ValueError):
-        return False
-
-
 def _finding_ref(finding: Finding) -> dict[str, Any]:
-    return {"tool": finding.tool, "rule_id": finding.rule_id,
-            "file": finding.file, "start_line": finding.start_line,
-            "severity": finding.severity.value}
+    return {
+        "tool": finding.tool,
+        "rule_id": finding.rule_id,
+        "severity": finding.severity.value,
+        "title": finding.title,
+        "file": finding.file,
+        "line": finding.start_line,
+    }

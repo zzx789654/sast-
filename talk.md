@@ -84,3 +84,17 @@
 - **影響範圍**：新增 `app/admin.py`、`scripts/fetch-vendor.sh`、`scripts/deploy.sh`；改 `docker_stats.py`（依 label 限縮容器清單）、`main.py`、前端四檔、`Dockerfile`（vendor 快取）、`docker-compose.yml`、README 中英、測試（37→61）。
 - **量測**：VM 重建 **138 秒**（先前多次 40 分鐘以上且失敗）。
 - **後續動作**：過 CI 後部署至 VM 供使用者測試。
+
+## [2026-09-19] #007 — 移除可設定的掃描政策，改為固定判定規則
+
+- **使用者指令（提示詞原意）**：(1) 更新完成後要告知是否需重啟；(2) 移除「掃描政策」區塊，改為固定規則：高以上→不可上線、中→人員審查、低→通過、外洩密鑰→不可上線；(3) 詢問六個工具是否都能寫自訂規則。
+- **對照既有決議**：#003 曾把政策語意誠實化並重新設計 UI，本次更進一步——**直接移除選擇**。與 `CoreMain.md`「不複雜、不過度設計」一致：這件事本來就只有一個合理答案，不該讓使用者決定。
+- **決議回應**：
+  1. **判定規則固定化**：Critical/High 或密鑰 → blocked；Medium → manual_review；Low/Info/零發現 → passed。使用者確認「零發現算通過」。
+  2. **誤報例外一併移除**（使用者選擇）：blocked 不再提供任何略過途徑，UI 改為列出擋住的發現並說明「修好再掃」。
+  3. **更新結果明講**：新增 `_classify()` 判讀每個指令的輸出，分成 upgraded / data_updated / already_current / unknown，並在面板顯示；只有 upgraded 才提示需重啟。解決使用者「要不要重啟」的疑問，不必自己讀 pip 輸出。
+  4. **進度條摺疊**：`_collapse_progress()` 只保留每行  後的最終狀態，114MB 下載的數十行重複輸出收斂成一行。
+- **理由**：使用者原本的困惑（截圖裡的政策表單）根源不是說明不夠，而是**這個選擇本身沒有必要存在**。移除比解釋更能達成「順手」。
+- **影響範圍**：`app/policies.py`（236→112 行，移除 PolicyDefinition/範本/客製化）、`main.py`（移除 exceptions 端點與政策參數）、`models.py`、`orchestrator.py`（移除 add_exception）、前端四檔（移除政策表單與例外 UI，i18n 刪 76 個鍵）、README 中英、測試。淨減 426 行。
+- **量測**：測試 61 → 70（新增參數化的判定階梯測試涵蓋 9 種組合）。
+- **附帶回答**：六個工具中 Semgrep / Trivy / Gitleaks / Bearer 可寫自訂規則（Semgrep 最強），npm audit 與 OSV-Scanner 不行——它們是查詢漏洞資料庫，沒有規則可寫。

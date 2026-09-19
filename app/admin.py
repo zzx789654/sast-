@@ -47,6 +47,9 @@ class _JobState:
         self.ok: Optional[bool] = None
         self.log = ""
         self.tools: list[str] = []
+        # Per-tool result of the last update, so the panel can say whether a
+        # restart is actually needed rather than making the user read the log.
+        self.outcomes: dict[str, str] = {}
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -58,6 +61,9 @@ class _JobState:
                 "ok": self.ok,
                 "log": self.log[-MAX_LOG_CHARS:],
                 "tools": list(self.tools),
+                "outcomes": dict(self.outcomes),
+                "restart_required": any(v == "upgraded"
+                                        for v in self.outcomes.values()),
             }
 
 
@@ -95,9 +101,22 @@ def _scrub(text: str) -> str:
     return text
 
 
+def _collapse_progress(text: str) -> str:
+    """Keep only the final state of each progress bar.
+
+    Downloaders redraw a bar by returning to the start of the line with a
+    carriage return. Stored as plain text every redraw survives, so one
+    114 MB download leaves dozens of near-identical lines. Keeping the last
+    segment of each line is what a terminal would have shown anyway.
+    """
+    if "\r" not in text:
+        return text
+    return "\n".join(line.split("\r")[-1] for line in text.split("\n"))
+
+
 def _append(text: str) -> None:
     with state.lock:
-        state.log = (state.log + _scrub(text))[-MAX_LOG_CHARS:]
+        state.log = (state.log + _scrub(_collapse_progress(text)))[-MAX_LOG_CHARS:]
 
 
 # --------------------------------------------------------------- update tools
@@ -165,25 +184,48 @@ def _mark_failed() -> None:
         state.ok = False
 
 
+def _classify(name: str, output: str) -> str:
+    """What actually happened, so the UI can say whether a restart is needed.
+
+    Reading this off the output is the only option: pip and trivy both exit 0
+    whether or not they changed anything, and leaving the user to spot
+    "Successfully installed" in a few hundred lines of pip chatter is how you
+    get people restarting for no reason, or not restarting when it matters.
+    """
+    if "Successfully installed" in output:
+        return "upgraded"        # new code on disk; the process must reload it
+    if "Artifact successfully downloaded" in output or "Downloading vulnerability DB" in output:
+        return "data_updated"    # read per scan, so no restart needed
+    if "already satisfied" in output or "DB is the latest" in output:
+        return "already_current"
+    return "unknown"
+
+
 def _run_updates(tools: list[str]) -> None:
     """Run each command, recording a failure without skipping the rest."""
     for name, cmd in _update_commands(tools):
         _append(f"\n$ {' '.join(cmd)}\n")
+        outcome = "failed"
         try:
             proc = subprocess.run(  # noqa: S603 - fixed argv, shell=False
                 cmd, capture_output=True, text=True,
                 timeout=UPDATE_TIMEOUT, shell=False,
             )
-            _append((proc.stdout or "") + (proc.stderr or ""))
+            combined = (proc.stdout or "") + (proc.stderr or "")
+            _append(combined)
             if proc.returncode != 0:
                 _mark_failed()
                 _append(f"\n[{name}] exited with {proc.returncode}\n")
+            else:
+                outcome = _classify(name, combined)
         except subprocess.TimeoutExpired:
             _mark_failed()
             _append(f"\n[{name}] timed out after {UPDATE_TIMEOUT}s\n")
         except Exception as exc:  # noqa: BLE001 - surface, never crash the worker
             _mark_failed()
             _append(f"\n[{name}] failed: {exc}\n")
+        with state.lock:
+            state.outcomes[name] = outcome
 
 
 def start_update(tools: list[str]) -> dict:
@@ -204,6 +246,7 @@ def start_update(tools: list[str]) -> dict:
         state.ok = None
         state.log = ""
         state.tools = wanted
+        state.outcomes = {}
 
     threading.Thread(target=_run_update, args=(wanted,), daemon=True).start()
     return {"started": True}

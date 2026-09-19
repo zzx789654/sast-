@@ -18,7 +18,6 @@ from .config import config
 from .inventory import inventory
 from .models import ScanTarget
 from .orchestrator import manager
-from .policies import customize_policy, get_policy, list_policies
 from .source import SourceError, resolve_local_path, validate_git_url
 
 app = FastAPI(title="SAST Studio", version="1.0.0")
@@ -96,8 +95,9 @@ async def list_tools() -> dict:
 
 @app.get("/api/policies")
 async def policies() -> dict:
-    """Return built-in policy rules and selectable templates."""
-    return list_policies()
+    """The fixed rule used to judge every scan (shown in the UI, not chosen)."""
+    from .policies import RULE_CATALOG
+    return {"rules": RULE_CATALOG}
 
 
 @app.post("/api/scans/{job_id}/review")
@@ -107,7 +107,7 @@ async def review_scan(
     reviewer: str = Form(...),
     note: str = Form(...),
 ) -> dict:
-    """Approve or reject a scan paused by the High-finding policy gate."""
+    """Approve or reject a scan paused for manual review."""
     if decision not in {"approve", "reject"}:
         raise HTTPException(400, "decision must be approve or reject")
     if not reviewer.strip() or not note.strip():
@@ -115,50 +115,6 @@ async def review_scan(
     if not manager.review(job_id, decision, reviewer.strip(), note.strip()):
         raise HTTPException(409, "scan is not awaiting policy review")
     return {"id": job_id, "status": manager.get(job_id).status.value}
-
-
-@app.post("/api/scans/{job_id}/exceptions")
-async def add_scan_exception(
-    job_id: str,
-    tool: str = Form(...),
-    rule_id: str = Form(""),
-    file: str = Form(""),
-    start_line: Optional[int] = Form(None),
-    owner: str = Form(...),
-    reason: str = Form(...),
-    expires_at: str = Form(...),
-) -> dict:
-    """Record a time-limited false-positive exception for one finding."""
-    job = manager.get(job_id)
-    if job is None:
-        raise HTTPException(404, "scan not found")
-    if not owner.strip() or not reason.strip():
-        raise HTTPException(400, "owner and reason are required")
-    try:
-        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-        if expiry.tzinfo is None:
-            expiry = expiry.replace(tzinfo=timezone.utc)
-    except ValueError as exc:
-        raise HTTPException(400, "expires_at must be an ISO-8601 date/time") from exc
-    if expiry <= datetime.now(timezone.utc):
-        raise HTTPException(400, "expires_at must be in the future")
-    matches = [
-        f for result in job.results.values() for f in result.findings
-        if f.tool == tool and f.rule_id == rule_id and f.file == file
-        and f.start_line == start_line
-    ]
-    if not matches:
-        raise HTTPException(404, "finding not found")
-    # Owner/reason/expiry are always recorded so every exception stays
-    # auditable; the policy flag only governs whether they are enforced.
-    exception = {
-        "tool": tool, "rule_id": rule_id, "file": file,
-        "start_line": start_line, "owner": owner.strip(),
-        "reason": reason.strip(), "expires_at": expiry.isoformat(),
-    }
-    manager.add_exception(job_id, exception)
-    return {"id": job_id, "status": manager.get(job_id).status.value,
-            "exception": exception}
 
 
 @app.post("/api/inspect")
@@ -203,17 +159,9 @@ async def create_scan(
     git_url: Optional[str] = Form(None),
     local_path: Optional[str] = Form(None),
     confirm: Optional[str] = Form(None),
-    policy: str = Form("standard"),
-    policy_rules: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
 ) -> JSONResponse:
     requested = [t.strip() for t in tools.split(",") if t.strip()]
-    try:
-        selected_policy = get_policy(policy)
-        if policy_rules:
-            selected_policy = customize_policy(policy, json.loads(policy_rules))
-    except (ValueError, TypeError, json.JSONDecodeError) as exc:
-        raise HTTPException(400, str(exc)) from exc
 
     # upload/git are prepared server-side, so pause for confirmation by default
     # (the user reviews the inventory before tools run). A local path is already
@@ -228,7 +176,7 @@ async def create_scan(
         except SourceError as exc:
             raise HTTPException(400, str(exc)) from exc
         target = ScanTarget(kind="git", display=git_url)
-        job = manager.new_job(target, requested, selected_policy)
+        job = manager.new_job(target, requested)
         manager.start(job.id, {"kind": "git", "url": git_url}, confirm=want_confirm)
 
     elif source_kind == "path":
@@ -237,14 +185,14 @@ async def create_scan(
         if not local_path:
             raise HTTPException(400, "local_path is required for source_kind=path")
         target = ScanTarget(kind="path", display=local_path)
-        job = manager.new_job(target, requested, selected_policy)
+        job = manager.new_job(target, requested)
         manager.start(job.id, {"kind": "path", "path": local_path}, confirm=False)
 
     elif source_kind == "upload":
         if file is None:
             raise HTTPException(400, "file is required for source_kind=upload")
         target = ScanTarget(kind="upload", display=file.filename or "upload.zip")
-        job = manager.new_job(target, requested, selected_policy)
+        job = manager.new_job(target, requested)
         zip_path = manager.job_dir(job.id) / "upload.zip"
         try:
             await _save_upload(file, zip_path)
@@ -290,7 +238,6 @@ async def list_scans() -> dict:
                 "finished_at": j.finished_at,
                 "summary": j.summary,
                 # the report list shows each scan's verdict, so send it along
-                "policy_id": j.policy_id,
                 "decision": (j.policy_evaluation or {}).get("decision", ""),
             }
             for j in jobs
@@ -312,7 +259,7 @@ def _csv_safe(value):
 
 #: Column order for the CSV export — stable, so saved files stay comparable.
 _CSV_COLUMNS = [
-    "scan_id", "scanned_at", "target", "policy", "decision",
+    "scan_id", "scanned_at", "target", "decision",
     "tool", "severity", "rule_id", "title", "file", "start_line", "end_line",
     "package", "installed_version", "fixed_version", "cwe", "owasp", "message",
 ]
@@ -336,7 +283,6 @@ async def export_scan_csv(job_id: str) -> Response:
                 "scan_id": job.id,
                 "scanned_at": job.finished_at or job.created_at,
                 "target": job.target.display,
-                "policy": job.policy_id,
                 "decision": decision,
                 "tool": f.tool,
                 "severity": f.severity.value,

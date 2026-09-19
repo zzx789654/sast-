@@ -55,148 +55,14 @@ async function init() {
   await refreshScanList();
 }
 
-// ---------------------------------------------------------------- policies
+// ------------------------------------------------------------ verdict rule
+// The rule is fixed, so there is nothing to choose: state it in one line above
+// the scan button instead of asking the user to configure it.
 async function loadPolicies() {
-  const res = await fetch("/api/policies");
-  state.policies = await res.json();
-  const select = $("#policy-select");
-  select.innerHTML = "";
-  state.policies.templates.forEach((p) => select.appendChild(new Option(policyLabel(p), p.id)));
-  select.value = state.policies.default;
-  select.addEventListener("change", renderPolicy);
-  renderPolicy();
+  const box = $("#verdict-rule");
+  if (box) box.textContent = t("verdict.rule");
 }
 
-// Each policy rule maps to one boolean field, except retention (a number) and
-// pipeline_events (two booleans). One table drives both rendering and reading,
-// so the form and the submitted payload cannot drift apart.
-const POLICY_FIELDS = {
-  critical_block: ["block_critical"],
-  high_manual_review: ["high_requires_review"],
-  secret_block: ["block_secrets"],
-  false_positive_exception: ["exception_requires_owner_reason_expiry"],
-  pipeline_events: ["require_pull_request_scan", "require_release_scan"],
-};
-const POLICY_FIELD_LABEL = {
-  require_pull_request_scan: "policy.rule.requirePr",
-  require_release_scan: "policy.rule.requireRelease",
-};
-
-// Template names/descriptions come from the backend in one language; prefer a
-// localized string when we have one, otherwise show what the backend sent.
-function policyLabel(policy, suffix) {
-  const key = "policy.tpl." + policy.id + (suffix || "");
-  const localized = t(key);
-  if (localized !== key) return localized;
-  return suffix ? policy.description : (policy.name || policy.id);
-}
-
-function renderPolicy() {
-  if (!state.policies) return;
-  const select = $("#policy-select");
-  // Relabel options in place so a language switch keeps the current selection.
-  Array.from(select.options).forEach((opt) => {
-    const tpl = state.policies.templates.find((p) => p.id === opt.value);
-    if (tpl) opt.textContent = policyLabel(tpl);
-  });
-  const selected = state.policies.templates.find((p) => p.id === select.value)
-    || state.policies.templates[0];
-  $("#policy-desc").textContent = policyLabel(selected, ".desc");
-  const box = $("#policy-rules");
-  box.innerHTML = "";
-
-  // A policy is judged on the COMBINED findings of every selected tool, so say
-  // so once up front — "which tool does this rule belong to?" is the single
-  // most common misreading of this panel.
-  box.appendChild(el("p", "policy-scope", t("policy.scope")));
-
-  state.policies.rules.forEach((rule) => {
-    const row = el("div", "policy-rule-row");
-
-    if (rule.id === "report_retention") {
-      const head = el("label", "policy-rule");
-      head.appendChild(document.createTextNode(t("policy.rule.report_retention") + ": "));
-      const input = document.createElement("input");
-      input.type = "number";
-      input.id = "policy-rule-report_retention_days";
-      input.min = "1";
-      input.max = "3650";
-      input.value = selected.report_retention_days;
-      head.appendChild(input);
-      head.appendChild(document.createTextNode(" " + t("policy.days")));
-      row.appendChild(head);
-      row.appendChild(el("div", "policy-why", t("policy.why.report_retention")));
-      box.appendChild(row);
-      return;
-    }
-
-    (POLICY_FIELDS[rule.id] || []).forEach((field) => {
-      const head = el("label", "policy-rule");
-      const input = document.createElement("input");
-      input.type = "checkbox";
-      input.id = "policy-rule-" + field;
-      input.checked = Boolean(selected[field]);
-      head.appendChild(input);
-      head.appendChild(el("span", "policy-rule-title",
-        t(POLICY_FIELD_LABEL[field] || "policy.rule." + rule.id)));
-      row.appendChild(head);
-
-      // "when X happens -> this scan is judged Y", in plain words.
-      // keyed by field name, which is unique across every rule
-      const key = "policy.why." + field;
-      const why = t(key);
-      if (why !== key) row.appendChild(el("div", "policy-why", why));
-
-      // Which tools can actually produce this kind of finding.
-      if ((rule.sources || []).length) {
-        const src = el("div", "policy-src");
-        src.appendChild(document.createTextNode(t("policy.from") + " "));
-        rule.sources.forEach((name) => {
-          const installed = toolIsAvailable(name);
-          const chip = el("span", "policy-srcchip" + (installed ? "" : " off"), name);
-          if (!installed) chip.title = t("notInstalled").trim();
-          src.appendChild(chip);
-        });
-        row.appendChild(src);
-      }
-
-      // How many findings of this kind the currently shown scan has.
-      const hit = currentRuleHits(rule);
-      if (hit !== null) {
-        row.appendChild(el("div", "policy-hit" + (hit ? " on" : ""),
-          t("policy.hits", { n: hit })));
-      }
-      box.appendChild(row);
-    });
-  });
-}
-
-function toolIsAvailable(name) {
-  const tools = (state.toolsData && state.toolsData.tools) || [];
-  const tool = tools.find((x) => x.name === name);
-  return tool ? tool.available : true;
-}
-
-// Findings of this rule's kind in the scan currently shown, so the policy panel
-// says what it would mean for *this* project rather than in the abstract.
-function currentRuleHits(rule) {
-  if (!rule.counter || !state.currentJob) return null;
-  const counts = (state.currentJob.policy_evaluation || {}).counts;
-  if (counts && counts[rule.counter] !== undefined) return counts[rule.counter];
-  const summary = state.currentJob.summary || {};
-  return summary[rule.counter] !== undefined ? summary[rule.counter] : null;
-}
-
-function readPolicyOverrides() {
-  const out = {};
-  Object.values(POLICY_FIELDS).forEach((fields) => fields.forEach((field) => {
-    const input = $("#policy-rule-" + field);
-    if (input) out[field] = input.checked;
-  }));
-  const retention = $("#policy-rule-report_retention_days");
-  if (retention) out.report_retention_days = Number(retention.value);
-  return out;
-}
 
 // ---------------------------------------------------------------- views
 function wireViewNav() {
@@ -279,6 +145,30 @@ async function loadAdminStatus() {
     note.textContent = "";
     if (inPlace.length) note.textContent += t("admin.canUpdate", { list: inPlace.join(", ") });
     if (pinned.length) note.textContent += " " + t("admin.pinned", { list: pinned.join(", ") });
+  }
+
+  // Say what the update actually did. Without this the user has to find
+  // "Successfully installed" in a wall of pip output to know whether the
+  // restart button matters.
+  const outcome = $("#admin-outcome");
+  if (outcome) {
+    const outs = d.outcomes || {};
+    const names = Object.keys(outs);
+    if (!running && names.length) {
+      outcome.innerHTML = "";
+      names.forEach((n) => {
+        const row = el("div", "admin-outcome-row");
+        row.appendChild(el("span", "ao-tool", n));
+        row.appendChild(el("span", "ao-" + outs[n], t("admin.outcome." + outs[n])));
+        outcome.appendChild(row);
+      });
+      if (d.restart_required) {
+        outcome.appendChild(el("div", "admin-need-restart", t("admin.needRestart")));
+      }
+      outcome.classList.remove("hidden");
+    } else if (running) {
+      outcome.classList.add("hidden");
+    }
   }
 
   const log = $("#admin-log");
@@ -660,8 +550,6 @@ async function startScan() {
   const fd = new FormData();
   fd.append("source_kind", state.sourceKind);
   fd.append("tools", tools.join(","));
-  fd.append("policy", $("#policy-select").value || "standard");
-  fd.append("policy_rules", JSON.stringify(readPolicyOverrides()));
 
   if (state.sourceKind === "upload") {
     const f = $("#file-input").files[0];
@@ -821,22 +709,10 @@ function renderJob(job) {
   meta.innerHTML = "";
   meta.appendChild(el("span", null, `${job.target.kind}: ${job.target.display}`));
   meta.appendChild(el("span", "jstatus " + job.status, t("status." + job.status)));
-  if (job.policy) {
-    // Localize via the template id; a customized policy keeps the "_custom"
-    // suffix, so fall back to its base template's label.
-    const baseId = String(job.policy_id || "").replace(/_custom$/, "");
-    const key = "policy.tpl." + baseId;
-    const localized = t(key);
-    const name = localized !== key ? localized : (job.policy.name || job.policy_id);
-    meta.appendChild(el("span", "policy-pill", t("policy.pill", { name })));
-  }
   if (job.policy_evaluation && job.policy_evaluation.decision) {
     const decision = job.policy_evaluation.decision;
-    const pill = el("span", "policy-decision gate-" + decision,
-      t("policy.gate", { decision: t("policy.decision." + decision) }));
-    meta.appendChild(pill);
-    const excepted = (job.policy_evaluation.counts || {}).excepted;
-    if (excepted) meta.appendChild(el("span", "policy-pill", t("policy.excepted", { n: excepted })));
+    meta.appendChild(el("span", "policy-decision gate-" + decision,
+      t("policy.gate", { decision: t("policy.decision." + decision) })));
   }
   const inv = job.inventory;
   if (inv && inv.total_files) {
@@ -938,76 +814,27 @@ async function submitPolicyReview(id, decision) {
   else showError((await res.json()).detail || t("policy.review.failed"));
 }
 
-// A blocked scan can still be unblocked by recording an auditable, time-limited
-// false-positive exception for the finding that blocked it.
+// A blocked scan lists what blocked it. There is no override here: the rule is
+// fixed, so the way past a block is to fix the finding or rescan.
 function renderBlockedBox(job, box) {
   box.classList.remove("hidden");
   box.innerHTML = "";
   box.appendChild(el("div", "cb-title", t("policy.blocking.title")));
   const refs = (job.policy_evaluation || {}).blocking_findings || [];
   refs.forEach((f) => {
-    const row = el("div", "cb-warn", findingRefLabel(f) + " ");
-    const btn = el("button", "linkbtn", t("policy.except.btn"));
-    btn.addEventListener("click", () => renderExceptionForm(job, f, box));
-    row.appendChild(btn);
+    const row = el("div", "cb-row");
+    row.appendChild(el("span", "sev " + f.severity, t("sev." + f.severity)));
+    row.appendChild(el("span", "cb-tool", f.tool));
+    row.appendChild(el("span", "cb-title-text", f.title || f.rule_id || ""));
+    if (f.file) {
+      row.appendChild(el("span", "cb-loc",
+        f.file + (f.line ? ":L" + f.line : "")));
+    }
     box.appendChild(row);
   });
-  const review = (job.policy_evaluation || {}).review;
-  if (review) {
-    box.appendChild(el("div", "cb-inv", t("policy.reviewedBy", {
-      reviewer: review.reviewer,
-      decision: t("policy.review." + (review.decision === "approve" ? "approve" : "reject")),
-      note: review.note,
-    })));
-  }
+  box.appendChild(el("div", "cb-note", t("policy.blocking.note")));
 }
 
-function renderExceptionForm(job, finding, box) {
-  box.innerHTML = "";
-  box.appendChild(el("div", "cb-title", t("policy.except.title")));
-  box.appendChild(el("div", "cb-warn", findingRefLabel(finding)));
-  const owner = document.createElement("input");
-  owner.id = "exc-owner";
-  owner.placeholder = t("policy.except.owner");
-  const reason = document.createElement("textarea");
-  reason.id = "exc-reason";
-  reason.placeholder = t("policy.except.reason");
-  const expires = document.createElement("input");
-  expires.id = "exc-expires";
-  expires.type = "date";
-  expires.title = t("policy.except.expires");
-  box.appendChild(owner);
-  box.appendChild(reason);
-  box.appendChild(expires);
-  const btns = el("div", "cb-btns");
-  const submit = el("button", "primary", t("policy.except.submit"));
-  submit.addEventListener("click", () => submitException(job.id, finding));
-  const cancel = el("button", "ghostbtn", t("policy.except.cancel"));
-  cancel.addEventListener("click", () => renderBlockedBox(job, box));
-  btns.appendChild(submit);
-  btns.appendChild(cancel);
-  box.appendChild(btns);
-}
-
-async function submitException(id, finding) {
-  const owner = $("#exc-owner").value.trim();
-  const reason = $("#exc-reason").value.trim();
-  const expires = $("#exc-expires").value;
-  if (!owner || !reason || !expires) { showError(t("policy.except.required")); return; }
-  const fd = new FormData();
-  fd.append("tool", finding.tool);
-  fd.append("rule_id", finding.rule_id || "");
-  fd.append("file", finding.file || "");
-  if (finding.start_line !== null && finding.start_line !== undefined) {
-    fd.append("start_line", finding.start_line);
-  }
-  fd.append("owner", owner);
-  fd.append("reason", reason);
-  fd.append("expires_at", expires);
-  const res = await fetch(`/api/scans/${id}/exceptions`, { method: "POST", body: fd });
-  if (res.ok) await loadJob(id);
-  else showError((await res.json()).detail || t("policy.except.failed"));
-}
 
 async function confirmScan(id) {
   const res = await fetch(`/api/scans/${id}/confirm`, { method: "POST" });

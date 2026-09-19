@@ -118,12 +118,6 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 .note { font-size: .8rem; color: var(--high); }
 
 .tools-pick { border: 1px solid var(--line); border-radius: 8px; padding: .6rem .7rem; margin: .5rem 0 .8rem; }
-.policy-pick { border: 1px solid var(--line); border-radius: 8px; padding: .6rem .7rem; margin: .5rem 0 .8rem; }
-.policy-pick legend { font-size: .82rem; color: var(--muted); padding: 0 .3rem; }
-.policy-pick select { width: 100%; padding: .45rem; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); }
-.policy-rules { display: grid; gap: .2rem; font-size: .76rem; color: var(--muted); }
-.policy-rule { padding-left: .2rem; }
-.policy-pill, .policy-decision { padding: .1rem .45rem; border: 1px solid var(--line); border-radius: 999px; font-size: .72rem; }
 .policy-decision.gate-passed { color: var(--ok); border-color: var(--ok); }
 .policy-decision.gate-manual_review { color: var(--high); border-color: var(--high); }
 .policy-decision.gate-blocked { color: var(--crit); border-color: var(--crit); }
@@ -356,17 +350,7 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 .sev-dot.medium { background: var(--med); } .sev-dot.low { background: var(--low); }
 .sev-dot.info { background: var(--info); } .sev-dot.unknown { background: var(--unknown); }
 
-/* policy panel: one block per rule, explained in plain words */
-.policy-scope { font-size: .74rem; color: var(--muted); margin: 0 0 .5rem; line-height: 1.5; }
-.policy-rule-row { padding: .4rem 0; border-top: 1px solid var(--line); }
-.policy-rule-row:first-of-type { border-top: none; }
-.policy-rule-title { font-size: .82rem; color: var(--ink); }
-.policy-why { font-size: .73rem; color: var(--muted); margin: .2rem 0 .15rem 1.35rem; line-height: 1.5; }
-.policy-src { font-size: .7rem; color: var(--muted); margin-left: 1.35rem; display: flex; flex-wrap: wrap; gap: .25rem; align-items: center; }
-.policy-srcchip { font-family: ui-monospace, monospace; font-size: .66rem; border: 1px solid var(--line); border-radius: 4px; padding: .02rem .28rem; background: var(--bg); }
-.policy-srcchip.off { opacity: .45; text-decoration: line-through; }
-.policy-hit { font-size: .7rem; color: var(--muted); margin: .2rem 0 0 1.35rem; }
-.policy-hit.on { color: var(--high); font-weight: 600; }
+/* verdict badge and the blocked-findings box */
 
 /* docker capacity verdict */
 .c-cap { min-width: 150px; }
@@ -410,3 +394,26 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
   font-size: .72rem; line-height: 1.45; white-space: pre-wrap; color: var(--ink);
 }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* Result of the last update, so "do I need to restart?" is answered outright */
+.admin-outcome { margin-top: .5rem; font-size: .78rem; }
+.admin-outcome-row { display: flex; gap: .5rem; align-items: baseline; padding: .12rem 0; }
+.admin-outcome .ao-tool { font-family: ui-monospace, monospace; min-width: 7rem; }
+.admin-outcome .ao-upgraded { color: var(--ok); font-weight: 600; }
+.admin-outcome .ao-data_updated { color: var(--ok); }
+.admin-outcome .ao-already_current, .admin-outcome .ao-unknown { color: var(--muted); }
+.admin-outcome .ao-failed { color: var(--high); font-weight: 600; }
+.admin-need-restart {
+  margin-top: .4rem; padding: .35rem .55rem; border-radius: 4px;
+  border-left: 2px solid var(--med); background: var(--bg); color: var(--ink);
+}
+
+/* The judgement rule is fixed, so it is a statement above the scan button
+   rather than a panel of controls. */
+.verdict-rule {
+  margin: .6rem 0 .2rem; padding: .5rem .65rem; font-size: .78rem;
+  line-height: 1.5; color: var(--muted);
+  background: var(--bg); border: 1px solid var(--line);
+  border-left: 3px solid var(--med); border-radius: 0 5px 5px 0;
+}
+.cb-note { margin-top: .4rem; font-size: .76rem; color: var(--muted); }

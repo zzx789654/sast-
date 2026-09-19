@@ -131,8 +131,6 @@ class Job(BaseModel):
     status: JobStatus = JobStatus.QUEUED
     target: ScanTarget
     requested_tools: list[str] = Field(default_factory=list)
-    policy_id: str = "standard"
-    policy: dict = Field(default_factory=dict)
     created_at: str = Field(default_factory=lambda: _now())
     started_at: str = ""
     finished_at: str = ""
@@ -145,7 +143,6 @@ class Job(BaseModel):
     error: str = ""
     logs: list[str] = Field(default_factory=list)
     policy_evaluation: dict = Field(default_factory=dict)
-    exceptions: list[dict] = Field(default_factory=list)
 
     def compute_progress(self) -> "Job":
         total = len(self.results)

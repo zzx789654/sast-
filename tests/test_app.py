@@ -335,7 +335,8 @@ def test_orchestrator_state_machine(monkeypatch, tmp_path):
             return True
 
         def _execute(self, target_dir):
-            return [Finding(tool="fake", severity=Severity.HIGH, title="boom")]
+            # Medium is the severity that asks for a reviewer; High blocks.
+            return [Finding(tool="fake", severity=Severity.MEDIUM, title="boom")]
 
     monkeypatch.setattr(orchestrator, "get_adapters", lambda names: [FakeAdapter()])
     mgr = orchestrator.JobManager()
@@ -344,7 +345,7 @@ def test_orchestrator_state_machine(monkeypatch, tmp_path):
     mgr._prepare_and_maybe_scan(job.id, {"kind": "path", "path": str(tmp_path)}, False)
 
     assert job.status.value == "policy_review"
-    assert job.summary["high"] == 1
+    assert job.summary["medium"] == 1
     assert job.summary["total"] == 1
     assert job.results["fake"].status == ToolStatus.OK
     # progress + phase are populated for the live UI
@@ -357,14 +358,13 @@ def test_orchestrator_state_machine(monkeypatch, tmp_path):
     assert mgr.review(job.id, "approve", "security", "again") is False
 
 
-def test_blocked_job_unblocks_via_exception(monkeypatch, tmp_path):
-    """A Critical finding blocks the scan; recording a time-limited exception
-    clears the block. This is the flow the blocked-state UI drives."""
+def test_high_finding_blocks_and_cannot_be_waived(monkeypatch, tmp_path):
+    """A High finding blocks, and there is no longer any way to wave it through."""
     from app import orchestrator
     from app.adapters.base import BaseAdapter
     from app.models import ScanTarget
 
-    class CriticalAdapter(BaseAdapter):
+    class HighAdapter(BaseAdapter):
         name = "fake"
         kind = ToolKind.SAST
         binary = "fake"
@@ -376,34 +376,22 @@ def test_blocked_job_unblocks_via_exception(monkeypatch, tmp_path):
             return True
 
         def _execute(self, target_dir):
-            return [Finding(tool="fake", rule_id="BOOM", severity=Severity.CRITICAL,
-                            title="boom")]
+            return [Finding(tool="fake", severity=Severity.HIGH, title="rce",
+                            file="a.py", start_line=3)]
 
-    monkeypatch.setattr(orchestrator, "get_adapters", lambda names: [CriticalAdapter()])
+    monkeypatch.setattr(orchestrator, "get_adapters", lambda names: [HighAdapter()])
     mgr = orchestrator.JobManager()
     job = mgr.new_job(ScanTarget(kind="path", display=str(tmp_path)), ["fake"])
     mgr._prepare_and_maybe_scan(job.id, {"kind": "path", "path": str(tmp_path)}, False)
 
     assert job.status.value == "blocked"
-    blocking = job.policy_evaluation["blocking_findings"]
-    assert len(blocking) == 1 and blocking[0]["rule_id"] == "BOOM"
-
-    assert mgr.add_exception(job.id, {
-        "tool": "fake", "rule_id": "BOOM", "file": "", "start_line": None,
-        "owner": "security", "reason": "false positive",
-        "expires_at": "2099-01-01T00:00:00+00:00",
-    }) is True
-    assert job.status.value == "done"
-    assert job.policy_evaluation["counts"]["excepted"] == 1
-
-    # an expired exception must not keep the finding suppressed
-    job.exceptions = [{
-        "tool": "fake", "rule_id": "BOOM", "file": "", "start_line": None,
-        "owner": "security", "reason": "stale",
-        "expires_at": "2000-01-01T00:00:00+00:00",
-    }]
-    from app.policies import evaluate_policy
-    assert evaluate_policy(job)["decision"] == "blocked"
+    assert job.policy_evaluation["decision"] == "blocked"
+    assert job.policy_evaluation["counts"]["high"] == 1
+    # The false-positive exception route was removed along with the policy
+    # form, so the manager must not carry one any more.
+    assert not hasattr(mgr, "add_exception")
+    # A review cannot rescue a blocked scan either; review is for medium only.
+    assert mgr.review(job.id, "approve", "security", "please") is False
 
 
 def test_confirm_flow(monkeypatch, tmp_path):
@@ -423,7 +411,9 @@ def test_confirm_flow(monkeypatch, tmp_path):
             return True, ""
 
         def _execute(self, target_dir):
-            return [Finding(tool="fake", severity=Severity.HIGH, title="x")]
+            # Medium, so the scan pauses for review and the confirm flow --
+            # which is what this test is about -- stays observable.
+            return [Finding(tool="fake", severity=Severity.MEDIUM, title="x")]
 
     monkeypatch.setattr(orchestrator, "get_adapters", lambda names: [FakeAdapter()])
     mgr = orchestrator.JobManager()
@@ -441,7 +431,7 @@ def test_confirm_flow(monkeypatch, tmp_path):
     pending = mgr._pending.pop(job.id)
     mgr._scan(job, pending["scan_root"], pending["external"])
     assert job.status == JobStatus.POLICY_REVIEW
-    assert job.summary["high"] == 1
+    assert job.summary["medium"] == 1
     assert mgr.review(job.id, "reject", "security", "Fix required") is True
     assert job.status == JobStatus.BLOCKED
 
@@ -491,91 +481,78 @@ def test_api_tools(client):
 
 
 def test_api_policies(client):
-    data = client.get("/api/policies").json()
-    assert data["default"] == "standard"
-    assert {p["id"] for p in data["templates"]} == {"standard", "strict", "report_only"}
-    assert {r["id"] for r in data["rules"]} == {
-        "critical_block", "high_manual_review", "secret_block",
-        "false_positive_exception", "report_retention", "pipeline_events",
-    }
-    bad = client.post("/api/scans", data={
-        "source_kind": "path", "tools": "semgrep", "local_path": ".",
-        "policy": "does-not-exist",
-    })
-    assert bad.status_code == 400
-
-    bad_rule = client.post("/api/scans", data={
-        "source_kind": "path", "tools": "semgrep", "local_path": ".",
-        "policy": "standard", "policy_rules": json.dumps({"no_such_rule": True}),
-    })
-    assert bad_rule.status_code == 400
+    """The rule is fixed now, so the endpoint states it instead of offering
+    templates to choose between."""
+    res = client.get("/api/policies")
+    assert res.status_code == 200
+    body = res.json()
+    assert "templates" not in body and "default" not in body
+    ids = [r["id"] for r in body["rules"]]
+    assert "block_high_and_above" in ids
+    assert "secret_block" in ids
+    assert "medium_manual_review" in ids
 
 
-def test_custom_policy_rules_reach_the_job(client, tmp_path):
-    """Per-scan rule overrides must survive into the job, not be looked up again
-    by id (a custom policy has no entry in the template table)."""
-    (tmp_path / "x.py").write_text("print(1)\n")
-    res = client.post("/api/scans", data={
-        "source_kind": "path", "tools": "semgrep", "local_path": str(tmp_path),
-        "policy": "standard",
-        "policy_rules": json.dumps({
-            "block_critical": False, "report_retention_days": 45,
-            "require_pull_request_scan": True,
-        }),
-    })
-    assert res.status_code == 201
-    job = client.get(f"/api/scans/{res.json()['id']}").json()
-    assert job["policy_id"] == "standard_custom"
-    assert job["policy"]["block_critical"] is False
-    assert job["policy"]["report_retention_days"] == 45
-    assert job["policy"]["required_events"] == ["pull_request"]
-
-
-def test_policy_evaluation():
+@pytest.mark.parametrize("severities,expected", [
+    ([], "passed"),                                   # nothing found
+    ([Severity.INFO], "passed"),
+    ([Severity.LOW], "passed"),
+    ([Severity.LOW, Severity.INFO], "passed"),
+    ([Severity.MEDIUM], "manual_review"),
+    ([Severity.LOW, Severity.MEDIUM], "manual_review"),
+    ([Severity.HIGH], "blocked"),
+    ([Severity.CRITICAL], "blocked"),
+    ([Severity.MEDIUM, Severity.HIGH], "blocked"),    # worst severity wins
+])
+def test_verdict_ladder(severities, expected):
+    """High and above blocks, medium needs a reviewer, low or nothing passes."""
     from app.models import Job, ScanTarget, ToolResult
-    from app.policies import customize_policy, evaluate_policy
-
-    custom = customize_policy("standard", {
-        "block_critical": False, "report_retention_days": 45,
-        "require_pull_request_scan": True,
-    })
-    assert custom.id == "standard_custom"
-    assert custom.block_critical is False
-    assert custom.report_retention_days == 45
-    assert custom.required_events == ["pull_request"]
+    from app.policies import evaluate_policy
 
     job = Job(
-        id="policy-test",
+        id="ladder",
         target=ScanTarget(kind="upload", display="x.zip"),
-        policy_id="standard",
         results={
             "semgrep": ToolResult(
                 tool="semgrep", kind=ToolKind.SAST, status=ToolStatus.OK,
-                findings=[Finding(tool="semgrep", rule_id="r1", severity=Severity.HIGH)],
+                findings=[Finding(tool="semgrep", rule_id="r%d" % i, severity=sev)
+                          for i, sev in enumerate(severities)],
+            ),
+        },
+    )
+    assert evaluate_policy(job)["decision"] == expected
+
+
+def test_secret_blocks_whatever_severity_it_was_given():
+    """A leaked credential is already public; its grading does not change that."""
+    from app.models import Job, ScanTarget, ToolResult
+    from app.policies import evaluate_policy
+
+    job = Job(
+        id="secret",
+        target=ScanTarget(kind="upload", display="x.zip"),
+        results={
+            "gitleaks": ToolResult(
+                tool="gitleaks", kind=ToolKind.SECRET, status=ToolStatus.OK,
+                # deliberately LOW: the rule must not depend on the grading
+                findings=[Finding(tool="gitleaks", rule_id="aws-key",
+                                  severity=Severity.LOW)],
             ),
         },
     )
     result = evaluate_policy(job)
-    assert result["decision"] == "manual_review"
-    assert result["counts"]["high"] == 1
-
-    critical = Finding(tool="trivy", rule_id="CVE-TEST", severity=Severity.CRITICAL,
-                       extra={"category": "vulnerability"})
-    job.results["trivy"] = ToolResult(
-        tool="trivy", kind=ToolKind.SCA, status=ToolStatus.OK,
-        findings=[critical],
-    )
-    result = evaluate_policy(job)
     assert result["decision"] == "blocked"
+    assert result["counts"]["secrets"] == 1
 
-    job.exceptions = [{
-        "tool": "trivy", "rule_id": "CVE-TEST", "file": "",
-        "start_line": None, "owner": "security", "reason": "false positive",
-        "expires_at": "2099-01-01T00:00:00+00:00",
-    }]
-    result = evaluate_policy(job)
-    assert result["decision"] == "manual_review"
-    assert result["counts"]["excepted"] == 1
+
+def test_scan_cannot_be_created_with_a_policy():
+    """The policy form is gone, so new_job must not take one any more."""
+    import inspect
+
+    from app.orchestrator import JobManager
+
+    params = inspect.signature(JobManager.new_job).parameters
+    assert "policy" not in params
 
 
 def test_api_inspect(client, tmp_path):
