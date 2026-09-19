@@ -910,12 +910,16 @@ def test_admin_endpoints_are_post_only(client):
 
 
 @pytest.mark.parametrize("text,secret", [
-    ("https://user:s3cr3t@pypi.internal/simple/", "s3cr3t"),
-    ("NPM_TOKEN=abc123def456", "abc123def456"),
-    ("api_key: sk-live-9999", "sk-live-9999"),
-    ("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9", "eyJhbGciOiJIUzI1NiJ9"),
-    ("Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
-    ("machine pypi.org login bob password hunter2", "hunter2"),
+    # The fake values below are spelled so that a secret scanner does not
+    # mistake them for real ones: a high-entropy placeholder here costs a
+    # false positive on every future scan, which teaches people to skim past
+    # gitleaks output -- exactly the habit this project exists to prevent.
+    ("https://user:NOT-A-REAL-SECRET@pypi.internal/simple/", "NOT-A-REAL-SECRET"),
+    ("NPM_TOKEN=NOT-A-REAL-TOKEN", "NOT-A-REAL-TOKEN"),
+    ("api_key: NOT-A-REAL-KEY", "NOT-A-REAL-KEY"),
+    ("Authorization: Bearer NOT-A-REAL-BEARER", "NOT-A-REAL-BEARER"),
+    ("Authorization: Basic NOT-A-REAL-BASIC", "NOT-A-REAL-BASIC"),
+    ("machine pypi.org login bob password NOT-A-REAL-PASSWORD", "NOT-A-REAL-PASSWORD"),
     ("ERROR: cannot write /usr/local/lib/python3.11/site-packages/x", "site-packages"),
     ("config at /home/appuser/.config/pip/pip.conf", "appuser"),
     ("cannot write /usr/local/bin/trivy", "/usr/local/bin"),
