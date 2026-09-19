@@ -70,7 +70,7 @@ class SemgrepAdapter(BaseAdapter):
             findings.append(
                 Finding(
                     tool=self.name,
-                    rule_id=item.get("check_id", ""),
+                    rule_id=_clean_check_id(item.get("check_id", "")),
                     severity=sev,
                     title=(item.get("check_id", "") or "semgrep finding").split(".")[-1],
                     message=extra.get("message", "").strip(),
@@ -100,6 +100,21 @@ def _as_list(value) -> list[str]:
 #: Snippets come from scanned (untrusted) files, so bound how much is kept.
 MAX_SNIPPET_LINES = 12
 MAX_SNIPPET_CHARS = 1200
+
+
+def _clean_check_id(check_id: str) -> str:
+    """Drop the path prefix semgrep adds to a rule loaded from a file.
+
+    A rule from a local file is reported as the path to it with dots for
+    separators, so a custom rule showed up as
+    "data.workspaces.<job>.rules.semgrep.no-pickle-loads". The id the user
+    wrote is the last segment; the rest is where we happened to put the file.
+    """
+    if "rules.semgrep." in check_id:
+        return check_id.split("rules.semgrep.", 1)[1]
+    if "rules.trivy." in check_id:
+        return check_id.split("rules.trivy.", 1)[1]
+    return check_id
 
 
 def _snippet(lines) -> str:

@@ -1256,3 +1256,14 @@ def test_semgrep_scan_bounds_runaway_rules(monkeypatch, tmp_path):
     args = captured["args"]
     assert "--timeout" in args
     assert "--timeout-threshold" in args
+
+
+def test_custom_rule_id_drops_the_workspace_path():
+    """A rule loaded from a file is reported by its path; show the id instead."""
+    from app.adapters.semgrep import _clean_check_id
+
+    assert _clean_check_id(
+        "data.workspaces.abc123.rules.semgrep.no-pickle-loads") == "no-pickle-loads"
+    # A registry rule keeps its full, meaningful identifier.
+    registry = "python.lang.security.deserialization.pickle.avoid-pickle"
+    assert _clean_check_id(registry) == registry
