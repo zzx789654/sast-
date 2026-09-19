@@ -175,23 +175,6 @@ async def policies() -> dict:
     return {"rules": RULE_CATALOG}
 
 
-@app.post("/api/scans/{job_id}/review")
-async def review_scan(
-    job_id: str,
-    decision: str = Form(...),
-    reviewer: str = Form(...),
-    note: str = Form(...),
-) -> dict:
-    """Approve or reject a scan paused for manual review."""
-    if decision not in {"approve", "reject"}:
-        raise HTTPException(400, "decision must be approve or reject")
-    if not reviewer.strip() or not note.strip():
-        raise HTTPException(400, "reviewer and note are required")
-    if not manager.review(job_id, decision, reviewer.strip(), note.strip()):
-        raise HTTPException(409, "scan is not awaiting policy review")
-    return {"id": job_id, "status": manager.get(job_id).status.value}
-
-
 @app.post("/api/inspect")
 async def inspect_project(
     source_kind: str = Form(...),

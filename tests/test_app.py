@@ -352,10 +352,10 @@ def test_orchestrator_state_machine(monkeypatch, tmp_path):
     assert job.results["fake"].phase.value == "finished"
     assert job.progress["percent"] == 100
     assert job.progress["finished"] == job.progress["total"] == 1
-    assert mgr.review(job.id, "approve", "security", "Reviewed and accepted") is True
-    assert job.status.value == "done"
-    # a review only applies while the job is awaiting one
-    assert mgr.review(job.id, "approve", "security", "again") is False
+    # The verdict stands; signing it off happens outside this application,
+    # so there is no longer a way to change it from here.
+    assert not hasattr(mgr, "review")
+    assert job.status.value == "policy_review"
 
 
 def test_high_finding_blocks_and_cannot_be_waived(monkeypatch, tmp_path):
@@ -390,8 +390,8 @@ def test_high_finding_blocks_and_cannot_be_waived(monkeypatch, tmp_path):
     # The false-positive exception route was removed along with the policy
     # form, so the manager must not carry one any more.
     assert not hasattr(mgr, "add_exception")
-    # A review cannot rescue a blocked scan either; review is for medium only.
-    assert mgr.review(job.id, "approve", "security", "please") is False
+    # Nor is there a review route back: the verdict is final in the app.
+    assert not hasattr(mgr, "review")
 
 
 def test_confirm_flow(monkeypatch, tmp_path):
@@ -432,8 +432,6 @@ def test_confirm_flow(monkeypatch, tmp_path):
     mgr._scan(job, pending["scan_root"], pending["external"])
     assert job.status == JobStatus.POLICY_REVIEW
     assert job.summary["medium"] == 1
-    assert mgr.review(job.id, "reject", "security", "Fix required") is True
-    assert job.status == JobStatus.BLOCKED
 
 
 def test_cancel_flow(monkeypatch, tmp_path):
@@ -1359,3 +1357,33 @@ def test_stage_reporting_never_breaks_a_scan(monkeypatch, tmp_path):
     adapter._on_stage = lambda stage: (_ for _ in ()).throw(RuntimeError("boom"))
     result = adapter.scan(tmp_path)
     assert result.status == ToolStatus.OK
+
+
+def test_pdf_export_renders_every_finding_first():
+    """The list is paged, and printing captures only what is in the DOM.
+
+    A PDF that silently stopped at the first hundred findings would be worse
+    than a slow one: the person reading it would not know any were missing.
+    """
+    src = (Path(__file__).resolve().parents[1] / "app/static/app.js").read_text("utf-8")
+    export = src[src.index('$("#export-pdf")'):]
+    export = export[:export.index("});") + 3]
+    assert "renderAll" in export
+    assert export.index("renderAll") < export.index("window.print")
+
+
+def test_manual_review_verdict_survives_without_the_form():
+    """The form is gone, but the verdict still has to reach the export."""
+    from app.models import Job, ScanTarget, ToolResult
+    from app.policies import evaluate_policy
+
+    job = Job(
+        id="r", target=ScanTarget(kind="git", display="x"),
+        results={"semgrep": ToolResult(
+            tool="semgrep", kind=ToolKind.SAST, status=ToolStatus.OK,
+            findings=[Finding(tool="semgrep", rule_id="r1",
+                              severity=Severity.MEDIUM)])},
+    )
+    result = evaluate_policy(job)
+    assert result["decision"] == "manual_review"
+    assert len(result["manual_review_findings"]) == 1

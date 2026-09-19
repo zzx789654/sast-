@@ -201,9 +201,11 @@ plainly:
   every tool has already finished by the time the verdict is computed, and
   nothing downstream consumes it. Wiring it into CI is a separate job.
 
-A **needs a reviewer** verdict requires a reviewer name and a note before it can
-be approved or rejected. A **must not go live** verdict has no override in the
-application: fix the finding and scan again.
+Neither verdict can be changed from the application. **Needs a reviewer** is a
+label for whoever signs the report off -- export the PDF and send it on. **Must
+not go live** means fix the finding and scan again. Signing off in a page with
+no login, whose history lives in memory, would not have been worth the paper it
+was printed on.
 
 ### Docker capacity (Monitor tab)
 

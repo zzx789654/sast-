@@ -85,22 +85,6 @@ class JobManager:
         with self._lock:
             return self._jobs.get(job_id)
 
-    def review(self, job_id: str, decision: str, reviewer: str, note: str) -> bool:
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if job is None or job.status != JobStatus.POLICY_REVIEW:
-                return False
-            job.policy_evaluation["review"] = {
-                "decision": decision, "reviewer": reviewer, "note": note,
-            }
-            if decision == "approve":
-                job.status = JobStatus.DONE
-                job.stage = "done (policy approved)"
-            else:
-                job.status = JobStatus.BLOCKED
-                job.stage = "blocked by policy review"
-            return True
-
     def list_jobs(self) -> list[Job]:
         with self._lock:
             return sorted(

@@ -53,13 +53,6 @@ const DICT = {
     // 說明政策的作用範圍（使用者最常誤解的一點）
 
     // 每條規則的情境式說明：發生什麼 → 判定為什麼
-    "policy.review.title": "需要人工審查",
-    "policy.review.reviewer": "審查者",
-    "policy.review.note": "審查備註",
-    "policy.review.approve": "核准",
-    "policy.review.reject": "封鎖",
-    "policy.review.failed": "審查送出失敗",
-    "policy.review.required": "請填寫審查者與審查備註",
     "policy.blocking.title": "阻擋中的發現",
 
     // policy template names / descriptions (keyed by backend template id)
@@ -292,13 +285,6 @@ const DICT = {
     "policy.decision.blocked": "blocked",
 
 
-    "policy.review.title": "Policy review required",
-    "policy.review.reviewer": "Reviewer",
-    "policy.review.note": "Review note",
-    "policy.review.approve": "Approve",
-    "policy.review.reject": "Reject",
-    "policy.review.failed": "policy review failed",
-    "policy.review.required": "Reviewer and review note are required",
     "policy.blocking.title": "Findings that block release",
     "policy.blocking.note": "Fix these and scan again. There is no override on this page.",
 

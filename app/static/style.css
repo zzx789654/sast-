@@ -367,7 +367,10 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 @media print {
   .topbar, .viewnav, #view-scan, #view-monitor,
   .report-list-panel, .export-btns, .filters, #confirm-box,
-  #progress-wrap { display: none !important; }
+  #progress-wrap, .show-more { display: none !important; }
+  /* The verdict is the first thing the reader needs, so keep it black on
+     white rather than a colour that may print faint. */
+  .policy-decision { border: 1px solid #000; color: #000 !important; }
   body { background: #fff; color: #000; }
   .report-wrap { display: block; padding: 0; }
   .panel { border: none; box-shadow: none; padding: 0; }

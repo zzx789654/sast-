@@ -342,7 +342,13 @@ function wireViewNav() {
   $("#admin-restart").addEventListener("click", runRestart);
   $("#report-refresh").addEventListener("click", () => refreshScanList(state.selectedJob));
   $("#export-csv").addEventListener("click", exportCsv);
-  $("#export-pdf").addEventListener("click", () => window.print());
+  $("#export-pdf").addEventListener("click", () => {
+    // Render every finding before printing: the list is paged for speed, and
+    // a PDF that silently stopped at the first hundred would be worse than
+    // slow -- whoever reads it would not know anything was missing.
+    if (renderFindings.renderAll) renderFindings.renderAll();
+    window.print();
+  });
 }
 
 function showView(view) {
@@ -1008,29 +1014,10 @@ function renderJob(job) {
 function renderConfirmBox(job) {
   const box = $("#confirm-box");
   if (job.status === "policy_review") {
-    box.classList.remove("hidden");
-    box.innerHTML = "";
-    box.appendChild(el("div", "cb-title", t("policy.review.title")));
-    const refs = (job.policy_evaluation || {}).manual_review_findings || [];
-    refs.forEach((f) => box.appendChild(el("div", "cb-warn", findingRefLabel(f))));
-    const reviewer = document.createElement("input");
-    reviewer.id = "policy-reviewer";
-    reviewer.placeholder = t("policy.review.reviewer");
-    reviewer.required = true;
-    const note = document.createElement("textarea");
-    note.id = "policy-review-note";
-    note.placeholder = t("policy.review.note");
-    note.required = true;
-    box.appendChild(reviewer);
-    box.appendChild(note);
-    const btns = el("div", "cb-btns");
-    const approve = el("button", "primary", t("policy.review.approve"));
-    approve.addEventListener("click", () => submitPolicyReview(job.id, "approve"));
-    const reject = el("button", "ghostbtn", t("policy.review.reject"));
-    reject.addEventListener("click", () => submitPolicyReview(job.id, "reject"));
-    btns.appendChild(approve);
-    btns.appendChild(reject);
-    box.appendChild(btns);
+    // The verdict is on the header and in the export. Signing it off happens
+    // away from here -- this page has no login, and its history lives in
+    // memory, so it was never the right place to record a decision.
+    box.classList.add("hidden");
     return;
   }
   if (job.status === "blocked") {
@@ -1071,24 +1058,6 @@ function renderConfirmBox(job) {
   btns.appendChild(run);
   btns.appendChild(cancel);
   box.appendChild(btns);
-}
-
-function findingRefLabel(f) {
-  const where = f.file ? ` ${f.file}:${f.start_line || ""}` : "";
-  return `${t("sev." + f.severity)} ${f.tool} ${f.rule_id}${where}`;
-}
-
-async function submitPolicyReview(id, decision) {
-  const reviewer = $("#policy-reviewer").value.trim();
-  const note = $("#policy-review-note").value.trim();
-  if (!reviewer || !note) { showError(t("policy.review.required")); return; }
-  const fd = new FormData();
-  fd.append("decision", decision);
-  fd.append("reviewer", reviewer);
-  fd.append("note", note);
-  const res = await fetch(`/api/scans/${id}/review`, { method: "POST", body: fd });
-  if (res.ok) await loadJob(id);
-  else showError((await res.json()).detail || t("policy.review.failed"));
 }
 
 async function confirmScan(id) {
@@ -1262,6 +1231,12 @@ function renderFindings() {
   more.addEventListener("click", renderPage);
   box.appendChild(more);
   renderPage();
+
+  // Printing captures the DOM as it stands, so a paged list would export only
+  // the first page. Let the PDF button ask for the rest first.
+  renderFindings.renderAll = () => {
+    while (shown < items.length) renderPage();
+  };
 }
 
 function renderFinding(f) {

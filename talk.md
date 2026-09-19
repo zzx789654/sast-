@@ -130,3 +130,11 @@
 - **問題 4**：`ToolResult` 新增 `stage` 欄位，每個 adapter 宣告自己的 `first_stage`（semgrep=編譯規則 / trivy=更新弱點DB / osv,npm=查詢情資 / gitleaks=比對密鑰 / bearer=資料流分析），base 的 template method 在 probe→applicability→execute 三點回報。前端顯示階段文字而非只有「執行中」。
 - **附帶修正**：1343 筆發現一次全塞 DOM 會卡頓，改為每頁 100 筆 + 「顯示更多」。
 - **影響範圍**：`models.py`、`config.py`、`adapters/base|semgrep|trivy|osv_scanner|npm_audit|gitleaks|bearer.py`、`orchestrator.py`、`main.py`（/api/rulesets）、前端四檔、README 中英、測試 107→113。
+
+## [2026-09-19] #010 — 移除人工審查表單，判定保留給 PDF
+
+- **使用者指令（提示詞原意）**：移除人工審查表單，改為匯出 PDF 交給負責人處理。
+- **決議回應**：移除表單、`/api/scans/{id}/review` 端點與 `JobManager.review()`；**保留「需人員審查」判定**（使用者選定），讓 PDF 上仍印得出來。
+- **理由**：這個網頁沒有登入保護、掃描紀錄存在記憶體（重啟即清空），本來就不適合當正式簽核場所。把簽核移到 PDF 流程反而更誠實。一併移除後端端點而非只藏 UI——留著一個無認證、能改判定的端點比表單更糟。
+- **順帶修正（實際會影響使用者的缺陷）**：第 19 輪把發現列表改成分頁後，**列印只會抓到已渲染的前 100 筆**——1343 筆的掃描匯出 PDF 會靜默少掉 1243 筆。已修：按匯出 PDF 前先渲染全部。這個缺陷是我自己上一輪引入的，而且正好踩在使用者這次要用的工作流上。
+- **影響範圍**：`app/main.py`、`app/orchestrator.py`、前端三檔（含列印樣式）、README 中英、測試 113→115。
