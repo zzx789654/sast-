@@ -761,6 +761,17 @@ def test_csv_export(client, tmp_path, monkeypatch):
     })
     job_id = res.json()["id"]
 
+    # The scan runs on a worker thread, so wait for it rather than assuming it
+    # finished. Without this the export can race the scan and return headers
+    # with no rows -- which passed on a fast machine and failed on CI.
+    import time as _time
+    for _ in range(100):
+        if client.get("/api/scans/" + job_id).json()["status"] in ("done", "error",
+                                                                   "blocked",
+                                                                   "policy_review"):
+            break
+        _time.sleep(0.05)
+
     csv_res = client.get(f"/api/scans/{job_id}/export.csv")
     assert csv_res.status_code == 200
     assert "text/csv" in csv_res.headers["content-type"]
