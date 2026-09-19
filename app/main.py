@@ -64,6 +64,28 @@ async def admin_restart() -> JSONResponse:
     return JSONResponse(result, status_code=202 if result.get("restarting") else 409)
 
 
+# The published rulesets we offer for Semgrep. "auto" is deliberately absent:
+# semgrep refuses to build it while metrics are off, and we always scan with
+# --metrics=off so nothing about the scanned code leaves this host.
+SEMGREP_RULESETS = [
+    {"id": "p/default", "recommended": True},
+    {"id": "p/owasp-top-ten", "recommended": True},
+    {"id": "p/security-audit", "recommended": False},
+    {"id": "p/python", "recommended": False},
+    {"id": "p/javascript", "recommended": False},
+    {"id": "p/java", "recommended": False},
+    {"id": "p/golang", "recommended": False},
+    {"id": "p/secrets", "recommended": False},
+]
+
+
+@app.get("/api/rulesets")
+async def list_rulesets() -> dict:
+    """Published rulesets the scan form can offer, plus the current default."""
+    return {"semgrep": SEMGREP_RULESETS,
+            "default": config.SEMGREP_RULESETS}
+
+
 @app.get("/api/rules")
 async def list_custom_rules(engine: Optional[str] = None) -> dict:
     """Every rule the scan form can offer, built-in templates included."""
@@ -213,6 +235,7 @@ async def create_scan(
     local_path: Optional[str] = Form(None),
     confirm: Optional[str] = Form(None),
     custom_rules: Optional[str] = Form(None),
+    rulesets: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
 ) -> JSONResponse:
     requested = [t.strip() for t in tools.split(",") if t.strip()]
@@ -224,6 +247,19 @@ async def create_scan(
             raise ValueError("custom_rules must be an object")
     except (ValueError, TypeError) as exc:
         raise HTTPException(400, f"custom_rules: {exc}") from exc
+
+    # {tool: [ruleset, ...]}. Only ids we publish are accepted, so a request
+    # cannot point semgrep at an arbitrary location.
+    known = {r["id"] for r in SEMGREP_RULESETS}
+    try:
+        chosen_sets = json.loads(rulesets) if rulesets else {}
+        if not isinstance(chosen_sets, dict):
+            raise ValueError("rulesets must be an object")
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, f"rulesets: {exc}") from exc
+    chosen_sets = {tool: [r for r in names if r in known]
+                   for tool, names in chosen_sets.items()}
+    chosen_sets = {k: v for k, v in chosen_sets.items() if v}
 
     # upload/git are prepared server-side, so pause for confirmation by default
     # (the user reviews the inventory before tools run). A local path is already
@@ -238,7 +274,7 @@ async def create_scan(
         except SourceError as exc:
             raise HTTPException(400, str(exc)) from exc
         target = ScanTarget(kind="git", display=git_url)
-        job = manager.new_job(target, requested, chosen_rules)
+        job = manager.new_job(target, requested, chosen_rules, chosen_sets)
         manager.start(job.id, {"kind": "git", "url": git_url}, confirm=want_confirm)
 
     elif source_kind == "path":
@@ -247,14 +283,14 @@ async def create_scan(
         if not local_path:
             raise HTTPException(400, "local_path is required for source_kind=path")
         target = ScanTarget(kind="path", display=local_path)
-        job = manager.new_job(target, requested, chosen_rules)
+        job = manager.new_job(target, requested, chosen_rules, chosen_sets)
         manager.start(job.id, {"kind": "path", "path": local_path}, confirm=False)
 
     elif source_kind == "upload":
         if file is None:
             raise HTTPException(400, "file is required for source_kind=upload")
         target = ScanTarget(kind="upload", display=file.filename or "upload.zip")
-        job = manager.new_job(target, requested, chosen_rules)
+        job = manager.new_job(target, requested, chosen_rules, chosen_sets)
         zip_path = manager.job_dir(job.id) / "upload.zip"
         try:
             await _save_upload(file, zip_path)

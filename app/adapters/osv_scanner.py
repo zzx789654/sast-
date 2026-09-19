@@ -34,6 +34,7 @@ class OsvScannerAdapter(BaseAdapter):
         "(or download a release binary from github.com/google/osv-scanner)"
     )
     languages = ["*"]  # any ecosystem, as long as there is a lockfile
+    first_stage = "advisories"     # queries the OSV database
     requirement = "a dependency lockfile (npm, pip, go, cargo, …)"
 
     def applicability(self, target_dir: Path) -> tuple[bool, str]:

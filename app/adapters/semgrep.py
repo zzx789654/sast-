@@ -21,6 +21,7 @@ class SemgrepAdapter(BaseAdapter):
     binary = "semgrep"
     install_hint = "pip install semgrep  (or: brew install semgrep)"
     languages = ["*"]  # rule-dependent; supports 30+ languages
+    first_stage = "rules"          # fetching and compiling rulesets
     requirement = "source code (30+ languages, rule-based)"
 
     def _probe_version(self) -> tuple[bool, str]:
@@ -30,12 +31,12 @@ class SemgrepAdapter(BaseAdapter):
         return True, (res.stdout or res.stderr).strip().splitlines()[0]
 
     def _execute(self, target_dir: Path) -> list[Finding]:
-        args = [
-            self.binary,
-            "scan",
-            "--config",
-            config.SEMGREP_RULES,
-        ]
+        args = [self.binary, "scan"]
+        # One --config per ruleset: semgrep unions them, so picking OWASP on
+        # top of the default set adds rules rather than swapping them.
+        rulesets = getattr(self, "rulesets", None) or config.SEMGREP_RULESETS
+        for ruleset in rulesets:
+            args += ["--config", ruleset]
         # --config can be repeated, so custom rules add to the registry set
         # rather than replacing it: adding one rule of your own should not
         # cost you the coverage of the default ruleset.

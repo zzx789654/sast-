@@ -54,7 +54,53 @@ async function init() {
   await loadTools();
   await loadPolicies();
   await loadRules();
+  await loadRulesets();
   await refreshScanList();
+}
+
+// -------------------------------------------------------------- rulesets
+// Semgrep unions every --config it is given, so these are checkboxes rather
+// than a dropdown: adding OWASP on top of the default set adds rules instead
+// of swapping them.
+const RULESET_STATE = { available: [], enabled: {} };
+
+async function loadRulesets() {
+  try {
+    const d = await (await fetch("/api/rulesets")).json();
+    RULESET_STATE.available = d.semgrep || [];
+    (d.default || []).forEach((id) => { RULESET_STATE.enabled[id] = true; });
+  } catch (e) {
+    RULESET_STATE.available = [];
+  }
+  renderRulesets();
+}
+
+function renderRulesets() {
+  const box = $("#ruleset-list");
+  if (!box) return;
+  box.innerHTML = "";
+  RULESET_STATE.available.forEach((rs) => {
+    const row = el("label", "ruleset-row");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !!RULESET_STATE.enabled[rs.id];
+    cb.addEventListener("change", () => {
+      RULESET_STATE.enabled[rs.id] = cb.checked;
+    });
+    row.appendChild(cb);
+    row.appendChild(el("span", "rs-id", rs.id));
+    const why = t("ruleset.why." + rs.id.replace("p/", ""));
+    if (!why.startsWith("ruleset.why.")) {
+      row.appendChild(el("span", "rs-why", why));
+    }
+    box.appendChild(row);
+  });
+}
+
+function selectedRulesets() {
+  const names = Object.keys(RULESET_STATE.enabled)
+    .filter((id) => RULESET_STATE.enabled[id]);
+  return names.length ? { semgrep: names } : {};
 }
 
 // ------------------------------------------------------------ rule editor
@@ -774,6 +820,10 @@ async function startScan() {
   if (Object.keys(chosen).length) {
     fd.append("custom_rules", JSON.stringify(chosen));
   }
+  const sets = selectedRulesets();
+  if (Object.keys(sets).length) {
+    fd.append("rulesets", JSON.stringify(sets));
+  }
 
   if (state.sourceKind === "upload") {
     const f = $("#file-input").files[0];
@@ -984,7 +1034,10 @@ function renderConfirmBox(job) {
     return;
   }
   if (job.status === "blocked") {
-    renderBlockedBox(job, box);
+    // Nothing here: the verdict is on the header and every finding is in
+    // the filtered list below. Repeating them unfiltered pushed the actual
+    // results off the screen on a large scan.
+    box.classList.add("hidden");
     return;
   }
   if (job.status !== "awaiting_confirmation") {
@@ -1037,28 +1090,6 @@ async function submitPolicyReview(id, decision) {
   if (res.ok) await loadJob(id);
   else showError((await res.json()).detail || t("policy.review.failed"));
 }
-
-// A blocked scan lists what blocked it. There is no override here: the rule is
-// fixed, so the way past a block is to fix the finding or rescan.
-function renderBlockedBox(job, box) {
-  box.classList.remove("hidden");
-  box.innerHTML = "";
-  box.appendChild(el("div", "cb-title", t("policy.blocking.title")));
-  const refs = (job.policy_evaluation || {}).blocking_findings || [];
-  refs.forEach((f) => {
-    const row = el("div", "cb-row");
-    row.appendChild(el("span", "sev " + f.severity, t("sev." + f.severity)));
-    row.appendChild(el("span", "cb-tool", f.tool));
-    row.appendChild(el("span", "cb-title-text", f.title || f.rule_id || ""));
-    if (f.file) {
-      row.appendChild(el("span", "cb-loc",
-        f.file + (f.line ? ":L" + f.line : "")));
-    }
-    box.appendChild(row);
-  });
-  box.appendChild(el("div", "cb-note", t("policy.blocking.note")));
-}
-
 
 async function confirmScan(id) {
   const res = await fetch(`/api/scans/${id}/confirm`, { method: "POST" });
@@ -1142,7 +1173,13 @@ function renderToolRows(results) {
 
     if (r.phase === "running") {
       row.appendChild(el("span", "spinner"));
-      row.appendChild(el("span", "tstat running", t("phase.running")));
+      // Name the stage rather than just "running": the tools do genuinely
+      // different work, and a trivy database download looks identical to a
+      // hang if all the UI ever says is "running".
+      const key = r.stage ? "stage." + r.stage : "phase.running";
+      const label = t(key);
+      row.appendChild(el("span", "tstat running",
+        label === key ? t("phase.running") : label));
       row.appendChild(el("span", "telapsed", elapsedText(r.started_at)));
       box.appendChild(row);
       return;
@@ -1204,7 +1241,27 @@ function renderFindings() {
         ? t("findings.scanning") : t("findings.emptyFiltered")));
     return;
   }
-  items.forEach((f) => box.appendChild(renderFinding(f)));
+  // A big project produces well over a thousand findings, and building that
+  // many cards at once locks the page up. Render a page at a time, with a
+  // button for the rest, so the first screen is usable immediately.
+  const PAGE = 100;
+  let shown = 0;
+  const more = el("button", "btn ghost show-more");
+
+  function renderPage() {
+    const slice = items.slice(shown, shown + PAGE);
+    const frag = document.createDocumentFragment();
+    slice.forEach((f) => frag.appendChild(renderFinding(f)));
+    box.insertBefore(frag, more);
+    shown += slice.length;
+    more.textContent = t("findings.showMore",
+                         { shown: shown, total: items.length });
+    more.classList.toggle("hidden", shown >= items.length);
+  }
+
+  more.addEventListener("click", renderPage);
+  box.appendChild(more);
+  renderPage();
 }
 
 function renderFinding(f) {

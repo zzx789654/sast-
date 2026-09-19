@@ -110,15 +110,33 @@ class BaseAdapter:
     def _execute(self, target_dir: Path) -> list[Finding]:
         raise NotImplementedError
 
+    # ---- progress reporting --------------------------------------------
+    # "running" for eight minutes tells the user nothing, and the work really
+    # is different per tool: trivy downloads a vulnerability database, semgrep
+    # compiles rules, gitleaks does neither. Each adapter names its own stages.
+    first_stage = "scanning"
+
+    def report_stage(self, stage: str) -> None:
+        """Tell the orchestrator which part of this tool's work is running."""
+        callback = getattr(self, "_on_stage", None)
+        if callback:
+            try:
+                callback(stage)
+            except Exception:  # noqa: BLE001 - progress must never break a scan
+                pass
+
     # ---- template method ----------------------------------------------
     def scan(self, target_dir: Path,
-             custom_rules: "list[Path] | None" = None) -> ToolResult:
+             custom_rules: "list[Path] | None" = None,
+             rulesets: "list[str] | None" = None) -> ToolResult:
         # Passed down rather than read from config: adapters run concurrently,
         # so a shared field would let one scan's rules affect another.
         self.custom_rules = list(custom_rules or [])
+        self.rulesets = list(rulesets or [])
         result = ToolResult(tool=self.name, kind=self.kind, status=ToolStatus.OK)
         result.install_hint = self.install_hint
 
+        self.report_stage("probing")
         available, version = self.probe()
         result.available = available
         result.version = version
@@ -127,6 +145,7 @@ class BaseAdapter:
             result.error = f"{self.name} is not installed"
             return result.compute_summary()
 
+        self.report_stage("checking")
         applicable, reason = self.applicability(target_dir)
         if not applicable:
             result.status = ToolStatus.NOT_APPLICABLE
@@ -134,6 +153,7 @@ class BaseAdapter:
             return result.compute_summary()
 
         start = time.monotonic()
+        self.report_stage(self.first_stage)
         try:
             result.findings = self._execute(target_dir)
         except TimeoutError as exc:

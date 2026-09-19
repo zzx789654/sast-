@@ -120,3 +120,13 @@
 - **理由**：Semgrep 是宣告式 YAML，風險有限；Trivy 的 Rego 是**真正的程式語言**，這是本輪唯一真正危險的地方。不做沙箱而用 denylist，是因為合法的檢查規則本來就只需要讀 `input`，不需要網路、時鐘、環境變數。
 - **影響範圍**：新增 `app/rules.py`；改 `main.py`（5 個端點）、`config.py`、`models.py`、`orchestrator.py`、`adapters/base|semgrep|trivy.py`、前端四檔、`Dockerfile`、`docker-compose.yml`、README 中英、測試 92→106。
 - **附帶回答**：六個工具中只有 Semgrep／Trivy／Gitleaks／Bearer 可寫規則；npm audit 與 OSV-Scanner 是查漏洞資料庫，沒有規則語言。本輪只接前兩個。
+
+## [2026-09-19] #009 — 大量結果的畫面修正、規則集多選、掃描階段進度
+
+- **使用者指令（提示詞原意）**：(1) 掃 zip 後出現多餘畫面、圖卡沒正常渲染？(2) 能否把 Semgrep 預設規則改成 auto / p/owasp-top-ten / p/python？(3) Trivy 掃描時是直接執行程式嗎？(4) 掃描狀態做成進度條，依各工具流程顯示階段。
+- **問題 1 根因**：`renderBlockedBox` 會把**全部** blocking_findings 列出。使用者這次掃到 1066 個阻擋項，整個畫面被它佔滿，真正的發現卡片被推到下方。不是渲染失敗，是「重複顯示且沒有上限」。決議：**整個移除該區塊**（使用者選定）——下方完整列表本來就有相同資訊，而且有篩選與詳細內容。
+- **問題 2**：`--config auto` **無法採用**——第 15 輪已實證 semgrep 在 `--metrics=off` 時拒絕 auto，而 metrics=off 是刻意保留的隱私決定。改為**多選清單**（使用者選定），預設 `p/default + p/owasp-top-ten`，另提供 security-audit / python / javascript / java / golang / secrets。semgrep 的 `--config` 可重複，所以是聯集不是取代。
+- **問題 3（澄清我先前的說法）**：**Trivy 掃描時不執行被掃描的程式碼**。六個工具都只把檔案當資料讀。先前的 Critical 是指 **Rego 規則**本身是程式語言、由 Trivy 執行——風險在「誰能寫規則」，不在「掃描誰的程式碼」。這點我上一輪表達不清，已明確區分。
+- **問題 4**：`ToolResult` 新增 `stage` 欄位，每個 adapter 宣告自己的 `first_stage`（semgrep=編譯規則 / trivy=更新弱點DB / osv,npm=查詢情資 / gitleaks=比對密鑰 / bearer=資料流分析），base 的 template method 在 probe→applicability→execute 三點回報。前端顯示階段文字而非只有「執行中」。
+- **附帶修正**：1343 筆發現一次全塞 DOM 會卡頓，改為每頁 100 筆 + 「顯示更多」。
+- **影響範圍**：`models.py`、`config.py`、`adapters/base|semgrep|trivy|osv_scanner|npm_audit|gitleaks|bearer.py`、`orchestrator.py`、`main.py`（/api/rulesets）、前端四檔、README 中英、測試 107→113。

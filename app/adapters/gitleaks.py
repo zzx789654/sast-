@@ -22,6 +22,7 @@ class GitleaksAdapter(BaseAdapter):
         "brew install gitleaks  (or download from github.com/gitleaks/gitleaks/releases)"
     )
     languages = ["*"]  # secret scanning is language-agnostic
+    first_stage = "secrets"        # pattern match over every file
     requirement = "any files (secret scan)"
 
     def _probe_version(self) -> tuple[bool, str]:

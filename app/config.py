@@ -61,10 +61,17 @@ class Config:
         os.environ.get("SAST_RULES_DIR", "/tmp/sast-studio-rules")
     )
 
-    # Semgrep ruleset. Needs network; point at a local ruleset offline.
+    # Semgrep rulesets, comma separated. --config can be repeated, so several
+    # apply together. Needs network; point at a local path for offline use.
+    #
     # Not "auto": semgrep refuses to build the auto config while metrics are
     # off, and we always scan with --metrics=off so no code data leaves the box.
     SEMGREP_RULES = os.environ.get("SAST_SEMGREP_RULES", "p/default")
+    SEMGREP_RULESETS = [
+        r.strip() for r in os.environ.get(
+            "SAST_SEMGREP_RULESETS", "p/default,p/owasp-top-ten").split(",")
+        if r.strip() and r.strip() != "auto"
+    ]
 
     # Keep job workspaces after completion (debugging). Default: clean up.
     KEEP_WORKSPACES = _env_bool("SAST_KEEP_WORKSPACES", False)

@@ -91,6 +91,9 @@ class ToolResult(BaseModel):
     kind: ToolKind
     status: ToolStatus
     phase: ToolPhase = ToolPhase.PENDING
+    # Which part of this tool's own work is in progress. "running" for
+    # eight minutes says nothing; the parts genuinely differ per tool.
+    stage: str = ""
     available: bool = False
     version: str = ""
     started_at: str = ""
@@ -133,6 +136,9 @@ class Job(BaseModel):
     requested_tools: list[str] = Field(default_factory=list)
     # Custom rules the user ticked, as {engine: [name, ...]}.
     custom_rules: dict[str, list[str]] = Field(default_factory=dict)
+    # Published rulesets per tool, as {tool: [ruleset, ...]}; empty uses the
+    # configured default.
+    rulesets: dict[str, list[str]] = Field(default_factory=dict)
     created_at: str = Field(default_factory=lambda: _now())
     started_at: str = ""
     finished_at: str = ""

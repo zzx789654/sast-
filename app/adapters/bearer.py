@@ -33,6 +33,7 @@ class BearerAdapter(BaseAdapter):
         "| sh  (free, Elastic License — see github.com/Bearer/bearer)"
     )
     languages = ["ruby", "javascript", "typescript", "java", "php", "python", "go"]
+    first_stage = "dataflow"       # semantic/data-flow analysis
     requirement = "Ruby/JS/TS/Java/PHP/Python/Go source"
 
     def applicability(self, target_dir: Path) -> tuple[bool, str]:

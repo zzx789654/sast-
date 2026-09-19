@@ -473,3 +473,15 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 }
 .rule-enable-row .re-name { font-family: ui-monospace, monospace; }
 .rule-enable-row .re-builtin { font-size: .68rem; color: var(--muted); }
+
+/* Ruleset picker: checkboxes, because semgrep unions every --config it gets */
+.ruleset-pick { margin-top: .6rem; }
+.ruleset-list { display: flex; flex-direction: column; gap: .1rem; margin-top: .3rem; }
+.ruleset-row {
+  display: flex; align-items: baseline; gap: .45rem;
+  font-size: .8rem; padding: .14rem .2rem; border-radius: 4px; cursor: pointer;
+}
+.ruleset-row:hover { background: var(--bg); }
+.ruleset-row .rs-id { font-family: ui-monospace, monospace; }
+.ruleset-row .rs-why { font-size: .72rem; color: var(--muted); }
+.show-more { display: block; width: 100%; margin-top: .6rem; }

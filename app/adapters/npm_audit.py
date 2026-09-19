@@ -23,6 +23,7 @@ class NpmAuditAdapter(BaseAdapter):
     binary = "npm"
     install_hint = "Install Node.js (npm ships with it): https://nodejs.org"
     languages = ["javascript", "typescript"]
+    first_stage = "advisories"     # queries the npm registry
     requirement = "a package.json (Node/npm project)"
 
     def _probe_version(self) -> tuple[bool, str]:

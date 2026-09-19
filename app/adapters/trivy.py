@@ -30,6 +30,7 @@ class TrivyAdapter(BaseAdapter):
         "brew install trivy  (or see aquasecurity.github.io/trivy — free, Apache-2.0)"
     )
     languages = ["*"]  # deps + secrets + IaC configs, language-agnostic
+    first_stage = "vulndb"         # may download the vulnerability DB
     requirement = "any project (deps, secrets, IaC configs)"
 
     def _execute(self, target_dir: Path) -> list[Finding]:

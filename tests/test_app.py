@@ -1132,8 +1132,9 @@ def test_validation_is_honest_when_the_scanner_is_missing(rules_env, monkeypatch
 
 
 def test_semgrep_adapter_adds_custom_rules_to_the_default_config(monkeypatch, tmp_path):
-    """A custom rule must add to the registry ruleset, not replace it."""
+    """A custom rule must add to the registry rulesets, not replace them."""
     from app.adapters import semgrep
+    from app.config import config
 
     captured = {}
 
@@ -1147,8 +1148,11 @@ def test_semgrep_adapter_adds_custom_rules_to_the_default_config(monkeypatch, tm
     adapter._execute(tmp_path)
 
     args = captured["args"]
-    assert args.count("--config") == 2            # default + custom
-    assert str(tmp_path / "mine.yaml") in args
+    configs = [args[i + 1] for i, a in enumerate(args) if a == "--config"]
+    # Every default ruleset is still there, with the custom rule added to it.
+    assert "p/default" in configs
+    assert str(tmp_path / "mine.yaml") in configs
+    assert len(configs) == len(config.SEMGREP_RULESETS) + 1
 
 
 def test_api_rules_endpoints(client):
@@ -1267,3 +1271,91 @@ def test_custom_rule_id_drops_the_workspace_path():
     # A registry rule keeps its full, meaningful identifier.
     registry = "python.lang.security.deserialization.pickle.avoid-pickle"
     assert _clean_check_id(registry) == registry
+
+
+# ------------------------------------------------------------------ rulesets
+def test_rulesets_endpoint_never_offers_auto(client):
+    """"auto" cannot work here: semgrep refuses it while metrics are off."""
+    res = client.get("/api/rulesets")
+    assert res.status_code == 200
+    body = res.json()
+    ids = [r["id"] for r in body["semgrep"]]
+    assert "auto" not in ids
+    assert "p/default" in ids and "p/owasp-top-ten" in ids
+    assert body["default"] == ["p/default", "p/owasp-top-ten"]
+
+
+def test_unknown_rulesets_are_dropped(client, tmp_path, monkeypatch):
+    """A request must not be able to point semgrep at an arbitrary location."""
+    from app import orchestrator
+
+    monkeypatch.setattr(orchestrator, "get_adapters", lambda names: [])
+    (tmp_path / "a.py").write_text("x = 1\n")
+    res = client.post("/api/scans", data={
+        "source_kind": "path", "tools": "semgrep", "local_path": str(tmp_path),
+        "rulesets": json.dumps({"semgrep": ["p/default", "/etc/passwd",
+                                            "https://evil.test/rules.yaml"]}),
+    })
+    assert res.status_code == 201
+    job = orchestrator.manager.get(res.json()["id"])
+    assert job.rulesets["semgrep"] == ["p/default"]
+
+
+def test_semgrep_runs_every_selected_ruleset(monkeypatch, tmp_path):
+    from app.adapters import semgrep
+
+    captured = {}
+    monkeypatch.setattr(semgrep, "run_command",
+                        lambda args, **kw: (captured.update(args=args),
+                                            CommandResult(0, '{"results": []}', ""))[1])
+    adapter = semgrep.SemgrepAdapter()
+    adapter.rulesets = ["p/default", "p/owasp-top-ten"]
+    adapter._execute(tmp_path)
+
+    args = captured["args"]
+    configs = [args[i + 1] for i, a in enumerate(args) if a == "--config"]
+    assert configs == ["p/default", "p/owasp-top-ten"]
+
+
+# -------------------------------------------------------------------- stages
+def test_each_tool_names_its_own_first_stage():
+    """"running" for eight minutes says nothing; the work differs per tool."""
+    from app.adapters import ADAPTERS
+
+    stages = {a.name: a.first_stage for a in ADAPTERS}
+    assert stages["trivy"] == "vulndb"        # downloads a database
+    assert stages["semgrep"] == "rules"       # fetches and compiles rules
+    assert stages["gitleaks"] == "secrets"    # neither of the above
+    assert stages["bearer"] == "dataflow"
+    assert len(set(stages.values())) > 1      # not all the same word
+
+
+def test_adapter_reports_its_stages_in_order(monkeypatch, tmp_path):
+    from app.adapters import semgrep
+
+    seen = []
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(semgrep, "run_command",
+                        lambda args, **kw: CommandResult(0, "1.0", "")
+                        if "--version" in args
+                        else CommandResult(0, '{"results": []}', ""))
+    adapter = semgrep.SemgrepAdapter()
+    adapter._on_stage = seen.append
+    adapter.scan(tmp_path)
+
+    assert seen == ["probing", "checking", "rules"]
+
+
+def test_stage_reporting_never_breaks_a_scan(monkeypatch, tmp_path):
+    """Progress is cosmetic; a failure there must not fail the scan."""
+    from app.adapters import semgrep
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(semgrep, "run_command",
+                        lambda args, **kw: CommandResult(0, "1.0", "")
+                        if "--version" in args
+                        else CommandResult(0, '{"results": []}', ""))
+    adapter = semgrep.SemgrepAdapter()
+    adapter._on_stage = lambda stage: (_ for _ in ()).throw(RuntimeError("boom"))
+    result = adapter.scan(tmp_path)
+    assert result.status == ToolStatus.OK

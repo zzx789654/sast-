@@ -36,10 +36,12 @@ class JobManager:
 
     # ---- lifecycle ----------------------------------------------------
     def new_job(self, target: ScanTarget, tools: list[str],
-                custom_rules: "dict[str, list[str]] | None" = None) -> Job:
+                custom_rules: "dict[str, list[str]] | None" = None,
+                rulesets: "dict[str, list[str]] | None" = None) -> Job:
         job_id = uuid.uuid4().hex[:12]
         job = Job(id=job_id, target=target, requested_tools=tools,
-                  custom_rules=custom_rules or {})
+                  custom_rules=custom_rules or {},
+                  rulesets=rulesets or {})
         with self._lock:
             self._jobs[job_id] = job
             self._prune_locked()
@@ -245,9 +247,15 @@ class JobManager:
             placeholder = job.results[adapter.name]
             placeholder.phase = ToolPhase.RUNNING
             placeholder.started_at = _now()
+            # Let the adapter say which part of its own work is running, so a
+            # long tool shows "downloading vulnerability database" rather than
+            # sitting on "running" for minutes.
+            adapter._on_stage = lambda stage: setattr(placeholder, "stage", stage)
             job.compute_progress()
             try:
-                result = adapter.scan(scan_root, rule_files.get(adapter.name))
+                result = adapter.scan(scan_root,
+                                      rule_files.get(adapter.name),
+                                      job.rulesets.get(adapter.name))
             except Exception as exc:  # noqa: BLE001
                 result = ToolResult(
                     tool=adapter.name, kind=adapter.kind,
@@ -255,6 +263,7 @@ class JobManager:
                     error=f"{type(exc).__name__}: {exc}",
                 ).compute_summary()
             result.phase = ToolPhase.FINISHED
+            result.stage = ""
             result.started_at = placeholder.started_at
             job.results[adapter.name] = result
             job.compute_progress()
