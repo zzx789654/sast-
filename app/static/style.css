@@ -260,8 +260,24 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 .finding .ftool { font-size: .72rem; color: var(--muted); border: 1px solid var(--line); padding: .05rem .4rem; border-radius: 4px; }
 .finding .ftitle { font-weight: 600; }
 .finding .fsevnote { font-size: .76rem; color: var(--muted); margin: .2rem 0 0; font-style: italic; }
-.finding .fmsg { font-size: .85rem; color: var(--muted); margin: .3rem 0; }
-.finding .floc { font-size: .78rem; font-family: ui-monospace, monospace; color: var(--muted); }
+/* Every finding reads as the same three questions: what is wrong, how do I
+   fix it, where is it. A field the scanner did not fill stays visible but
+   muted, so a missing remedy is obvious instead of silently absent. */
+.finding .ffield { margin: .4rem 0; font-size: .82rem; }
+.finding .ffield .flabel {
+  display: block; font-size: .7rem; font-weight: 600; letter-spacing: .02em;
+  text-transform: uppercase; color: var(--muted); margin-bottom: .12rem;
+}
+.finding .ffield .fvalue { color: var(--ink); white-space: pre-wrap; }
+.finding .ffield .fvalue.empty { color: var(--muted); font-style: italic; }
+.finding .ffield.inline { display: flex; align-items: baseline; gap: .4rem; }
+.finding .ffield.inline .flabel { margin-bottom: 0; }
+.finding .ffield.floc .fvalue { font-family: ui-monospace, monospace; font-size: .78rem; }
+/* the remedy is the part people act on, so give it a quiet accent */
+.finding .ffield.ffix {
+  border-left: 2px solid var(--ok); padding-left: .55rem; background: var(--bg);
+  border-radius: 0 4px 4px 0; padding-top: .3rem; padding-bottom: .3rem;
+}
 /* the offending source line(s), as reported by the scanner */
 .finding .fsnippet {
   position: relative; margin: .4rem 0 .1rem; padding: .45rem .6rem;
@@ -287,10 +303,14 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 .finding .fpkg-ver, .finding .fpkg-range { color: var(--muted); }
 .finding .fpkg-fix { color: var(--ok); }
 .finding .fpkg-nofix { color: var(--high); }
-.finding .ffix { font-size: .78rem; color: var(--muted); margin-top: .25rem; }
 
 .finding .ftags { display: flex; gap: .3rem; flex-wrap: wrap; margin-top: .3rem; }
 .finding .ftag { font-size: .68rem; background: var(--bg); border: 1px solid var(--line); padding: .05rem .35rem; border-radius: 4px; }
+/* identifier tags are colour-coded so CWE/CVE/OWASP are told apart at a glance */
+.finding .ftag-cwe { border-color: var(--med); color: var(--med); }
+.finding .ftag-cve { border-color: var(--crit); color: var(--crit); }
+.finding .ftag-owasp { border-color: var(--high); color: var(--high); }
+.finding .ftag-rule, .finding .ftag-match { color: var(--muted); font-family: ui-monospace, monospace; }
 .empty { color: var(--muted); font-size: .88rem; padding: .8rem 0; }
 
 /* ---------------------------------------------------------------- report view

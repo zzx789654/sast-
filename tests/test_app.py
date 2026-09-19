@@ -819,3 +819,18 @@ def test_semgrep_ruleset_is_compatible_with_metrics_off(monkeypatch, tmp_path):
     args = captured["args"]
     assert "--metrics=off" in args
     assert args[args.index("--config") + 1] != "auto"
+
+
+def test_finding_card_i18n_keys_exist_in_both_languages():
+    """The finding card labels every field, so a key missing from one language
+    renders the raw key to the user (a bug we shipped once already)."""
+    import re
+
+    src = (Path(__file__).resolve().parents[1] / "app/static/i18n.js").read_text("utf-8")
+    needed = [
+        "find.why", "find.howToFix", "find.location", "find.notProvided",
+        "find.untitled", "find.upgradeTo", "find.fixAvailable", "find.noFixYet",
+    ]
+    for key in needed:
+        # one definition per language dictionary
+        assert len(re.findall(rf'"{re.escape(key)}"\s*:', src)) == 2, key

@@ -1055,22 +1055,29 @@ function renderFindings() {
 
 function renderFinding(f) {
   const card = el("div", "finding " + f.severity);
+  const x = f.extra || {};
+
+  // ---- header: severity, tool, title -------------------------------------
   const head = el("div", "fhead");
   head.appendChild(el("span", "sev " + f.severity, t("sev." + f.severity)));
   head.appendChild(el("span", "ftool", f.tool));
-  head.appendChild(el("span", "ftitle", f.title || f.rule_id || "finding"));
+  head.appendChild(el("span", "ftitle", f.title || f.rule_id || t("find.untitled")));
   card.appendChild(head);
-
   card.appendChild(el("div", "fsevnote", t("sevnote." + f.severity)));
-  if (f.message) card.appendChild(el("div", "fmsg", f.message));
 
+  const parts = splitRemediation(f.message || "");
+
+  // ---- section 1: why this is a problem ----------------------------------
+  card.appendChild(fieldBlock("fwhy", t("find.why"), parts.cause));
+
+  // ---- section 2: how to fix it ------------------------------------------
+  card.appendChild(fieldBlock("ffix", t("find.howToFix"), parts.fix || packageFixText(x)));
+
+  // ---- section 3: where it is --------------------------------------------
   const loc = [f.file, f.start_line ? "L" + f.start_line : ""].filter(Boolean).join(":");
-  if (loc) card.appendChild(el("div", "floc", loc));
+  card.appendChild(fieldBlock("floc", t("find.location"), loc, true));
 
-  const x = f.extra || {};
-
-  // Dependency findings point at a package, not a line of code: say which
-  // package, which version is installed, and which version fixes it.
+  // Dependency findings point at a package, not a line of code.
   if (x.package) {
     const pkg = el("div", "fpkg");
     pkg.appendChild(el("span", "fpkg-name", x.package));
@@ -1096,17 +1103,65 @@ function renderFinding(f) {
     card.appendChild(pre);
   }
 
-  if (x.resolution) card.appendChild(el("div", "ffix", t("find.fix", { r: x.resolution })));
-
+  // ---- identifier tags: CWE / OWASP / CVE / rule --------------------------
   const tags = el("div", "ftags");
-  (f.cwe || []).forEach((c) => tags.appendChild(el("span", "ftag", c)));
-  (f.owasp || []).forEach((o) => tags.appendChild(el("span", "ftag", o)));
-  if (f.rule_id && f.rule_id !== f.title) tags.appendChild(el("span", "ftag", f.rule_id));
-  if (f.extra && f.extra.match_preview) {
-    tags.appendChild(el("span", "ftag", "match: " + f.extra.match_preview));
-  }
+  (f.cwe || []).forEach((c) => tags.appendChild(idTag("cwe", c)));
+  (f.owasp || []).forEach((o) => tags.appendChild(idTag("owasp", o)));
+  cveIds(f).forEach((c) => tags.appendChild(idTag("cve", c)));
+  if (f.rule_id && f.rule_id !== f.title) tags.appendChild(idTag("rule", f.rule_id));
+  if (x.match_preview) tags.appendChild(idTag("match", "match: " + x.match_preview));
   if (tags.children.length) card.appendChild(tags);
   return card;
+}
+
+// A labelled block. Scanners differ in what they report, so a field with no
+// data is rendered empty rather than dropped: a blank "how to fix" is itself
+// information (this tool did not tell us), and keeps every card the same shape.
+function fieldBlock(cls, label, value, inline) {
+  const box = el("div", "ffield " + cls + (inline ? " inline" : ""));
+  box.appendChild(el("span", "flabel", label));
+  const v = (value || "").trim();
+  box.appendChild(v ? el("span", "fvalue", v)
+                    : el("span", "fvalue empty", t("find.notProvided")));
+  return box;
+}
+
+// Bearer (and some semgrep rules) pack cause and remedy into one markdown
+// blob: "## Description ... ## Remediations ...". Split it so each half lands
+// under the right heading instead of one unreadable wall of text.
+function splitRemediation(message) {
+  const m = message.split(/##\s*Remediation[s]?\s*/i);
+  const cause = (m[0] || "").replace(/##\s*Description\s*/i, "").trim();
+  const fix = (m[1] || "").trim();
+  return { cause, fix };
+}
+
+// Dependency scanners express the fix as a version, not prose.
+function packageFixText(x) {
+  if (x.fixed_version) return t("find.upgradeTo", { v: x.fixed_version });
+  if (x.resolution) return x.resolution;
+  if (x.fix_available === true) return t("find.fixAvailable");
+  if (x.fix_available === false) return t("find.noFixYet");
+  return "";
+}
+
+// CVE/GHSA ids are not a first-class field; they arrive in the rule id or the
+// advisory links, so pull them out for display as their own tags.
+function cveIds(f) {
+  const found = new Set();
+  const scan = [f.rule_id || ""].concat(f.references || []);
+  scan.forEach((s) => {
+    const m = String(s).match(/(CVE-\d{4}-\d{4,7}|GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4})/gi);
+    // CVE ids are conventionally upper-case, GHSA ids lower-case.
+    if (m) m.forEach((id) => found.add(
+      /^cve-/i.test(id) ? id.toUpperCase() : id.toLowerCase()));
+  });
+  return Array.from(found);
+}
+
+function idTag(kind, text) {
+  const tag = el("span", "ftag ftag-" + kind, text);
+  return tag;
 }
 
 // ---------------------------------------------------------------- bootstrap

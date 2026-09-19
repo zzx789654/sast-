@@ -53,3 +53,20 @@
 - **理由**：修正選 `p/default` 而非開啟 metrics——本專案是「跑別人程式碼的資安工具」，`CoreMain.md` 的安全紀律要求不讓程式碼資料外流，故保留 `--metrics=off`，改動規則集。已在容器內實測 `p/default` + `--metrics=off` 可正常執行並抓到漏洞。
 - **影響範圍**：`app/config.py`、`docker-compose.yml`、`.env.example`、`README.md`、`README.zh.md`、`tests/test_app.py`（新增回歸測試，實測還原 `auto` 會失敗）。
 - **後續動作**：修正推上 CI 後重新部署並複驗 Semgrep。
+
+## [2026-09-19] #005 — 發現卡片改版：問題原因／改善方式／位置三段式 + 識別碼標籤
+
+- **使用者指令（提示詞原意）**：(1) 目前的政策只會影響 Semgrep 嗎？(2) 六隻工具掃同一份程式碼差異為何這麼大？(3) 發現卡片想改成「告警標題／告警原因／改善方式」，工具沒給的欄位留空白，CWE/CVE 等用小標籤顯示。
+- **對照既有決議**：與 #003 一致——#003 已把政策語意誠實化，本次延續同一方向，處理「看得到但看不懂、不知道怎麼修」的問題。不改判定邏輯，只改表達層。
+- **關鍵發現（使用者的困惑再次是對的）**：
+  1. 政策**不只影響 Semgrep**。`policies.py:169` 把六個工具的 findings 攤平後才評估，使用者自己那次掃描的 `blocked` 正是來自 npm_audit/osv_scanner 的 critical，與 Semgrep 無關。
+  2. **修補建議其實有資料，但 UI 沒顯示**：npm_audit 回傳 `fix_available: true` 但不帶版本號，而舊版 `app.js` 只在有 `fixed_version` 或 `fix_available === false` 時顯示，兩個分支都不符合就什麼都不畫。
+  3. Bearer 的 `message` 本身是 `## Description … ## Remediations …` 的 markdown，舊版整塊塞進 `.fmsg`，變成使用者截圖裡那一大片看不懂的文字牆。
+- **決議回應**：
+  1. 卡片改為三段式固定結構：**問題原因 / 改善方式 / 位置**。欄位缺資料時**保留欄位並標示「（此工具未提供）」**，不隱藏——缺漏本身就是資訊，也讓每張卡片形狀一致。
+  2. 新增 `splitRemediation()`：把 Bearer 的 markdown 拆成 cause / fix 兩半，各自歸位。
+  3. 新增 `packageFixText()`：相依工具的修補是「版本」而非文字，依 `fixed_version` → `resolution` → `fix_available` 逐層退化成可執行的建議。
+  4. 新增 `cveIds()`：CVE/GHSA 不是獨立欄位，從 rule_id 與 references 萃取後以標籤呈現；CWE/CVE/OWASP/rule 四類標籤以顏色區分。
+- **理由**：對照 `CoreMain.md`「順手」——使用者要的不是更多資訊，而是**看完知道要做什麼**。缺漏欄位保留空白而非隱藏，是刻意選擇：對資安工具來說「沒有修補建議」和「有但沒顯示」必須能一眼分辨。
+- **影響範圍**：`app/static/app.js`（renderFinding 重寫 + 三個新函式）、`app/static/i18n.js`（8 組中英鍵）、`app/static/style.css`、`tests/test_app.py`（i18n 鍵回歸測試）。後端與政策判定邏輯未動。
+- **後續動作**：過 CI 後部署至 VM 供使用者確認。
