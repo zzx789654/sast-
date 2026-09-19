@@ -11,6 +11,7 @@ import http.client
 import json
 import os
 import socket
+from urllib.parse import quote
 
 from .config import config
 
@@ -49,13 +50,51 @@ def availability() -> tuple[bool, str]:
     return True, ""
 
 
+def _project_filter() -> str:
+    """Query string limiting the listing to our own compose project.
+
+    Falls back to this container's own id when the compose label is missing
+    (a plain "docker run"), and only as a last resort lists everything.
+    """
+    project = os.environ.get("COMPOSE_PROJECT_NAME", "").strip()
+    if not project:
+        # Compose stamps every container it creates with this label; read our
+        # own to learn the project name without needing it to be configured.
+        try:
+            me = _get(f"/containers/{_self_id()}/json")
+            project = ((me.get("Config") or {}).get("Labels") or {}).get(
+                "com.docker.compose.project", "")
+        except Exception:  # noqa: BLE001
+            project = ""
+    if project:
+        flt = json.dumps({"label": [f"com.docker.compose.project={project}"]})
+        return "?all=1&filters=" + quote(flt)
+    return "?all=1"
+
+
+def _self_id() -> str:
+    """This container's id, from the cgroup or hostname."""
+    try:
+        with open("/proc/self/mountinfo", encoding="utf-8") as fh:
+            for line in fh:
+                if "/docker/containers/" in line:
+                    return line.split("/docker/containers/")[1].split("/")[0]
+    except OSError:
+        pass
+    return os.environ.get("HOSTNAME", "")
+
+
 def collect() -> dict:
     """Return {available, reason, containers:[...]} for the Monitor tab."""
     ok, reason = availability()
     if not ok:
         return {"available": False, "reason": reason, "containers": []}
+    # Scope the listing to this deployment. The socket can see every container
+    # on the host, and the Monitor tab is served without a login, so an
+    # unfiltered list would hand out an inventory of unrelated workloads
+    # (image names and tags often carry internal project or customer names).
     try:
-        containers = _get("/containers/json?all=1")
+        containers = _get("/containers/json" + _project_filter())
     except Exception as exc:  # noqa: BLE001
         return {"available": False, "reason": f"cannot reach docker: {exc}",
                 "containers": []}

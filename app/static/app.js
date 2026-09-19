@@ -208,6 +208,8 @@ function wireViewNav() {
     });
   });
   $("#mon-refresh").addEventListener("click", renderMonitor);
+  $("#admin-update").addEventListener("click", runToolUpdate);
+  $("#admin-restart").addEventListener("click", runRestart);
   $("#report-refresh").addEventListener("click", () => refreshScanList(state.selectedJob));
   $("#export-csv").addEventListener("click", exportCsv);
   $("#export-pdf").addEventListener("click", () => window.print());
@@ -235,6 +237,107 @@ async function renderMonitor() {
   await loadTools();            // refresh installed versions/availability
   renderMonitorTools();
   await loadMonitorDocker();
+  await loadAdminStatus();
+}
+
+// ---------------------------------------------------------------- operator
+// Updating the scanners and restarting run on the server, so the panel makes
+// the state obvious: buttons disable while a job runs, output streams into the
+// log, and a restart says plainly that it drops scan history.
+async function loadAdminStatus() {
+  let d;
+  try {
+    d = await (await fetch("/api/admin/status")).json();
+  } catch (e) {
+    return;
+  }
+  state.admin = d;
+
+  const running = !!d.running;
+  const btnUpdate = $("#admin-update");
+  const btnRestart = $("#admin-restart");
+  if (btnUpdate) btnUpdate.disabled = running;
+  if (btnRestart) btnRestart.disabled = running;
+
+  const label = $("#admin-state");
+  if (label) {
+    label.textContent = running
+      ? t("admin.running", { kind: d.kind || "" })
+      : (d.ok === true ? t("admin.done")
+         : d.ok === false ? t("admin.failed") : "");
+    label.className = "admin-state" + (running ? " busy"
+      : d.ok === false ? " bad" : d.ok === true ? " good" : "");
+  }
+
+  // Say which tools this can actually update, so a pinned binary that needs an
+  // image rebuild does not look like a button that silently did nothing.
+  const note = $("#admin-updatable");
+  if (note) {
+    const list = (d.tools_available || []);
+    const inPlace = list.filter((x) => x.in_place).map((x) => x.name);
+    const pinned = list.filter((x) => !x.in_place).map((x) => x.name);
+    note.textContent = "";
+    if (inPlace.length) note.textContent += t("admin.canUpdate", { list: inPlace.join(", ") });
+    if (pinned.length) note.textContent += " " + t("admin.pinned", { list: pinned.join(", ") });
+  }
+
+  const log = $("#admin-log");
+  if (log) {
+    if (d.log) { log.textContent = d.log; log.classList.remove("hidden"); log.scrollTop = log.scrollHeight; }
+    else log.classList.add("hidden");
+  }
+
+  // Keep polling only while something is in flight.
+  if (running) {
+    clearTimeout(state.adminTimer);
+    state.adminTimer = setTimeout(loadAdminStatus, 2000);
+  }
+}
+
+async function runToolUpdate() {
+  if (!confirm(t("admin.confirmUpdate"))) return;
+  const body = new FormData();
+  try {
+    const res = await fetch("/api/admin/update-tools", { method: "POST", body });
+    const d = await res.json();
+    if (!d.started) { alert(d.reason || t("admin.failed")); return; }
+  } catch (e) {
+    alert(t("admin.failed") + ": " + e.message);
+    return;
+  }
+  loadAdminStatus();
+}
+
+async function runRestart() {
+  if (!confirm(t("admin.confirmRestart"))) return;
+  try {
+    const res = await fetch("/api/admin/restart", { method: "POST" });
+    const d = await res.json();
+    if (!d.restarting) { alert(d.reason || t("admin.failed")); return; }
+  } catch (e) {
+    // The process may drop the connection as it goes down; that is expected.
+  }
+  // Poll until the app answers again, then reload so the UI reflects the
+  // restarted server rather than showing a stale page.
+  const label = $("#admin-state");
+  if (label) { label.textContent = t("admin.restarting"); label.className = "admin-state busy"; }
+  waitForServer();
+}
+
+function waitForServer(attempt) {
+  const n = attempt || 0;
+  if (n > 60) {
+    const label = $("#admin-state");
+    if (label) { label.textContent = t("admin.restartSlow"); label.className = "admin-state bad"; }
+    return;
+  }
+  setTimeout(async () => {
+    try {
+      const r = await fetch("/api/health", { cache: "no-store" });
+      if (r.ok) { location.reload(); return; }
+    } catch (e) { /* still down */ }
+    waitForServer(n + 1);
+  }, 1000);
 }
 
 function renderMonitorTools() {

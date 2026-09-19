@@ -38,6 +38,33 @@ async def system_status() -> dict:
     return {"docker": await run_in_threadpool(docker_stats.collect)}
 
 
+@app.get("/api/admin/status")
+async def admin_status() -> dict:
+    """State of the operator panel: any job running, and what can be updated."""
+    from . import admin
+    return admin.status()
+
+
+@app.post("/api/admin/update-tools")
+async def admin_update_tools(tools: Optional[str] = Form(None)) -> JSONResponse:
+    """Update the scanners that can be updated in place.
+
+    Returns immediately; the Monitor tab polls /api/admin/status for progress.
+    """
+    from . import admin
+    wanted = [t.strip() for t in (tools or "").split(",") if t.strip()]
+    result = admin.start_update(wanted)
+    return JSONResponse(result, status_code=202 if result.get("started") else 409)
+
+
+@app.post("/api/admin/restart")
+async def admin_restart() -> JSONResponse:
+    """Restart the application process so updated scanners are picked up."""
+    from . import admin
+    result = admin.restart_app()
+    return JSONResponse(result, status_code=202 if result.get("restarting") else 409)
+
+
 @app.get("/api/tools")
 async def list_tools() -> dict:
     """Availability + metadata for every integrated tool."""

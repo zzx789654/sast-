@@ -1,0 +1,3 @@
+Scanner binaries are cached here by scripts/fetch-vendor.sh before a build.
+The files themselves are not committed (see .gitignore) -- they are large
+release artifacts, and the Dockerfile falls back to downloading when absent.

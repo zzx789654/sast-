@@ -393,3 +393,20 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
   .report-detail-panel { max-width: 100%; }
   a[href]::after { content: ""; }
 }
+
+/* ---------------------------------------------------------------- operator
+   Maintenance actions run on the server, so the panel stays visually calm but
+   unmistakably distinct from the read-only monitoring above it. */
+#admin-panel { border-left: 3px solid var(--med); }
+.admin-actions { display: flex; gap: .5rem; flex-wrap: wrap; margin: .5rem 0 .3rem; }
+.admin-state { font-size: .78rem; color: var(--muted); }
+.admin-state.busy { color: var(--med); }
+.admin-state.good { color: var(--ok); }
+.admin-state.bad { color: var(--high); }
+.admin-log {
+  margin-top: .5rem; padding: .5rem .6rem; max-height: 16rem; overflow: auto;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .72rem; line-height: 1.45; white-space: pre-wrap; color: var(--ink);
+}
+.btn:disabled { opacity: .5; cursor: not-allowed; }

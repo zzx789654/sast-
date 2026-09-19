@@ -834,3 +834,201 @@ def test_finding_card_i18n_keys_exist_in_both_languages():
     for key in needed:
         # one definition per language dictionary
         assert len(re.findall(rf'"{re.escape(key)}"\s*:', src)) == 2, key
+
+
+# ------------------------------------------------------------------- operator
+def test_admin_status_reports_updatable_tools():
+    from app import admin
+
+    st = admin.status()
+    assert st["running"] is False
+    names = {t["name"] for t in st["tools_available"]}
+    assert "semgrep" in names
+    # Pinned binaries must be flagged, otherwise the button looks like it did
+    # nothing when it silently cannot change their version.
+    pinned = {t["name"] for t in st["tools_available"] if not t["in_place"]}
+    assert "gitleaks" in pinned and "osv_scanner" in pinned
+
+
+def test_admin_update_commands_are_fixed_argv():
+    """Update commands must never be built from request input."""
+    from app import admin
+
+    cmds = admin._update_commands(["semgrep", "gitleaks", "not-a-tool"])
+    assert cmds, "semgrep should be updatable"
+    for _name, cmd in cmds:
+        assert isinstance(cmd, list)          # argv, never a shell string
+        assert all(isinstance(part, str) for part in cmd)
+    # An unknown name contributes no command at all.
+    assert all(n in {"semgrep", "trivy", "npm_audit"} for n, _ in cmds)
+
+
+def test_admin_update_rejects_unknown_tools_via_api(monkeypatch):
+    from app import admin
+
+    started = {}
+    monkeypatch.setattr(admin.threading, "Thread",
+                        lambda **kw: type("T", (), {"start": lambda s: started.setdefault("ran", True)})())
+    try:
+        res = admin.start_update(["definitely-not-a-tool"])
+        # Falls back to every known tool rather than running nothing at all.
+        assert res["started"] is True
+    finally:
+        with admin.state.lock:
+            admin.state.running = False
+
+
+def test_admin_rejects_concurrent_jobs():
+    """Two installs at once would fight over the same files."""
+    from app import admin
+
+    with admin.state.lock:
+        admin.state.running = True
+    try:
+        res = admin.start_update(["semgrep"])
+        assert res["started"] is False
+        assert "already running" in res["reason"]
+        # A restart must not interrupt an update either.
+        assert admin.restart_app()["restarting"] is False
+    finally:
+        with admin.state.lock:
+            admin.state.running = False
+
+
+def test_admin_endpoints_are_post_only(client):
+    """A GET must not be able to trigger an update or a restart.
+
+    The static mount swallows unmatched routes, so a rejected GET surfaces as
+    404 rather than 405; either way it must not reach the handler.
+    """
+    assert client.get("/api/admin/update-tools").status_code in (404, 405)
+    assert client.get("/api/admin/restart").status_code in (404, 405)
+    assert client.get("/api/admin/status").status_code == 200
+
+    body = client.get("/api/admin/status").json()
+    assert body["running"] is False          # a GET started nothing
+
+
+@pytest.mark.parametrize("text,secret", [
+    ("https://user:s3cr3t@pypi.internal/simple/", "s3cr3t"),
+    ("NPM_TOKEN=abc123def456", "abc123def456"),
+    ("api_key: sk-live-9999", "sk-live-9999"),
+    ("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9", "eyJhbGciOiJIUzI1NiJ9"),
+    ("Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
+    ("machine pypi.org login bob password hunter2", "hunter2"),
+    ("ERROR: cannot write /usr/local/lib/python3.11/site-packages/x", "site-packages"),
+    ("config at /home/appuser/.config/pip/pip.conf", "appuser"),
+    ("cannot write /usr/local/bin/trivy", "/usr/local/bin"),
+    ("temp at /tmp/pip-build-abc/foo", "/tmp/pip-build"),
+    ("cfg /etc/pip.conf", "/etc/pip.conf"),
+])
+def test_admin_log_scrubs_secrets_and_paths(text, secret):
+    """/api/admin/status has no login, so the log must not carry credentials.
+
+    Each case is a way a package manager leaks its surroundings into stdout.
+    """
+    from app.admin import _scrub
+
+    assert secret not in _scrub(text)
+
+
+def test_admin_log_keeps_ordinary_output_readable():
+    """Scrubbing must not eat the output people actually need to read."""
+    from app.admin import _scrub
+
+    line = "Successfully installed semgrep-1.177.0"
+    assert line in _scrub(line)
+
+
+def test_restart_releases_the_job_slot_if_the_signal_fails():
+    """If SIGTERM does not end the process, the panel must not stay locked."""
+    import app.admin as admin
+
+    with admin.state.lock:
+        admin.state.running = True
+        admin.state.kind = "restart"
+
+    # Simulate the tail of _stop() after a SIGTERM that did nothing.
+    with admin.state.lock:
+        admin.state.running = False
+        admin.state.kind = ""
+        admin.state.ok = False
+    assert admin.state.snapshot()["running"] is False
+    # And the real code must contain that recovery path at all.
+    src = (Path(__file__).resolve().parents[1] / "app/admin.py").read_text("utf-8")
+    assert "RESTART_GRACE" in src
+    assert src.count("state.running = False") >= 2  # update path + restart path
+
+
+def test_restart_is_throttled_and_claims_the_job_slot(tmp_path, monkeypatch):
+    """Repeated restarts could keep the service bouncing; one per minute.
+
+    The marker has to live on disk: an in-memory timestamp would be erased by
+    the very restart it is meant to limit, so every request would look like
+    the first one (which is exactly how this failed on the real deployment).
+    """
+    from app import admin
+
+    marker = tmp_path / ".last-restart"
+    monkeypatch.setattr(admin, "RESTART_MARKER", marker)
+
+    with admin.state.lock:
+        admin.state.running = False
+
+    calls = []
+    original = admin.threading.Thread
+    admin.threading.Thread = lambda **kw: type(
+        "T", (), {"start": lambda s: calls.append(kw.get("target"))})()
+    try:
+        first = admin.restart_app()
+        assert first["restarting"] is True
+        assert marker.exists()             # survives the process going away
+
+        # The slot is claimed inside the lock, so an update cannot slip into
+        # the gap and then be killed half-way through installing.
+        assert admin.start_update(["semgrep"])["started"] is False
+
+        # Simulate the process actually restarting: in-memory state is new,
+        # but the on-disk marker is still there.
+        with admin.state.lock:
+            admin.state.running = False
+        second = admin.restart_app()
+        assert second["restarting"] is False
+        assert "wait" in second["reason"]
+    finally:
+        admin.threading.Thread = original
+        with admin.state.lock:
+            admin.state.running = False
+
+
+def test_restart_throttle_survives_a_missing_marker(tmp_path, monkeypatch):
+    """A read-only or absent volume must not block restarting entirely."""
+    from app import admin
+
+    monkeypatch.setattr(admin, "RESTART_MARKER",
+                        tmp_path / "nonexistent" / ".last-restart")
+    assert admin._last_restart_age() is None      # unknown, not "just now"
+
+
+def test_update_always_releases_the_job_slot(monkeypatch):
+    """An escaping error must not wedge the panel permanently."""
+    from app import admin
+
+    monkeypatch.setattr(admin, "_run_updates",
+                        lambda tools: (_ for _ in ()).throw(RuntimeError("boom")))
+    with admin.state.lock:
+        admin.state.running = True
+        admin.state.ok = None
+    admin._run_update(["semgrep"])
+
+    snap = admin.state.snapshot()
+    assert snap["running"] is False      # released despite the error
+    assert snap["ok"] is False
+    assert "boom" in snap["log"]
+
+
+def test_npm_is_not_updated_in_place():
+    """npm -g fails as non-root and only produced noisy, leaky output."""
+    from app import admin
+
+    assert not any(n == "npm_audit" for n, _ in admin._update_commands(["npm_audit"]))

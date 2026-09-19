@@ -22,18 +22,27 @@ services:
       SAST_SEMGREP_RULES: "p/default"
       SAST_ALLOW_LOCAL_PATH: "true"
       SAST_TOOL_TIMEOUT: "900"
-      # Monitor tab — per-container CPU/memory. Needs the docker.sock mount
-      # below, which grants Docker access: enable only on a trusted deployment.
-      # SAST_ENABLE_DOCKER_STATS: "true"
+      # Monitor tab — per-container CPU/memory. Reads the docker socket that is
+      # mounted read-only below. That mount is a privileged capability, so this
+      # whole compose file assumes a trusted, non-public host.
+      SAST_ENABLE_DOCKER_STATS: "true"
     volumes:
       - sast-workspaces:/data/workspaces
       # Scan code that already lives on the host by mounting it read-only and
       # using the "Local path" tab with e.g. /mounted/my-project.
       # - ./my-project:/mounted/my-project:ro
       #
-      # Required for the Monitor tab (read-only). Mounting the docker socket is
-      # a privileged capability — only on a trusted deployment.
-      # - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Required for the Monitor tab. Read-only: enough to read container stats,
+      # not to start, stop or create containers. Still a privileged capability —
+      # a process that can read this socket can see every container on the host.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # The socket is owned by root:docker and the app runs as a non-root user,
+    # so it needs that group to read it. The gid differs per host (988 here,
+    # 999 elsewhere), which is why it comes from the environment:
+    # scripts/deploy.sh writes the host's real gid into .env before building.
+    # Without this the Monitor tab reports "permission denied".
+    group_add:
+      - "${DOCKER_GID:-999}"
     restart: unless-stopped
 
   nginx:

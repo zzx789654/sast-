@@ -152,6 +152,19 @@
       <h2 data-i18n="mon.containers">Docker 容器效能</h2>
       <div id="mon-docker"></div>
     </div>
+    <div class="panel" id="admin-panel">
+      <div class="mon-head">
+        <h2 data-i18n="admin.title">維護動作</h2>
+        <span id="admin-state" class="admin-state"></span>
+      </div>
+      <p class="mon-hint" data-i18n="admin.warn"></p>
+      <div class="admin-actions">
+        <button id="admin-update" class="btn" data-i18n="admin.update">更新掃描工具</button>
+        <button id="admin-restart" class="btn ghost" data-i18n="admin.restart">重啟服務</button>
+      </div>
+      <p class="mon-subnote" id="admin-updatable"></p>
+      <pre id="admin-log" class="admin-log hidden"></pre>
+    </div>
   </section>
 
   <script src="/i18n.js"></script>

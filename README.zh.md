@@ -187,17 +187,43 @@ semgrep 在關閉 metrics 時會拒絕建立 auto 設定。
 
 ## 監控
 
-**監控**分頁會顯示每個掃描器的已安裝版本，並可選擇顯示 Docker 佈署中每個容器的**即時效能**
-（CPU／記憶體／網路）。容器效能**預設關閉**，因為讀取它需要把 Docker daemon 的 socket
-掛進容器——這是高權限能力。要在信任的環境啟用，設定 `SAST_ENABLE_DOCKER_STATS=true`
-並以唯讀方式掛載 socket（兩者在 `docker-compose.yml` 都有註解）：
+**監控**分頁會顯示每個掃描器的已安裝版本、Docker 佈署中每個容器的**即時效能**
+（CPU／記憶體／網路），以及下方的維護動作。
 
-```yaml
-    environment:
-      SAST_ENABLE_DOCKER_STATS: "true"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+`docker-compose.yml` 已**預設開啟**容器效能。讀取它需要把 Docker daemon 的 socket
+掛進容器，即使唯讀也屬高權限能力，因此容器清單會依 label **限縮在本 compose 專案**，
+不會列出主機上其他不相關的容器。要關閉請設 `SAST_ENABLE_DOCKER_STATS=false`
+並移除 socket 掛載。
+
+### 維護動作與權限說明
+
+監控分頁可以更新「能就地更新」的掃描器，以及重啟應用程式。
+
+> **這些動作沒有登入保護。** 本專案刻意不做帳號系統，因此**任何能開啟這個網頁的人
+> 都能更新掃描器、重啟服務**。請只在信任的內網使用，不要把 8080 埠暴露到公網。
+
+在「不加帳號系統」的前提下，程式本身做了這些防護：
+
+- 每個指令都是**固定參數陣列**搭配 `shell=False`，工具名稱一律比對內建清單，
+  請求無法注入任何指令；
+- 同時間只允許一個維護工作；重啟**每分鐘最多一次**，避免服務被反覆重啟弄垮；
+- 指令輸出在存入前會**遮罩憑證與絕對路徑**，因為那份日誌任何人都讀得到。
+
+重啟會清空掃描紀錄（紀錄本來就設計成放在記憶體）。
+
+若想在不引入帳號系統的情況下再加一層防護，可在反向代理限制 `/api/admin/`，
+例如在 `nginx/nginx.conf`：
+
+```nginx
+location /api/admin/ {
+    allow 192.168.0.0/16;   # 你的管理網段
+    deny all;
+    proxy_pass http://sast-studio:8000;
+}
 ```
+
+以二進位釘版打包在映像裡的掃描器（Bearer、Gitleaks、OSV-Scanner、npm）**無法**從網頁更換版本，
+要改請調整 `Dockerfile` 的版本再重建。面板上會標示哪些是哪一類。
 
 ## 開發
 

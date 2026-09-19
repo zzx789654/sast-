@@ -70,3 +70,17 @@
 - **理由**：對照 `CoreMain.md`「順手」——使用者要的不是更多資訊，而是**看完知道要做什麼**。缺漏欄位保留空白而非隱藏，是刻意選擇：對資安工具來說「沒有修補建議」和「有但沒顯示」必須能一眼分辨。
 - **影響範圍**：`app/static/app.js`（renderFinding 重寫 + 三個新函式）、`app/static/i18n.js`（8 組中英鍵）、`app/static/style.css`、`tests/test_app.py`（i18n 鍵回歸測試）。後端與政策判定邏輯未動。
 - **後續動作**：過 CI 後部署至 VM 供使用者確認。
+
+## [2026-09-19] #006 — 監控分頁強化、維護動作、部署先下載再建置
+
+- **使用者指令（提示詞原意）**：(1) 監控分頁要看得到 Docker 效能，若需額外 Docker 設定請實測並寫進自動化部署腳本；(2) 監控畫面可手動更新掃描工具、重啟服務；(3) 部署太久，改成「先下載再部署」；(4) 完成後跑 CI/CD 並更新 VM 供測試。
+- **對照既有決議**：與 CoreMain「不做帳號系統」一致。使用者明示選擇**維護動作不加任何開關、直接開放**，此決策記為已知風險。
+- **決策**：重啟 = 重啟應用程序（不給 docker.sock 寫入權）；快取 = 主機先下載、build 直接用。
+- **關鍵發現（實測才抓得到，非紙上推論）**：
+  1. **docker.sock 權限**：光是掛載 socket 不夠。socket 是 `root:988 rw-rw----`，容器跑 `appuser`(1000) → `Permission denied`，監控頁全空。解法 `group_add: ["${DOCKER_GID}"]`，且 gid **每台主機不同**，因此由 `deploy.sh` 自動偵測寫入 `.env`——這正是使用者要求的「可執行方式加入自動化部署腳本」。
+  2. **重啟節流失效**：`last_restart_at` 放記憶體，而**重啟本身就會清掉它**，導致節流在真實情境永遠無效（VM 實測連按兩次都成功）。改存到 workspace volume 的 `.last-restart` 檔才真的擋得住。
+  3. **Trivy 快取檔損毀**：兩次下載都被 600 秒硬上限截斷，產生「非空但損壞」的檔案。若沒有 checksum，build 會把它當有效快取使用。改抓上游官方 checksums 檔（僅數 KB）比對。
+- **資安（security-scanner 兩輪複驗）**：首輪 7 項（2 High）；修完複驗 High 歸零，但新抓出我自己引入的 FIND-009（重啟佔住 job slot 且無路徑歸還，SIGTERM 失效就永久鎖死）與 FIND-008（遮罩殘留）。全部修完並補測試。
+- **影響範圍**：新增 `app/admin.py`、`scripts/fetch-vendor.sh`、`scripts/deploy.sh`；改 `docker_stats.py`（依 label 限縮容器清單）、`main.py`、前端四檔、`Dockerfile`（vendor 快取）、`docker-compose.yml`、README 中英、測試（37→61）。
+- **量測**：VM 重建 **138 秒**（先前多次 40 分鐘以上且失敗）。
+- **後續動作**：過 CI 後部署至 VM 供使用者測試。

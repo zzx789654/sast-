@@ -247,19 +247,51 @@ network; point at a local ruleset for offline scanning). Do not set it to
 
 ## Monitoring
 
-The **Monitor** tab shows each scanner's installed version and, optionally,
-live per-container performance (CPU / memory / network) for the Docker
-deployment. Container stats are **off by default** because reading them needs
-the Docker daemon socket mounted into the container — a privileged capability.
-To enable on a trusted deployment, set `SAST_ENABLE_DOCKER_STATS=true` and mount
-the socket read-only (both are commented in `docker-compose.yml`):
+The **Monitor** tab shows each scanner's installed version, live per-container
+performance (CPU / memory / network) for the Docker deployment, and the
+maintenance actions below.
 
-```yaml
-    environment:
-      SAST_ENABLE_DOCKER_STATS: "true"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+`docker-compose.yml` enables container stats by default. Reading them needs the
+Docker daemon socket mounted into the container, which is a privileged
+capability even read-only, so the listing is scoped by label to this compose
+project rather than every container on the host. Turn it off with
+`SAST_ENABLE_DOCKER_STATS=false` and remove the socket mount.
+
+### Maintenance actions, and who can use them
+
+The Monitor tab can update the scanners that can be updated in place and
+restart the application.
+
+> **There is no login in front of these.** This project deliberately has no
+> account system, so anyone who can open the page can update the scanners and
+> restart the service. Run it on a trusted network only — do not expose port
+> 8080 to the internet.
+
+What the code does within that constraint:
+
+- every command is a fixed argument list with `shell=False`, and the tool names
+  are checked against the built-in list, so a request cannot inject a command;
+- one maintenance job runs at a time, and a restart is limited to one per
+  minute so the service cannot be kept bouncing;
+- command output is scrubbed of credentials and absolute paths before it is
+  shown, because that log is readable by anyone who can reach the page.
+
+Restarting clears scan history, which is held in memory by design.
+
+If you need defence in depth without adding accounts, restrict `/api/admin/`
+at the reverse proxy — for example in `nginx/nginx.conf`:
+
+```nginx
+location /api/admin/ {
+    allow 192.168.0.0/16;   # your management network
+    deny all;
+    proxy_pass http://sast-studio:8000;
+}
 ```
+
+Scanners pinned as binaries in the image (Bearer, Gitleaks, OSV-Scanner, npm)
+cannot be changed from the page; bump the version in the `Dockerfile` and
+rebuild. The panel says which is which.
 
 ## Development
 

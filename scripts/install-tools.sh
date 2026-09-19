@@ -39,7 +39,7 @@ run_install() {
 download() {
   local url="$1"
   local dest="$2"
-  curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 600 \
+  curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 --speed-limit 1024 --speed-time 120 -C - \
     -o "$dest.tmp" "$url" && mv -f "$dest.tmp" "$dest"
 }
 

@@ -38,30 +38,65 @@ RUN python -m pip install --no-cache-dir --prefer-binary \
       --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" \
       "setuptools>=78.1.1" "msgpack>=1.2.1"
 
+# Scanner binaries: use the host cache when present, download when not.
+# scripts/fetch-vendor.sh fills ./vendor before the build. That matters on a
+# slow link -- these downloads are ~100 MB and dominate the build time.
+# A download here uses a stall detector (abort below 1 KB/s for 120s) rather
+# than a fixed --max-time: a wall-clock cap kills a transfer that is still
+# making progress, and the retry then restarts from zero. -C - resumes instead.
+COPY vendor/ /vendor/
+
 # --- OSV-Scanner (static Go binary) ---
 RUN arch="$(dpkg --print-architecture)"; \
     case "$arch" in amd64) A=amd64;; arm64) A=arm64;; *) A=amd64;; esac; \
-    curl -fsSL --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 600 \
-      -o /usr/local/bin/osv-scanner \
-      "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_${A}" \
-    && chmod +x /usr/local/bin/osv-scanner
+    if [ -s "/vendor/osv-scanner_linux_${A}" ]; then \
+      echo "osv-scanner: using host cache"; \
+      cp "/vendor/osv-scanner_linux_${A}" /usr/local/bin/osv-scanner; \
+    else \
+      echo "osv-scanner: downloading"; \
+      curl -fsSL --retry 5 --retry-delay 5 --connect-timeout 30 --speed-limit 1024 --speed-time 120 -C - \
+        -o /usr/local/bin/osv-scanner \
+        "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_${A}"; \
+    fi; \
+    chmod +x /usr/local/bin/osv-scanner; \
+    /usr/local/bin/osv-scanner --version
 
 # --- Gitleaks (static Go binary) ---
 RUN arch="$(dpkg --print-architecture)"; \
     case "$arch" in amd64) A=x64;; arm64) A=arm64;; *) A=x64;; esac; \
-    curl -fsSL --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 600 \
-      -o /tmp/gitleaks.tgz \
-      "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${A}.tar.gz" \
-    && tar -xzf /tmp/gitleaks.tgz -C /usr/local/bin gitleaks \
-    && chmod +x /usr/local/bin/gitleaks && rm /tmp/gitleaks.tgz
+    F="gitleaks_${GITLEAKS_VERSION}_linux_${A}.tar.gz"; \
+    if [ -s "/vendor/${F}" ]; then \
+      echo "gitleaks: using host cache"; \
+      cp "/vendor/${F}" /tmp/gitleaks.tgz; \
+    else \
+      echo "gitleaks: downloading"; \
+      curl -fsSL --retry 5 --retry-delay 5 --connect-timeout 30 --speed-limit 1024 --speed-time 120 -C - \
+        -o /tmp/gitleaks.tgz \
+        "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${F}"; \
+    fi; \
+    tar -xzf /tmp/gitleaks.tgz -C /usr/local/bin gitleaks; \
+    chmod +x /usr/local/bin/gitleaks; rm /tmp/gitleaks.tgz; \
+    /usr/local/bin/gitleaks version
 
 # --- Trivy (free, Apache-2.0; vuln + secret + IaC misconfig) ---
-RUN curl -sfL --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 600 \
-      https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-      | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+RUN arch="$(dpkg --print-architecture)"; \
+    case "$arch" in amd64) A=64bit;; arm64) A=ARM64;; *) A=64bit;; esac; \
+    F="trivy_${TRIVY_VERSION}_Linux-${A}.tar.gz"; \
+    if [ -s "/vendor/${F}" ]; then \
+      echo "trivy: using host cache"; \
+      tar -xzf "/vendor/${F}" -C /usr/local/bin trivy; \
+      chmod +x /usr/local/bin/trivy; \
+    else \
+      echo "trivy: downloading"; \
+      curl -sfL --retry 5 --retry-delay 5 --connect-timeout 30 --speed-limit 1024 --speed-time 120 \
+        https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+        | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"; \
+    fi; \
+    /usr/local/bin/trivy --version
 
 # --- Bearer (free, Elastic License; semantic SAST — CodeQL alternative) ---
-RUN curl -sSfL --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 600 \
+# Bearer is not version-pinned, so it always goes through its own installer.
+RUN curl -sSfL --retry 5 --retry-delay 5 --connect-timeout 30 --speed-limit 1024 --speed-time 120 \
       https://raw.githubusercontent.com/Bearer/bearer/main/contrib/install.sh \
       | sh -s -- -b /usr/local/bin
 
