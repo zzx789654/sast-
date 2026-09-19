@@ -79,6 +79,9 @@ function renderRulesets() {
   const box = $("#ruleset-list");
   if (!box) return;
   box.innerHTML = "";
+  if (RULESET_STATE.available.length) {
+    box.appendChild(el("div", "rule-group-head", t("rules.group.published")));
+  }
   RULESET_STATE.available.forEach((rs) => {
     const row = el("label", "ruleset-row");
     const cb = document.createElement("input");
@@ -250,6 +253,7 @@ function renderRuleEnable() {
   const box = $("#rule-enable-list");
   if (!box) return;
   box.innerHTML = "";
+  box.appendChild(el("div", "rule-group-head", t("rules.group.own")));
   if (!RULE_STATE.rules.length) {
     box.appendChild(el("div", "mon-subnote", t("rules.none")));
     return;
