@@ -6,6 +6,9 @@ from datetime import datetime, timezone
 import csv
 import io
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -52,6 +55,10 @@ async def admin_update_tools(tools: Optional[str] = Form(None)) -> JSONResponse:
     """
     from . import admin
     wanted = [t.strip() for t in (tools or "").split(",") if t.strip()]
+    # An update is the one thing that changes a version, so the cached probe
+    # is wrong from here on. A stale version after an update would look like
+    # the update failed, which is worse than the second it costs to re-probe.
+    _tool_cache.clear()
     result = admin.start_update(wanted)
     return JSONResponse(result, status_code=202 if result.get("started") else 409)
 
@@ -139,25 +146,71 @@ async def delete_custom_rule(engine: str, name: str) -> dict:
     return {"deleted": name}
 
 
+class _ToolCache:
+    """Remembers the probe result until something could have changed it.
+
+    Guarded by a lock because several browsers can hit /api/tools at once, and
+    two of them racing would run twelve subprocesses to learn the same thing.
+    """
+
+    TTL = 300.0     # a version can also change from outside the app
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._value: Optional[list[dict]] = None
+        self._at = 0.0
+
+    def get(self) -> Optional[list[dict]]:
+        with self._lock:
+            if self._value is None or time.monotonic() - self._at > self.TTL:
+                return None
+            return self._value
+
+    def set(self, value: list[dict]) -> None:
+        with self._lock:
+            self._value = value
+            self._at = time.monotonic()
+
+    def clear(self) -> None:
+        with self._lock:
+            self._value = None
+
+
+_tool_cache = _ToolCache()
+
+
 @app.get("/api/tools")
 async def list_tools() -> dict:
     """Availability + metadata for every integrated tool."""
+    def describe(adapter) -> dict:
+        available, version = adapter.probe()
+        return {
+            "name": adapter.name,
+            "kind": adapter.kind.value,
+            "available": available,
+            "version": version,
+            "install_hint": adapter.install_hint,
+            "languages": adapter.languages,
+            "requirement": adapter.requirement,
+        }
+
     def probe_all() -> list[dict]:
-        out = []
-        for adapter in ADAPTERS:
-            available, version = adapter.probe()
-            out.append({
-                "name": adapter.name,
-                "kind": adapter.kind.value,
-                "available": available,
-                "version": version,
-                "install_hint": adapter.install_hint,
-                "languages": adapter.languages,
-                "requirement": adapter.requirement,
-            })
-        return out
+        # Each probe spawns a "--version" process, and semgrep and bearer take
+        # about 900ms each, so running the six in sequence cost ~2.4s on every
+        # page load. They do not depend on each other, so run them together and
+        # keep the original order in the response.
+        with ThreadPoolExecutor(max_workers=len(ADAPTERS)) as pool:
+            return list(pool.map(describe, ADAPTERS))
+
+    # A scanner's version only changes when someone updates it, which happens
+    # from the Maintenance panel and clears this cache. Re-probing on every
+    # page load spent a second re-learning something that had not changed.
+    cached = _tool_cache.get()
+    if cached is not None:
+        return {"tools": cached, "cached": True}
 
     tools = await run_in_threadpool(probe_all)
+    _tool_cache.set(tools)
     return {
         "tools": tools,
         "config": {

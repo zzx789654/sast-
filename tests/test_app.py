@@ -1457,3 +1457,64 @@ def test_nginx_config_does_not_name_the_host_variable():
     assert "$http_host" not in conf
     # The protection itself is still in place.
     assert "proxy_set_header Host              sast-studio;" in conf
+
+
+# ------------------------------------------------------------ page load speed
+def test_tool_probes_run_in_parallel():
+    """Six sequential "--version" calls cost ~2.4s on every page load.
+
+    semgrep and bearer are ~900ms each, so the total was the sum rather than
+    the slowest. They do not depend on each other.
+    """
+    src = (Path(__file__).resolve().parents[1] / "app/main.py").read_text("utf-8")
+    block = src[src.index("def probe_all()"):]
+    block = block[:block.index("\n\n")]
+    assert "ThreadPoolExecutor" in block
+    assert "pool.map" in block
+
+
+def test_tool_probe_result_is_cached_and_cleared_by_an_update():
+    """A version only changes when someone updates a scanner.
+
+    Caching it is safe only if updating clears it -- a stale version after an
+    update looks exactly like an update that did not work.
+    """
+    from app.main import _tool_cache
+
+    _tool_cache.clear()
+    assert _tool_cache.get() is None
+
+    _tool_cache.set([{"name": "semgrep", "version": "1.0"}])
+    assert _tool_cache.get()[0]["version"] == "1.0"
+
+    _tool_cache.clear()
+    assert _tool_cache.get() is None
+
+    # The update endpoint must be the thing that clears it.
+    src = (Path(__file__).resolve().parents[1] / "app/main.py").read_text("utf-8")
+    update = src[src.index("async def admin_update_tools"):]
+    update = update[:update.index("@app.")]
+    assert "_tool_cache.clear()" in update
+
+
+def test_tool_cache_expires():
+    """A scanner can also be changed from outside the app."""
+    import time as _time
+
+    from app.main import _ToolCache
+
+    cache = _ToolCache()
+    cache.TTL = 0.01
+    cache.set([{"name": "x"}])
+    _time.sleep(0.02)
+    assert cache.get() is None
+
+
+def test_startup_requests_are_not_serialised():
+    """Awaiting each load in turn made the page sit blank for the slowest."""
+    src = (Path(__file__).resolve().parents[1] / "app/static/app.js").read_text("utf-8")
+    init = src[src.index("async function init()"):]
+    init = init[:init.index("\n}")]
+    assert "Promise.all" in init
+    # And one failing endpoint must not blank the rest of the page.
+    assert ".catch(" in init

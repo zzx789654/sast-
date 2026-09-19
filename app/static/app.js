@@ -51,11 +51,21 @@ async function init() {
   wireFilters();
   wireViewNav();
   wireRuleEditor();
-  await loadTools();
-  await loadPolicies();
-  await loadRules();
-  await loadRulesets();
-  await refreshScanList();
+
+  // These five do not depend on each other, so waiting for each in turn made
+  // the page sit blank for as long as the slowest one -- /api/tools probes
+  // every scanner, which is most of it. Start them together and let each part
+  // of the page fill in as its own data lands.
+  await Promise.all([
+    loadTools(),
+    loadPolicies(),
+    loadRules(),
+    loadRulesets(),
+    refreshScanList(),
+  ].map((p) => p.catch((e) => {
+    // One failing endpoint must not leave the rest of the page empty.
+    console.error("startup load failed:", e);
+  })));
 }
 
 // -------------------------------------------------------------- rulesets
