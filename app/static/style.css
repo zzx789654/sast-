@@ -367,7 +367,11 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 @media print {
   .topbar, .viewnav, #view-scan, #view-monitor,
   .report-list-panel, .export-btns, .filters, #confirm-box,
-  #progress-wrap, .show-more { display: none !important; }
+  #progress-wrap, .show-more, .tri-btn { display: none !important; }
+  /* The reader's judgement is the most useful thing on a printed
+     finding, so keep the mark and drop the buttons that set it. */
+  .tri-mark { color: #000 !important; font-weight: 600; }
+  .finding.judged-false_positive { opacity: 1; }
   /* The verdict is the first thing the reader needs, so keep it black on
      white rather than a colour that may print faint. */
   .policy-decision { border: 1px solid #000; color: #000 !important; }
@@ -496,3 +500,25 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
   margin: .5rem 0 .2rem;
 }
 .rule-group-head:first-child { margin-top: .1rem; }
+
+/* ------------------------------------------------------------------ triage
+   A scanner reports a pattern; whether it matters here is a human call. These
+   marks are notes for whoever reads the report, and they print, so the PDF
+   carries the reader's judgement rather than just the raw output. */
+.ftriage { display: flex; gap: .3rem; align-items: center; flex-wrap: wrap; margin-top: .5rem; }
+.tri-btn {
+  font-size: .68rem; padding: .1rem .4rem; border-radius: 4px; cursor: pointer;
+  background: transparent; border: 1px solid var(--line); color: var(--muted);
+}
+.tri-btn:hover { color: var(--ink); }
+.tri-btn.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.tri-mark { font-size: .7rem; margin-left: .3rem; }
+.tri-real { color: var(--high); }
+.tri-false_positive { color: var(--muted); }
+.tri-accepted { color: var(--med); }
+/* A judged card reads differently at a glance: a dismissed finding should not
+   compete with one nobody has looked at yet. */
+.finding.judged-false_positive { opacity: .55; }
+.finding.judged-false_positive .ftitle { text-decoration: line-through; }
+.finding.judged-real { border-left-width: 4px; }
+.triage-hint { font-size: .74rem; color: var(--muted); margin: .2rem 0 .6rem; }

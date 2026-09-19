@@ -1387,3 +1387,57 @@ def test_manual_review_verdict_survives_without_the_form():
     result = evaluate_policy(job)
     assert result["decision"] == "manual_review"
     assert len(result["manual_review_findings"]) == 1
+
+
+# ------------------------------------------------------ judging a finding
+def test_bearer_findings_carry_the_offending_code():
+    """Without the code, a false positive and a real bug read identically.
+
+    This is not hypothetical: scanning this project reported a Critical OS
+    command injection against the one function that exists to prevent it, and
+    nothing on the card let a reader see that.
+    """
+    from app.adapters.bearer import _parse
+
+    sample = {"critical": [{
+        "id": "python_lang_os_command_injection",
+        "title": "Unsanitized user input in OS command",
+        "description": "...",
+        "filename": "app/adapters/base.py",
+        "line_number": 41,
+        "cwe_ids": ["78"],
+        "code_extract": "proc = subprocess.run(args, shell=False, timeout=t)",
+    }]}
+    findings = _parse(sample, Path("."))
+    assert findings[0].extra["snippet"] == (
+        "proc = subprocess.run(args, shell=False, timeout=t)")
+
+
+def test_bearer_snippet_is_bounded():
+    from app.adapters.bearer import MAX_SNIPPET_CHARS, MAX_SNIPPET_LINES, _snippet
+
+    assert _snippet(None) == ""
+    assert _snippet("") == ""
+    long_code = "\n".join("line %d" % i for i in range(100))
+    assert len(_snippet(long_code).splitlines()) == MAX_SNIPPET_LINES
+    assert len(_snippet("x" * 5000)) <= MAX_SNIPPET_CHARS
+
+
+def test_every_finding_card_offers_a_judgement():
+    """A reader needs somewhere to record that a finding is a false positive,
+    or it gets re-argued on every scan and the noise trains people to skim."""
+    src = (Path(__file__).resolve().parents[1] / "app/static/app.js").read_text("utf-8")
+    assert "renderTriage" in src
+    assert "card.appendChild(renderTriage(f))" in src
+    # The mark has to identify the finding across scans, not by list position.
+    assert "function findingKey(f)" in src
+    assert "f.tool, f.rule_id, f.file, f.start_line" in src
+
+
+def test_triage_marks_print_but_the_buttons_do_not():
+    """The PDF should carry the judgement, not the controls that set it."""
+    css = (Path(__file__).resolve().parents[1] / "app/static/style.css").read_text("utf-8")
+    print_block = css[css.index("@media print"):]
+    print_block = print_block[:print_block.index("\n}\n")]
+    assert ".tri-btn" in print_block          # buttons hidden
+    assert ".tri-mark" in print_block         # mark kept

@@ -1217,6 +1217,10 @@ function renderFindings() {
   // A big project produces well over a thousand findings, and building that
   // many cards at once locks the page up. Render a page at a time, with a
   // button for the rest, so the first screen is usable immediately.
+  // Said once above the list rather than on every card: repeating it on
+  // 1343 findings would be its own kind of noise.
+  box.appendChild(el("div", "triage-hint", t("triage.hint")));
+
   const PAGE = 100;
   let shown = 0;
   const more = el("button", "btn ghost show-more");
@@ -1243,8 +1247,60 @@ function renderFindings() {
   };
 }
 
+// A finding's identity across scans: the same rule in the same place is the
+// same finding, even in a later scan of the same project.
+function findingKey(f) {
+  return [f.tool, f.rule_id, f.file, f.start_line].join("|");
+}
+
+// Judgements live in this browser. They are notes for the person reading the
+// report, not an audit trail -- the app has no login, so it cannot say who
+// marked what, and pretending otherwise would be worse than not storing it.
+const TRIAGE = (() => {
+  try {
+    return JSON.parse(localStorage.getItem("sast-triage") || "{}");
+  } catch (e) {
+    return {};
+  }
+})();
+
+function saveTriage() {
+  try {
+    localStorage.setItem("sast-triage", JSON.stringify(TRIAGE));
+  } catch (e) { /* private window, quota: the UI still works */ }
+}
+
+function renderTriage(f) {
+  const key = findingKey(f);
+  const wrap = el("div", "ftriage");
+  const current = TRIAGE[key] || "";
+
+  [["", "triage.unset"], ["real", "triage.real"],
+   ["false_positive", "triage.falsePositive"],
+   ["accepted", "triage.accepted"]].forEach(([value, label]) => {
+    const btn = el("button", "tri-btn" + (current === value ? " on" : ""),
+                   t(label));
+    btn.type = "button";
+    btn.addEventListener("click", () => {
+      if (value) TRIAGE[key] = value; else delete TRIAGE[key];
+      saveTriage();
+      renderFindings();
+    });
+    wrap.appendChild(btn);
+  });
+
+  if (current) {
+    // Show the mark itself, so it survives into the printed report.
+    wrap.appendChild(el("span", "tri-mark tri-" + current,
+                        t("triage.marked." + current)));
+  }
+  return wrap;
+}
+
 function renderFinding(f) {
-  const card = el("div", "finding " + f.severity);
+  const judged = TRIAGE[findingKey(f)] || "";
+  const card = el("div", "finding " + f.severity
+                  + (judged ? " judged judged-" + judged : ""));
   const x = f.extra || {};
 
   // ---- header: severity, tool, title -------------------------------------
@@ -1294,6 +1350,12 @@ function renderFinding(f) {
   }
 
   // ---- identifier tags: CWE / OWASP / CVE / rule --------------------------
+  // Let the reader record a judgement. The scanner found a pattern; whether
+  // it matters here is a human call, and if there is nowhere to write it down
+  // the same finding gets re-argued every scan -- and a report full of
+  // unexamined noise teaches people to skim past the real ones.
+  card.appendChild(renderTriage(f));
+
   const tags = el("div", "ftags");
   (f.cwe || []).forEach((c) => tags.appendChild(idTag("cwe", c)));
   (f.owasp || []).forEach((o) => tags.appendChild(idTag("owasp", o)));

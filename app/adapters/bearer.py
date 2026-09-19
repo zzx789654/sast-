@@ -93,9 +93,28 @@ def _parse(data: dict, target_dir: Path) -> list[Finding]:
                 start_line=item.get("line_number"),
                 cwe=[f"CWE-{c}" for c in item.get("cwe_ids", []) or []],
                 references=[item["documentation_url"]] if item.get("documentation_url") else [],
-                extra={"category_groups": item.get("category_groups", [])},
+                extra={"category_groups": item.get("category_groups", []),
+                       # Bearer returns the offending lines; showing them is
+                       # what lets a reader judge the finding instead of
+                       # trusting the description. Without it a false positive
+                       # and a real bug read exactly the same.
+                       "snippet": _snippet(item.get("code_extract"))},
             ))
     return findings
+
+
+# Same limits as the other adapters: enough context to judge, not so much
+# that one finding fills the screen.
+MAX_SNIPPET_LINES = 12
+MAX_SNIPPET_CHARS = 1200
+
+
+def _snippet(code) -> str:
+    """Trim Bearer's source excerpt to a displayable size."""
+    if not code or not isinstance(code, str):
+        return ""
+    kept = code.strip("\n").splitlines()[:MAX_SNIPPET_LINES]
+    return "\n".join(kept)[:MAX_SNIPPET_CHARS]
 
 
 def _rel(path: str, target_dir: Path) -> str:

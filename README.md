@@ -143,6 +143,43 @@ Any tool you don't install simply shows as unavailable.
 * **Monitor** — scanner versions plus Docker container performance and a
   capacity verdict (see below).
 
+### Judging a finding
+
+A scanner reports a *pattern*. Whether that pattern is a problem *here* is a
+judgement it cannot make, so some findings will be wrong. That is normal, and
+a tool that never reported a false positive would be missing real bugs.
+
+Scanning this project with itself is a good illustration: the single Critical
+it reported was `subprocess.run` in `app/adapters/base.py` — the one function
+in the codebase whose entire purpose is to make command execution safe. The
+pattern (a variable reaching a subprocess call) is real. The vulnerability is
+not: the argument is a fixed list, `shell=False`, and the tool name has already
+been checked against a whitelist.
+
+Three questions settle most findings:
+
+1. **Look at the code on the card.** Every finding shows the lines it matched.
+   If the flagged value is a constant, or already validated above, the pattern
+   matched but the bug is not there.
+2. **Can the input actually reach it?** "Unsanitized input" assumes the value
+   comes from outside. If it comes from your own code, the premise is wrong.
+3. **Is the protection somewhere the scanner cannot see?** Validation in a
+   caller, a framework, or a proxy is invisible to a tool reading one file.
+
+Then mark it. Each finding has **real issue / false positive / accepted risk**.
+The mark is kept per finding, survives a rescan, and prints into the PDF — so
+whoever reads the report sees your judgement rather than raw output.
+
+Marks are stored in your browser. They are notes for a reader, not an audit
+trail: this application has no login, so it cannot record *who* decided what,
+and storing a name that nobody verified would be worse than storing nothing.
+If you need sign-off with accountability, export the PDF and handle it in a
+system that has accounts.
+
+**Never mark something a false positive because you do not understand it.**
+"I read the code and the input cannot get there" is a judgement. "This looks
+complicated" is not.
+
 ### Custom rules
 
 The Scan tab has an editor for writing your own checks in **Semgrep (YAML)** or
