@@ -93,6 +93,17 @@ compose build || die "build failed -- the old version is still serving"
 step "Switching to the new image"
 compose up -d || die "could not start the new image; ./scripts/deploy.sh --rollback"
 
+# nginx.conf is bind-mounted as a single file, which pins the inode it had
+# when the container started. git pull replaces the file rather than editing
+# it in place, so the container keeps serving the old config and even
+# "nginx -s reload" re-reads the stale inode. Compose will not recreate it
+# either, because the image has not changed. Recreate it when the file
+# differs. (Found when a Host-header fix deployed and silently did nothing.)
+if ! compose exec -T nginx cmp -s /etc/nginx/conf.d/default.conf /dev/stdin        < "${ROOT}/nginx/nginx.conf" 2>/dev/null; then
+  echo "  nginx config changed on disk; recreating the container"
+  compose up -d --force-recreate nginx || die "could not restart nginx"
+fi
+
 step "Waiting for the service to report healthy"
 ok=0
 for _ in $(seq 1 60); do
