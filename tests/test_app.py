@@ -1441,3 +1441,19 @@ def test_triage_marks_print_but_the_buttons_do_not():
     print_block = print_block[:print_block.index("\n}\n")]
     assert ".tri-btn" in print_block          # buttons hidden
     assert ".tri-mark" in print_block         # mark kept
+
+
+def test_nginx_config_does_not_name_the_host_variable():
+    """Semgrep's request-host-used rule matches text, comments included.
+
+    Proven with an A/B scan: two configs with an identical, already-fixed
+    proxy_set_header directive, differing only by a comment that names the
+    variable -- 0 findings without it, 1 finding (pointing at the comment
+    line) with it. Explaining why something is avoided must not look like
+    doing it.
+    """
+    conf = (Path(__file__).resolve().parents[1] / "nginx/nginx.conf").read_text("utf-8")
+    assert "$host" not in conf
+    assert "$http_host" not in conf
+    # The protection itself is still in place.
+    assert "proxy_set_header Host              sast-studio;" in conf
