@@ -131,6 +131,8 @@ class Job(BaseModel):
     status: JobStatus = JobStatus.QUEUED
     target: ScanTarget
     requested_tools: list[str] = Field(default_factory=list)
+    # Custom rules the user ticked, as {engine: [name, ...]}.
+    custom_rules: dict[str, list[str]] = Field(default_factory=dict)
     created_at: str = Field(default_factory=lambda: _now())
     started_at: str = ""
     finished_at: str = ""

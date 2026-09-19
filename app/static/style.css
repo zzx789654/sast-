@@ -417,3 +417,59 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
   border-left: 3px solid var(--med); border-radius: 0 5px 5px 0;
 }
 .cb-note { margin-top: .4rem; font-size: .76rem; color: var(--muted); }
+
+/* ------------------------------------------------------------ rule editor
+   The scan form used to sit alone in a narrow column with the rest of the
+   width unused; the editor fills it. Two columns above 1100px, stacked below,
+   because a code editor is unusable in half a phone screen. */
+.layout-scan {
+  grid-template-columns: minmax(0, 520px) minmax(0, 1fr);
+  align-items: start; gap: 1rem;
+}
+@media (max-width: 1100px) { .layout-scan { grid-template-columns: 1fr; } }
+
+.rule-panel { display: flex; flex-direction: column; min-width: 0; }
+.rule-bar { display: flex; gap: .6rem; flex-wrap: wrap; align-items: flex-end; }
+.rule-bar .rule-pick { flex: 1 1 16rem; min-width: 0; }
+.rule-bar .rule-name-field { flex: 0 1 14rem; }
+.rule-readonly {
+  margin: .45rem 0 0; padding: .35rem .55rem; font-size: .76rem;
+  color: var(--muted); background: var(--bg);
+  border-left: 2px solid var(--med); border-radius: 0 4px 4px 0;
+}
+.rule-editor {
+  width: 100%; box-sizing: border-box; margin-top: .5rem;
+  min-height: 22rem; resize: vertical;
+  padding: .6rem .7rem; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .78rem; line-height: 1.55; tab-size: 2;
+  white-space: pre; overflow: auto;
+}
+.rule-editor:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.rule-actions { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .55rem; }
+.rule-result {
+  margin-top: .5rem; padding: .5rem .6rem; max-height: 12rem; overflow: auto;
+  border-radius: 6px; border: 1px solid var(--line); background: var(--bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .73rem; line-height: 1.5; white-space: pre-wrap;
+}
+.rule-result.ok { border-left: 3px solid var(--ok); color: var(--ok); }
+.rule-result.bad { border-left: 3px solid var(--high); color: var(--ink); }
+
+/* Saving a rule and running it are separate decisions, so the tick list is
+   visually separate from the editor above it. */
+.rule-enable { margin-top: .8rem; border-top: 1px solid var(--line); padding-top: .6rem; }
+.rule-enable-head { font-size: .76rem; color: var(--muted); margin-bottom: .35rem; }
+.rule-enable-list { display: flex; flex-direction: column; gap: .15rem; }
+.rule-enable-row {
+  display: flex; align-items: center; gap: .45rem;
+  font-size: .8rem; padding: .16rem .2rem; border-radius: 4px; cursor: pointer;
+}
+.rule-enable-row:hover { background: var(--bg); }
+.rule-enable-row .re-engine {
+  font-size: .68rem; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 4px; padding: 0 .3rem;
+}
+.rule-enable-row .re-name { font-family: ui-monospace, monospace; }
+.rule-enable-row .re-builtin { font-size: .68rem; color: var(--muted); }

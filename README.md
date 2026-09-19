@@ -143,6 +143,42 @@ Any tool you don't install simply shows as unavailable.
 * **Monitor** — scanner versions plus Docker container performance and a
   capacity verdict (see below).
 
+### Custom rules
+
+The Scan tab has an editor for writing your own checks in **Semgrep (YAML)** or
+**Trivy (Rego)**. Built-in templates are worked examples that already run; edit
+one, give it a name and save it as your own. Templates themselves cannot be
+overwritten.
+
+Saving runs the rule past the scanner first, so a rule that does not compile is
+never stored -- the error appears next to the editor rather than during a scan
+days later.
+
+Saving a rule and using it are separate steps. Tick a rule in **Custom rules to
+apply** and it joins that scan. Custom rules **add to** the default ruleset
+rather than replacing it, so writing one of your own does not cost you the
+coverage of `p/default`.
+
+Trivy checks are written in Rego, which is a real language, and Trivy
+evaluates it with OPA's full built-in set. A rule calling `http.send` really
+does make a request from inside the container -- verified on this deployment.
+Because the editor has no login, custom checks may not call `http.send`,
+`net.lookup_ip_addr`, `opa.runtime`, `rego.parse_module` or `trace`; a check
+should only inspect the project being scanned. The restriction is applied
+before the rule runs, including when you press Check rule.
+
+Rules are copied into each scan's workspace when it starts, so editing a rule
+while a scan is running cannot change what that scan is executing.
+
+They are stored on the Docker volume (`SAST_RULES_DIR`, `/data/rules` in the
+compose file), so they survive a restart and an image rebuild. They are not in
+version control: they are yours, not the project's.
+
+Only Semgrep and Trivy take custom rules. Bearer and Gitleaks have their own
+rule formats but are not wired up here; npm audit and OSV-Scanner have no rule
+language at all -- they look packages up in a vulnerability database, so there
+is nothing to write.
+
 ### How a scan is judged
 
 There is one fixed rule. There is nothing to configure before a scan, and the
@@ -192,6 +228,11 @@ The UI is a thin client over a small JSON API — handy for scripting/CI:
 |---|---|
 | `GET /api/tools` | tool availability + what each tool needs |
 | `GET /api/policies` | the fixed rule used to judge a scan |
+| `GET /api/rules` | custom rules and built-in templates |
+| `GET /api/rules/{engine}/{name}` | one rule's content |
+| `POST /api/rules/validate` | check a rule compiles, without saving |
+| `POST /api/rules/{engine}/{name}` | save a rule (validated first) |
+| `DELETE /api/rules/{engine}/{name}` | delete a rule |
 | `POST /api/inspect` | inventory a local path + per-tool applicability |
 | `POST /api/scans` | start a scan (`source_kind`=`upload`/`git`/`path`, `tools`, …) |
 | `GET /api/scans/{id}` | scan status, progress, results |

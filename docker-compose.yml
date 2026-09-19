@@ -20,6 +20,9 @@ services:
       # fully-offline use. Do not set "auto": semgrep rejects it because we
       # scan with --metrics=off (no code data leaves this host).
       SAST_SEMGREP_RULES: "p/default"
+      # Custom rules written in the UI live on the volume below, so they
+      # survive restarts and image rebuilds.
+      SAST_RULES_DIR: "/data/rules"
       SAST_ALLOW_LOCAL_PATH: "true"
       SAST_TOOL_TIMEOUT: "900"
       # Monitor tab — per-container CPU/memory. Reads the docker socket that is
@@ -27,7 +30,10 @@ services:
       # whole compose file assumes a trusted, non-public host.
       SAST_ENABLE_DOCKER_STATS: "true"
     volumes:
+      # Two volumes, not one: filling the rules directory must not take the
+      # scan workspaces down with it, and vice versa.
       - sast-workspaces:/data/workspaces
+      - sast-rules:/data/rules
       # Scan code that already lives on the host by mounting it read-only and
       # using the "Local path" tab with e.g. /mounted/my-project.
       # - ./my-project:/mounted/my-project:ro
@@ -58,3 +64,4 @@ services:
 
 volumes:
   sast-workspaces:
+  sast-rules:

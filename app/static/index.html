@@ -27,7 +27,7 @@
     <button class="viewtab" data-view="monitor" data-i18n="nav.monitor">監控</button>
   </nav>
 
-  <main id="view-scan" class="layout layout-single">
+  <main id="view-scan" class="layout layout-scan">
     <!-- ---- scan configuration ------------------------------------- -->
     <section class="panel" aria-labelledby="new-scan-h">
       <h2 id="new-scan-h" data-i18n="sec.newScan">新增掃描</h2>
@@ -75,6 +75,45 @@
 
       <button id="start-btn" class="primary" data-i18n="btn.start">開始掃描</button>
       <p id="form-error" class="error hidden" role="alert"></p>
+    </section>
+
+    <!-- ---- custom rule editor ------------------------------------- -->
+    <section class="panel rule-panel" aria-labelledby="rules-h">
+      <div class="mon-head">
+        <h2 id="rules-h" data-i18n="rules.title">自訂規則</h2>
+        <button id="rule-new" class="linkbtn" data-i18n="rules.new">新增規則</button>
+      </div>
+      <p class="mon-hint" data-i18n="rules.hint"></p>
+
+      <div class="rule-bar">
+        <label class="field rule-pick">
+          <span data-i18n="rules.pick">編輯中</span>
+          <select id="rule-select"></select>
+        </label>
+        <label class="field rule-name-field hidden" id="rule-name-wrap">
+          <span data-i18n="rules.name">名稱</span>
+          <input id="rule-name" type="text" autocomplete="off"
+                 placeholder="my-rule">
+        </label>
+      </div>
+
+      <p id="rule-readonly" class="rule-readonly hidden"
+         data-i18n="rules.readonly"></p>
+
+      <textarea id="rule-editor" class="rule-editor" spellcheck="false"
+                autocomplete="off" autocapitalize="off" wrap="off"></textarea>
+
+      <div class="rule-actions">
+        <button id="rule-validate" class="btn" data-i18n="rules.validate">檢查規則</button>
+        <button id="rule-save" class="btn" data-i18n="rules.save">儲存</button>
+        <button id="rule-delete" class="btn ghost" data-i18n="rules.delete">刪除</button>
+      </div>
+      <pre id="rule-result" class="rule-result hidden"></pre>
+
+      <div class="rule-enable">
+        <div class="rule-enable-head" data-i18n="rules.enable"></div>
+        <div id="rule-enable-list" class="rule-enable-list"></div>
+      </div>
     </section>
 
   </main>

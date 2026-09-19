@@ -35,9 +35,11 @@ class JobManager:
         config.WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
     # ---- lifecycle ----------------------------------------------------
-    def new_job(self, target: ScanTarget, tools: list[str]) -> Job:
+    def new_job(self, target: ScanTarget, tools: list[str],
+                custom_rules: "dict[str, list[str]] | None" = None) -> Job:
         job_id = uuid.uuid4().hex[:12]
-        job = Job(id=job_id, target=target, requested_tools=tools)
+        job = Job(id=job_id, target=target, requested_tools=tools,
+                  custom_rules=custom_rules or {})
         with self._lock:
             self._jobs[job_id] = job
             self._prune_locked()
@@ -145,6 +147,29 @@ class JobManager:
             if not config.KEEP_WORKSPACES:
                 self._cleanup(job_id, external)
 
+    def _materialize_rules(self, job: Job) -> dict[str, list]:
+        """Copy the job's chosen rules into its workspace.
+
+        Copying rather than referencing means a rule edited while a scan is
+        running cannot change what that scan is executing.
+        """
+        from . import rules as rules_mod
+
+        out: dict[str, list] = {}
+        if not job.custom_rules:
+            return out
+        base = config.WORKSPACE_DIR / job.id / "rules"
+        for engine, names in job.custom_rules.items():
+            if not names:
+                continue
+            try:
+                paths = rules_mod.materialize(engine, names, base / engine)
+            except Exception:  # noqa: BLE001 - a rule problem must not kill the scan
+                continue
+            if paths:
+                out[engine] = paths
+        return out
+
     def _scan(self, job: Job, scan_root: str, external: bool) -> None:
         """Phase 2: run the tools on the already-prepared source."""
         try:
@@ -212,13 +237,17 @@ class JobManager:
         job.compute_progress()
         workers = max(1, min(config.MAX_WORKERS, len(adapters)))
 
+        # Copy the selected rules into this job's workspace before anything
+        # runs, so editing a rule mid-scan cannot change what this scan uses.
+        rule_files = self._materialize_rules(job)
+
         def run_one(adapter) -> None:
             placeholder = job.results[adapter.name]
             placeholder.phase = ToolPhase.RUNNING
             placeholder.started_at = _now()
             job.compute_progress()
             try:
-                result = adapter.scan(scan_root)
+                result = adapter.scan(scan_root, rule_files.get(adapter.name))
             except Exception as exc:  # noqa: BLE001
                 result = ToolResult(
                     tool=adapter.name, kind=adapter.kind,

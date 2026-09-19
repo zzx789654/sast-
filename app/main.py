@@ -64,6 +64,59 @@ async def admin_restart() -> JSONResponse:
     return JSONResponse(result, status_code=202 if result.get("restarting") else 409)
 
 
+@app.get("/api/rules")
+async def list_custom_rules(engine: Optional[str] = None) -> dict:
+    """Every rule the scan form can offer, built-in templates included."""
+    from . import rules as rules_mod
+    return {"rules": rules_mod.list_rules(engine),
+            "engines": list(rules_mod.ENGINES)}
+
+
+@app.get("/api/rules/{engine}/{name}")
+async def read_custom_rule(engine: str, name: str) -> dict:
+    from . import rules as rules_mod
+    try:
+        rule = rules_mod.read_rule(engine, name)
+    except FileNotFoundError:
+        raise HTTPException(404, "rule not found") from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"engine": rule.engine, "name": rule.name,
+            "builtin": rule.builtin, "content": rule.content}
+
+
+@app.post("/api/rules/validate")
+async def validate_custom_rule(engine: str = Form(...),
+                               content: str = Form(...)) -> dict:
+    """Ask the scanner whether this rule compiles, without saving it."""
+    from . import rules as rules_mod
+    return await run_in_threadpool(rules_mod.validate_rule, engine, content)
+
+
+@app.post("/api/rules/{engine}/{name}")
+async def save_custom_rule(engine: str, name: str,
+                           content: str = Form(...)) -> JSONResponse:
+    """Save a rule. It is validated first, so a broken rule is never stored."""
+    from . import rules as rules_mod
+    try:
+        saved = await run_in_threadpool(rules_mod.save_rule, engine, name, content)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return JSONResponse(saved, status_code=201)
+
+
+@app.delete("/api/rules/{engine}/{name}")
+async def delete_custom_rule(engine: str, name: str) -> dict:
+    from . import rules as rules_mod
+    try:
+        rules_mod.delete_rule(engine, name)
+    except FileNotFoundError:
+        raise HTTPException(404, "rule not found") from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"deleted": name}
+
+
 @app.get("/api/tools")
 async def list_tools() -> dict:
     """Availability + metadata for every integrated tool."""
@@ -159,9 +212,18 @@ async def create_scan(
     git_url: Optional[str] = Form(None),
     local_path: Optional[str] = Form(None),
     confirm: Optional[str] = Form(None),
+    custom_rules: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
 ) -> JSONResponse:
     requested = [t.strip() for t in tools.split(",") if t.strip()]
+    # {engine: [rule name, ...]}; names are re-checked when they are read, so
+    # a bad one here cannot reach the filesystem.
+    try:
+        chosen_rules = json.loads(custom_rules) if custom_rules else {}
+        if not isinstance(chosen_rules, dict):
+            raise ValueError("custom_rules must be an object")
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, f"custom_rules: {exc}") from exc
 
     # upload/git are prepared server-side, so pause for confirmation by default
     # (the user reviews the inventory before tools run). A local path is already
@@ -176,7 +238,7 @@ async def create_scan(
         except SourceError as exc:
             raise HTTPException(400, str(exc)) from exc
         target = ScanTarget(kind="git", display=git_url)
-        job = manager.new_job(target, requested)
+        job = manager.new_job(target, requested, chosen_rules)
         manager.start(job.id, {"kind": "git", "url": git_url}, confirm=want_confirm)
 
     elif source_kind == "path":
@@ -185,14 +247,14 @@ async def create_scan(
         if not local_path:
             raise HTTPException(400, "local_path is required for source_kind=path")
         target = ScanTarget(kind="path", display=local_path)
-        job = manager.new_job(target, requested)
+        job = manager.new_job(target, requested, chosen_rules)
         manager.start(job.id, {"kind": "path", "path": local_path}, confirm=False)
 
     elif source_kind == "upload":
         if file is None:
             raise HTTPException(400, "file is required for source_kind=upload")
         target = ScanTarget(kind="upload", display=file.filename or "upload.zip")
-        job = manager.new_job(target, requested)
+        job = manager.new_job(target, requested, chosen_rules)
         zip_path = manager.job_dir(job.id) / "upload.zip"
         try:
             await _save_upload(file, zip_path)

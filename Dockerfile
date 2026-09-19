@@ -106,7 +106,9 @@ RUN python -m pip install --no-cache-dir --prefer-binary \
       --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" -r requirements.txt
 COPY app ./app
 
-RUN useradd -m appuser && mkdir -p /data/workspaces && chown -R appuser /data
+RUN useradd -m appuser \
+    && mkdir -p /data/workspaces /data/rules \
+    && chown -R appuser /data
 USER appuser
 
 EXPOSE 8000

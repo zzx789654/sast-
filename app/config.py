@@ -52,6 +52,15 @@ class Config:
         if s.strip()
     }
 
+    # Where custom scanner rules are kept. On the Docker deployment this sits
+    # on the same volume as the workspaces, so rules written in the browser
+    # survive a restart and an image rebuild.
+    # Defaults beside the workspaces so a local run works without setup; the
+    # Docker deployment points it at the persistent volume instead.
+    RULES_DIR = Path(
+        os.environ.get("SAST_RULES_DIR", "/tmp/sast-studio-rules")
+    )
+
     # Semgrep ruleset. Needs network; point at a local ruleset offline.
     # Not "auto": semgrep refuses to build the auto config while metrics are
     # off, and we always scan with --metrics=off so no code data leaves the box.

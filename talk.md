@@ -93,8 +93,30 @@
   1. **判定規則固定化**：Critical/High 或密鑰 → blocked；Medium → manual_review；Low/Info/零發現 → passed。使用者確認「零發現算通過」。
   2. **誤報例外一併移除**（使用者選擇）：blocked 不再提供任何略過途徑，UI 改為列出擋住的發現並說明「修好再掃」。
   3. **更新結果明講**：新增 `_classify()` 判讀每個指令的輸出，分成 upgraded / data_updated / already_current / unknown，並在面板顯示；只有 upgraded 才提示需重啟。解決使用者「要不要重啟」的疑問，不必自己讀 pip 輸出。
-  4. **進度條摺疊**：`_collapse_progress()` 只保留每行  後的最終狀態，114MB 下載的數十行重複輸出收斂成一行。
+  4. **進度條摺疊**：`_collapse_progress()` 只保留每行 
+ 後的最終狀態，114MB 下載的數十行重複輸出收斂成一行。
 - **理由**：使用者原本的困惑（截圖裡的政策表單）根源不是說明不夠，而是**這個選擇本身沒有必要存在**。移除比解釋更能達成「順手」。
 - **影響範圍**：`app/policies.py`（236→112 行，移除 PolicyDefinition/範本/客製化）、`main.py`（移除 exceptions 端點與政策參數）、`models.py`、`orchestrator.py`（移除 add_exception）、前端四檔（移除政策表單與例外 UI，i18n 刪 76 個鍵）、README 中英、測試。淨減 426 行。
 - **量測**：測試 61 → 70（新增參數化的判定階梯測試涵蓋 9 種組合）。
 - **附帶回答**：六個工具中 Semgrep / Trivy / Gitleaks / Bearer 可寫自訂規則（Semgrep 最強），npm audit 與 OSV-Scanner 不行——它們是查詢漏洞資料庫，沒有規則可寫。
+
+## [2026-09-19] #008 — 掃描頁新增自訂規則編輯器（Semgrep YAML / Trivy Rego）
+
+- **使用者指令（提示詞原意）**：掃描右側空白處新增自訂規則編輯器，先做 Semgrep 與 Trivy，提供範本，可編輯／儲存／選用（預設範本不可改），儲存時要能檢查規則可用。
+- **對照既有決議**：填滿第 17 輪之後閒置的右側版面。與 `CoreMain.md` 一致——這是「用一個網頁統一跑六個工具」的延伸，不是新主題。
+- **決議回應**：
+  1. 規則存 Docker volume（使用者選定），不進版控。
+  2. 可複選：自訂規則**加在**預設規則集之上，不取代（使用者選定）。
+  3. 儲存前一律先請掃描器實際編譯，不過就不存檔。
+  4. 內建範本唯讀，改了要另存新名。
+  5. 掃描開始時把規則**複製**進工作區，避免掃描中改規則影響進行中的掃描。
+- **資安（security-scanner 獨立複驗，6 項）**：
+  - **FIND-001 Critical 已實測確認並修復**：Trivy 的 Rego 可呼叫 `http.send`，我在容器內實測**真的打出 HTTP 請求並拿到 200**。因為編輯器無登入保護，等於任何人都能讓伺服器對內網發請求或外傳被掃描的原始碼。修法：在規則執行**之前**以 denylist 擋掉 `http.send` / `net.lookup_ip_addr` / `opa.runtime` / `rego.parse_module` / `trace`，並實測原始 exploit 現在被拒。
+  - FIND-002 High：驗證端點無併發上限 → 加 Semaphore(2)、timeout 120→60 秒。
+  - FIND-003 High：規則數無上限 + 我把 rules 與 workspaces 併成同一個 volume（自己引入的退化）→ 改回兩個獨立 volume，並加每 engine 100 條上限。
+  - FIND-004 Medium：ReDoS → semgrep 加 `--timeout 30 --timeout-threshold 3`。
+  - FIND-005 Medium：寫入非原子 → 改 temp file + `os.replace`。
+  - FIND-006 Low：`$` 會匹配結尾換行 → 改 `\Z`。
+- **理由**：Semgrep 是宣告式 YAML，風險有限；Trivy 的 Rego 是**真正的程式語言**，這是本輪唯一真正危險的地方。不做沙箱而用 denylist，是因為合法的檢查規則本來就只需要讀 `input`，不需要網路、時鐘、環境變數。
+- **影響範圍**：新增 `app/rules.py`；改 `main.py`（5 個端點）、`config.py`、`models.py`、`orchestrator.py`、`adapters/base|semgrep|trivy.py`、前端四檔、`Dockerfile`、`docker-compose.yml`、README 中英、測試 92→106。
+- **附帶回答**：六個工具中只有 Semgrep／Trivy／Gitleaks／Bearer 可寫規則；npm audit 與 OSV-Scanner 是查漏洞資料庫，沒有規則語言。本輪只接前兩個。

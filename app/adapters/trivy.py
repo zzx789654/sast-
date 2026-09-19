@@ -33,16 +33,20 @@ class TrivyAdapter(BaseAdapter):
     requirement = "any project (deps, secrets, IaC configs)"
 
     def _execute(self, target_dir: Path) -> list[Finding]:
-        res = run_command(
-            [
-                self.binary, "fs",
-                "--format", "json",
-                "--quiet",
-                "--scanners", "vuln,secret,misconfig",
-                str(target_dir),
-            ],
-            timeout=config.TOOL_TIMEOUT,
-        )
+        args = [
+            self.binary, "fs",
+            "--format", "json",
+            "--quiet",
+            "--scanners", "vuln,secret,misconfig",
+        ]
+        # Custom Rego checks live in one directory; trivy needs the directory
+        # and the namespace they declare.
+        custom = getattr(self, "custom_rules", [])
+        if custom:
+            args += ["--config-check", str(custom[0].parent),
+                     "--check-namespaces", "custom"]
+        args.append(str(target_dir))
+        res = run_command(args, timeout=config.TOOL_TIMEOUT)
         if res.timed_out:
             raise TimeoutError("trivy timed out")
         if not res.stdout.strip():

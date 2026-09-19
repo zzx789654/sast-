@@ -104,6 +104,35 @@ uvicorn app.main:app --reload        # http://localhost:8000
   可匯出 CSV 與 PDF（PDF 走瀏覽器原生列印，已套用列印專用樣式）。
 * **監控** — 掃描器版本，加上 Docker 容器效能與「資源評估」（見下）。
 
+### 自訂規則
+
+掃描分頁右側有規則編輯器，可以用 **Semgrep（YAML）** 或 **Trivy（Rego）**
+寫自己的檢查規則。內建範本是「本來就跑得起來」的完整範例——改一改、取個名字
+另存成自己的規則即可。範本本身不能被覆蓋。
+
+儲存時會**先請掃描器實際檢查規則能不能編譯**，編譯不過就不會存檔，
+錯誤訊息直接顯示在編輯器旁邊，而不是幾天後掃描時才炸開。
+
+**存檔和啟用是兩件事。** 在「這次掃描要套用的自訂規則」勾選，那條規則才會加入本次掃描。
+自訂規則是**加在預設規則集之上**，不是取代它——寫了自己的規則，不會因此失去
+`p/default` 的覆蓋率。
+
+Trivy 的檢查用 Rego 撰寫，那是一個真正的程式語言，而 Trivy 以 OPA 的完整內建函式集執行它。
+呼叫 `http.send` 的規則**真的會從容器內發出網路請求**——這點已在本部署實測確認。
+由於編輯器沒有登入保護，自訂檢查一律禁用 `http.send`、`net.lookup_ip_addr`、
+`opa.runtime`、`rego.parse_module` 與 `trace`；檢查規則只該檢視被掃描的專案。
+這個限制在規則執行**之前**就會套用，按「檢查規則」時也一樣。
+
+掃描開始時會把選中的規則**複製**進該次掃描的工作區，所以掃描進行中去改規則，
+不會影響正在跑的那一次。
+
+規則存在 Docker volume（`SAST_RULES_DIR`，compose 裡是 `/data/rules`），
+重啟與重建映像都不會不見。它們**不進版控**：規則是你的，不是專案的。
+
+只有 Semgrep 與 Trivy 支援自訂規則。Bearer 與 Gitleaks 各自有規則格式，但本專案未接；
+npm audit 與 OSV-Scanner 根本沒有規則語言——它們是拿套件版本去比對漏洞資料庫，
+沒有規則可寫。
+
 ### 判定規則
 
 只有一條規則，固定不可調整。掃描前不需要做任何設定，規則就寫在「開始掃描」按鈕上方。
@@ -150,6 +179,11 @@ uvicorn app.main:app --reload        # http://localhost:8000
 | `GET /api/scans/{id}` | 掃描狀態、進度、結果 |
 | `GET /api/scans/{id}/export.csv` | 下載該次掃描發現的 CSV |
 | `GET /api/policies` | 判定規則（固定，僅供顯示） |
+| `GET /api/rules` | 自訂規則與內建範本清單 |
+| `GET /api/rules/{engine}/{name}` | 讀取單一規則內容 |
+| `POST /api/rules/validate` | 檢查規則能否編譯（不存檔） |
+| `POST /api/rules/{engine}/{name}` | 儲存規則（先驗證才寫入） |
+| `DELETE /api/rules/{engine}/{name}` | 刪除規則 |
 | `POST /api/scans/{id}/review` | 核准或封鎖等待人工審查的掃描 |
 | `POST /api/scans/{id}/exceptions` | 新增有到期日的誤報例外 |
 | `POST /api/scans/{id}/confirm` \| `/cancel` | 執行或放棄等待確認的掃描 |

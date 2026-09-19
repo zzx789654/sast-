@@ -35,6 +35,19 @@ class SemgrepAdapter(BaseAdapter):
             "scan",
             "--config",
             config.SEMGREP_RULES,
+        ]
+        # --config can be repeated, so custom rules add to the registry set
+        # rather than replacing it: adding one rule of your own should not
+        # cost you the coverage of the default ruleset.
+        for rule in getattr(self, "custom_rules", []):
+            args += ["--config", str(rule)]
+        args += [
+            # A custom rule can contain a regex that backtracks catastrophically.
+            # Validation only proves a rule compiles, not that it terminates
+            # quickly, so let semgrep abandon a rule that runs away instead of
+            # letting it consume the whole scan's time budget.
+            "--timeout", "30",
+            "--timeout-threshold", "3",
             "--json",
             "--quiet",
             "--disable-version-check",

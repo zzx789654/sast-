@@ -1024,3 +1024,235 @@ def test_npm_is_not_updated_in_place():
     from app import admin
 
     assert not any(n == "npm_audit" for n, _ in admin._update_commands(["npm_audit"]))
+
+
+# ---------------------------------------------------------------- rule editor
+@pytest.fixture()
+def rules_env(tmp_path, monkeypatch):
+    """Point the rule store at a temp dir so tests never touch a real one."""
+    from app import rules as rules_mod
+    from app.config import config
+
+    monkeypatch.setattr(config, "RULES_DIR", tmp_path / "rules")
+    return rules_mod
+
+
+@pytest.mark.parametrize("name", [
+    "../etc/passwd", "..\\windows", "a/b", "a\\b", "has.dot", "",
+    "UPPERCASE", "-leading", "x" * 60, "with space", "semi;colon",
+])
+def test_rule_names_cannot_escape_the_rules_directory(rules_env, name):
+    """The name becomes a filename, so anything but a plain slug is refused."""
+    with pytest.raises(ValueError):
+        rules_env._safe_path("semgrep", name)
+
+
+def test_rule_path_stays_inside_the_rules_dir(rules_env):
+    path = rules_env._safe_path("semgrep", "my-rule")
+    assert path.parent == rules_env.rules_dir("semgrep").resolve()
+    assert path.name == "my-rule.yaml"
+    assert rules_env._safe_path("trivy", "x").name == "x.rego"
+
+
+def test_builtin_templates_are_listed_and_readable(rules_env):
+    names = {(r["engine"], r["name"]) for r in rules_env.list_rules()}
+    assert ("semgrep", "example-dangerous-eval") in names
+    assert ("trivy", "example-dockerfile-root") in names
+    rule = rules_env.read_rule("semgrep", "example-dangerous-eval")
+    assert rule.builtin is True
+    assert "rules:" in rule.content
+
+
+def test_builtin_templates_cannot_be_overwritten_or_deleted(rules_env):
+    with pytest.raises(ValueError, match="built-in"):
+        rules_env.save_rule("semgrep", "example-dangerous-eval", "rules: []")
+    with pytest.raises(ValueError, match="built-in"):
+        rules_env.delete_rule("semgrep", "example-dangerous-eval")
+
+
+def test_invalid_rule_is_not_saved(rules_env, monkeypatch):
+    """A rule that fails validation must never reach disk.
+
+    Storing it would turn a typo into a scan-time error, far away from the
+    editor where it was typed.
+    """
+    monkeypatch.setattr(rules_env, "validate_rule",
+                        lambda engine, content: {"ok": False, "message": "boom"})
+    with pytest.raises(ValueError, match="boom"):
+        rules_env.save_rule("semgrep", "broken", "rules: [")
+    assert not rules_env._safe_path("semgrep", "broken").exists()
+
+
+def test_oversized_rule_is_rejected(rules_env):
+    huge = "x" * (rules_env.MAX_RULE_BYTES + 1)
+    with pytest.raises(ValueError, match="larger than"):
+        rules_env.save_rule("semgrep", "huge", huge)
+
+
+def test_empty_rule_is_rejected(rules_env):
+    with pytest.raises(ValueError, match="empty"):
+        rules_env.save_rule("semgrep", "blank", "   \n  ")
+
+
+def test_save_read_and_delete_round_trip(rules_env, monkeypatch):
+    monkeypatch.setattr(rules_env, "validate_rule",
+                        lambda engine, content: {"ok": True, "message": "ok"})
+    rules_env.save_rule("semgrep", "my-rule", "rules: []\n")
+    assert rules_env.read_rule("semgrep", "my-rule").content == "rules: []\n"
+    assert ("semgrep", "my-rule") in {(r["engine"], r["name"])
+                                      for r in rules_env.list_rules()}
+    rules_env.delete_rule("semgrep", "my-rule")
+    with pytest.raises(FileNotFoundError):
+        rules_env.read_rule("semgrep", "my-rule")
+
+
+def test_materialize_copies_rules_into_the_scan(rules_env, monkeypatch, tmp_path):
+    """Rules are copied per scan, so editing one mid-scan changes nothing."""
+    monkeypatch.setattr(rules_env, "validate_rule",
+                        lambda engine, content: {"ok": True, "message": ""})
+    rules_env.save_rule("semgrep", "r1", "rules: []\n")
+
+    dest = tmp_path / "job" / "semgrep"
+    paths = rules_env.materialize("semgrep", ["r1", "does-not-exist"], dest)
+    assert [p.name for p in paths] == ["r1.yaml"]
+    assert paths[0].read_text("utf-8") == "rules: []\n"
+
+    # Editing the stored rule afterwards must not change the copy.
+    rules_env.save_rule("semgrep", "r1", "rules: [changed]\n")
+    assert paths[0].read_text("utf-8") == "rules: []\n"
+
+
+def test_validation_is_honest_when_the_scanner_is_missing(rules_env, monkeypatch):
+    """Never claim a rule is fine when nothing actually checked it."""
+    monkeypatch.setattr(rules_env.shutil, "which", lambda name: None)
+    result = rules_env.validate_rule("semgrep", "rules: []")
+    assert result["ok"] is False
+    assert result.get("checked") is False
+    assert "not installed" in result["message"]
+
+
+def test_semgrep_adapter_adds_custom_rules_to_the_default_config(monkeypatch, tmp_path):
+    """A custom rule must add to the registry ruleset, not replace it."""
+    from app.adapters import semgrep
+
+    captured = {}
+
+    def fake_run(args, **kw):
+        captured["args"] = args
+        return CommandResult(0, '{"results": []}', "")
+
+    monkeypatch.setattr(semgrep, "run_command", fake_run)
+    adapter = semgrep.SemgrepAdapter()
+    adapter.custom_rules = [tmp_path / "mine.yaml"]
+    adapter._execute(tmp_path)
+
+    args = captured["args"]
+    assert args.count("--config") == 2            # default + custom
+    assert str(tmp_path / "mine.yaml") in args
+
+
+def test_api_rules_endpoints(client):
+    res = client.get("/api/rules")
+    assert res.status_code == 200
+    body = res.json()
+    assert set(body["engines"]) == {"semgrep", "trivy"}
+    assert any(r["builtin"] for r in body["rules"])
+
+    # a built-in is readable
+    r = client.get("/api/rules/semgrep/example-dangerous-eval")
+    assert r.status_code == 200 and r.json()["builtin"] is True
+
+    # and protected
+    assert client.post("/api/rules/semgrep/example-dangerous-eval",
+                       data={"content": "rules: []"}).status_code == 400
+    assert client.delete("/api/rules/semgrep/example-dangerous-eval").status_code == 400
+    assert client.get("/api/rules/semgrep/missing").status_code == 404
+
+
+@pytest.mark.parametrize("rego,blocked", [
+    ("resp := http.send({})", True),
+    ("resp := http.send ({})", True),           # space before the paren
+    ("resp:=http.send(x)", True),               # no spaces at all
+    ("rt := opa.runtime().env", True),
+    ("x := net.lookup_ip_addr(\"h\")", True),
+    ("y := trace(\"m\")", True),
+    ("# do not use http.send() here", False),   # a comment may mention it
+    ("msg := \"http.send is banned\"", False),  # so may a string
+    ("deny contains r if { input.x == 1 }", False),
+])
+def test_rego_network_builtins_are_refused(rules_env, rego, blocked):
+    """Rego is a real language and Trivy gives it OPA's full built-in set.
+
+    Verified on the deployment: a rule calling http.send made a live request
+    out of the container and got a 200 back. With no login in front of the
+    editor that is a way to probe the internal network, so these built-ins are
+    refused before the rule is ever stored or run.
+    """
+    assert bool(rules_env.check_rego_builtins(rego)) is blocked
+
+
+def test_rego_guard_runs_before_the_rule_does(rules_env, monkeypatch):
+    """Validation executes the rule, so the check must come first."""
+    ran = {"subprocess": False}
+
+    def fake_run(*a, **kw):
+        ran["subprocess"] = True
+        raise AssertionError("the rule must not be executed")
+
+    monkeypatch.setattr(rules_env.shutil, "which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr(rules_env.subprocess, "run", fake_run)
+
+    result = rules_env.validate_rule("trivy", "deny if { http.send({}) }")
+    assert result["ok"] is False
+    assert "http.send" in result["message"]
+    assert ran["subprocess"] is False
+
+
+def test_rule_count_is_capped(rules_env, monkeypatch):
+    """The name space is large enough to fill a volume one rule at a time."""
+    monkeypatch.setattr(rules_env, "validate_rule",
+                        lambda engine, content: {"ok": True, "message": ""})
+    monkeypatch.setattr(rules_env, "MAX_RULES_PER_ENGINE", 3)
+    for i in range(3):
+        rules_env.save_rule("semgrep", f"rule-{i}", "rules: []\n")
+    with pytest.raises(ValueError, match="at most 3"):
+        rules_env.save_rule("semgrep", "one-too-many", "rules: []\n")
+    # Overwriting one that already exists is still fine at the cap.
+    rules_env.save_rule("semgrep", "rule-0", "rules: [updated]\n")
+
+
+def test_save_is_atomic(rules_env, monkeypatch):
+    """A crash mid-write must not leave half a rule for a scan to run."""
+    monkeypatch.setattr(rules_env, "validate_rule",
+                        lambda engine, content: {"ok": True, "message": ""})
+    rules_env.save_rule("semgrep", "atomic", "rules: []\n")
+    path = rules_env._safe_path("semgrep", "atomic")
+
+    real_replace = rules_env.os.replace
+    monkeypatch.setattr(rules_env.os, "replace",
+                        lambda *a: (_ for _ in ()).throw(OSError("crash")))
+    with pytest.raises(OSError):
+        rules_env.save_rule("semgrep", "atomic", "rules: [broken half")
+    # The original survived; the partial write went to a temp file instead.
+    monkeypatch.setattr(rules_env.os, "replace", real_replace)
+    assert path.read_text("utf-8") == "rules: []\n"
+
+
+def test_name_with_trailing_newline_is_rejected(rules_env):
+    """"$" also matches before a trailing newline; \Z does not."""
+    with pytest.raises(ValueError):
+        rules_env._safe_path("semgrep", "abc\n")
+
+
+def test_semgrep_scan_bounds_runaway_rules(monkeypatch, tmp_path):
+    """A custom regex can backtrack forever; semgrep must give up on it."""
+    from app.adapters import semgrep
+
+    captured = {}
+    monkeypatch.setattr(semgrep, "run_command",
+                        lambda args, **kw: (captured.update(args=args),
+                                            CommandResult(0, '{"results": []}', ""))[1])
+    semgrep.SemgrepAdapter()._execute(tmp_path)
+    args = captured["args"]
+    assert "--timeout" in args
+    assert "--timeout-threshold" in args

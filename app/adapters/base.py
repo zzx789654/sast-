@@ -111,7 +111,11 @@ class BaseAdapter:
         raise NotImplementedError
 
     # ---- template method ----------------------------------------------
-    def scan(self, target_dir: Path) -> ToolResult:
+    def scan(self, target_dir: Path,
+             custom_rules: "list[Path] | None" = None) -> ToolResult:
+        # Passed down rather than read from config: adapters run concurrently,
+        # so a shared field would let one scan's rules affect another.
+        self.custom_rules = list(custom_rules or [])
         result = ToolResult(tool=self.name, kind=self.kind, status=ToolStatus.OK)
         result.install_hint = self.install_hint
 

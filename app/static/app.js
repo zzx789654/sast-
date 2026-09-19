@@ -50,9 +50,227 @@ async function init() {
   wireForm();
   wireFilters();
   wireViewNav();
+  wireRuleEditor();
   await loadTools();
   await loadPolicies();
+  await loadRules();
   await refreshScanList();
+}
+
+// ------------------------------------------------------------ rule editor
+// Custom rules are written here and run by the scanner, so the editor's job is
+// to make two things obvious: whether a rule compiles, and which rules this
+// scan will actually use. Those are different questions -- a saved rule does
+// nothing until it is ticked.
+const RULE_STATE = { rules: [], current: null, enabled: {} };
+
+async function loadRules() {
+  try {
+    const data = await (await fetch("/api/rules")).json();
+    RULE_STATE.rules = data.rules || [];
+  } catch (e) {
+    RULE_STATE.rules = [];
+  }
+  renderRuleSelect();
+  renderRuleEnable();
+  if (!RULE_STATE.current && RULE_STATE.rules.length) {
+    await openRule(RULE_STATE.rules[0].engine, RULE_STATE.rules[0].name);
+  }
+}
+
+function renderRuleSelect() {
+  const sel = $("#rule-select");
+  if (!sel) return;
+  const keep = sel.value;
+  sel.innerHTML = "";
+  ["semgrep", "trivy"].forEach((engine) => {
+    const group = document.createElement("optgroup");
+    group.label = engine + (engine === "semgrep" ? " (YAML)" : " (Rego)");
+    RULE_STATE.rules.filter((r) => r.engine === engine).forEach((r) => {
+      const opt = new Option(
+        r.name + (r.builtin ? "  \u2014 " + t("rules.builtin") : ""),
+        engine + "/" + r.name);
+      group.appendChild(opt);
+    });
+    if (group.children.length) sel.appendChild(group);
+  });
+  if (keep) sel.value = keep;
+}
+
+async function openRule(engine, name) {
+  try {
+    const r = await (await fetch(`/api/rules/${engine}/${encodeURIComponent(name)}`)).json();
+    RULE_STATE.current = r;
+    $("#rule-editor").value = r.content;
+    $("#rule-select").value = engine + "/" + name;
+    $("#rule-name").value = r.builtin ? "" : r.name;
+    // A built-in is a worked example, not a document: it can be read and
+    // copied from, never overwritten.
+    $("#rule-editor").readOnly = false;      // editable, but saves elsewhere
+    $("#rule-readonly").classList.toggle("hidden", !r.builtin);
+    $("#rule-name-wrap").classList.toggle("hidden", !r.builtin);
+    $("#rule-delete").disabled = r.builtin;
+    hideRuleResult();
+  } catch (e) {
+    showRuleResult(false, e.message);
+  }
+}
+
+function newRule() {
+  const engine = (RULE_STATE.current && RULE_STATE.current.engine) || "semgrep";
+  RULE_STATE.current = { engine, name: "", builtin: false, content: "" };
+  $("#rule-editor").value = "";
+  $("#rule-name").value = "";
+  $("#rule-name-wrap").classList.remove("hidden");
+  $("#rule-readonly").classList.add("hidden");
+  $("#rule-delete").disabled = true;
+  hideRuleResult();
+  $("#rule-name").focus();
+}
+
+function currentEngine() {
+  return (RULE_STATE.current && RULE_STATE.current.engine) || "semgrep";
+}
+
+// Ask the scanner to compile the rule without saving it.
+async function validateRule() {
+  const fd = new FormData();
+  fd.append("engine", currentEngine());
+  fd.append("content", $("#rule-editor").value);
+  setRuleBusy(true);
+  try {
+    const r = await (await fetch("/api/rules/validate", { method: "POST", body: fd })).json();
+    showRuleResult(r.ok, r.message || (r.ok ? t("rules.ok") : t("rules.bad")));
+    return r.ok;
+  } catch (e) {
+    showRuleResult(false, e.message);
+    return false;
+  } finally {
+    setRuleBusy(false);
+  }
+}
+
+async function saveRule() {
+  const cur = RULE_STATE.current || {};
+  // Saving a built-in means saving a copy, so a name is required.
+  const name = (cur.builtin || !cur.name)
+    ? ($("#rule-name").value || "").trim()
+    : cur.name;
+  if (!name) {
+    showRuleResult(false, t("rules.needName"));
+    $("#rule-name").focus();
+    return;
+  }
+  const fd = new FormData();
+  fd.append("content", $("#rule-editor").value);
+  setRuleBusy(true);
+  try {
+    const res = await fetch(`/api/rules/${currentEngine()}/${encodeURIComponent(name)}`,
+                            { method: "POST", body: fd });
+    const body = await res.json();
+    if (!res.ok) {
+      // The server validates before writing, so this is the compile error.
+      showRuleResult(false, body.detail || t("rules.bad"));
+      return;
+    }
+    showRuleResult(true, t("rules.saved", { name }));
+    await loadRules();
+    await openRule(currentEngine(), name);
+  } catch (e) {
+    showRuleResult(false, e.message);
+  } finally {
+    setRuleBusy(false);
+  }
+}
+
+async function deleteRule() {
+  const cur = RULE_STATE.current;
+  if (!cur || cur.builtin || !cur.name) return;
+  if (!confirm(t("rules.confirmDelete", { name: cur.name }))) return;
+  try {
+    await fetch(`/api/rules/${cur.engine}/${encodeURIComponent(cur.name)}`,
+                { method: "DELETE" });
+    delete (RULE_STATE.enabled[cur.engine] || {})[cur.name];
+    RULE_STATE.current = null;
+    await loadRules();
+  } catch (e) {
+    showRuleResult(false, e.message);
+  }
+}
+
+// Which rules this scan will use. Separate from the editor on purpose: saving
+// a rule and running it are different decisions.
+function renderRuleEnable() {
+  const box = $("#rule-enable-list");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!RULE_STATE.rules.length) {
+    box.appendChild(el("div", "mon-subnote", t("rules.none")));
+    return;
+  }
+  RULE_STATE.rules.forEach((r) => {
+    const row = el("label", "rule-enable-row");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !!(RULE_STATE.enabled[r.engine] || {})[r.name];
+    cb.addEventListener("change", () => {
+      RULE_STATE.enabled[r.engine] = RULE_STATE.enabled[r.engine] || {};
+      RULE_STATE.enabled[r.engine][r.name] = cb.checked;
+    });
+    row.appendChild(cb);
+    row.appendChild(el("span", "re-engine", r.engine));
+    row.appendChild(el("span", "re-name", r.name));
+    if (r.builtin) row.appendChild(el("span", "re-builtin", t("rules.builtin")));
+    box.appendChild(row);
+  });
+}
+
+// {engine: [name, ...]} for the scan request; empty engines are dropped so the
+// backend is not asked to look up nothing.
+function selectedRules() {
+  const out = {};
+  Object.keys(RULE_STATE.enabled).forEach((engine) => {
+    const names = Object.keys(RULE_STATE.enabled[engine])
+      .filter((n) => RULE_STATE.enabled[engine][n]);
+    if (names.length) out[engine] = names;
+  });
+  return out;
+}
+
+function setRuleBusy(busy) {
+  ["#rule-validate", "#rule-save", "#rule-delete"].forEach((id) => {
+    const b = $(id);
+    if (b) b.disabled = busy;
+  });
+  if (!busy && RULE_STATE.current && RULE_STATE.current.builtin) {
+    $("#rule-delete").disabled = true;
+  }
+}
+
+function showRuleResult(ok, message) {
+  const box = $("#rule-result");
+  if (!box) return;
+  box.textContent = message || "";
+  box.className = "rule-result " + (ok ? "ok" : "bad");
+  box.classList.toggle("hidden", !message);
+}
+
+function hideRuleResult() {
+  const box = $("#rule-result");
+  if (box) box.classList.add("hidden");
+}
+
+function wireRuleEditor() {
+  const sel = $("#rule-select");
+  if (!sel) return;
+  sel.addEventListener("change", () => {
+    const [engine, ...rest] = sel.value.split("/");
+    openRule(engine, rest.join("/"));
+  });
+  $("#rule-new").addEventListener("click", newRule);
+  $("#rule-validate").addEventListener("click", validateRule);
+  $("#rule-save").addEventListener("click", saveRule);
+  $("#rule-delete").addEventListener("click", deleteRule);
 }
 
 // ------------------------------------------------------------ verdict rule
@@ -550,6 +768,12 @@ async function startScan() {
   const fd = new FormData();
   fd.append("source_kind", state.sourceKind);
   fd.append("tools", tools.join(","));
+  // Only the rules ticked in the editor panel; an empty object means the
+  // scanners run with their default rulesets alone.
+  const chosen = selectedRules();
+  if (Object.keys(chosen).length) {
+    fd.append("custom_rules", JSON.stringify(chosen));
+  }
 
   if (state.sourceKind === "upload") {
     const f = $("#file-input").files[0];
