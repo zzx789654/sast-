@@ -2692,6 +2692,74 @@ def test_the_login_page_offers_a_way_past_an_expired_password():
     assert "/api/auth/change-expired" in js
 
 
+def test_every_styled_class_used_on_a_button_is_actually_defined():
+    """`.btn` was used on a dozen buttons and never defined.
+
+    Only its :disabled and .small modifiers existed, so the buttons fell back
+    to the browser's own padding and font and stood shorter than the inputs
+    next to them -- which is what the misalignment was. `.ghost` was the same
+    story: a secondary action that looked exactly like a primary one.
+    """
+    import re
+
+    root = Path(__file__).resolve().parents[1] / "app/static"
+    css = (root / "style.css").read_text("utf-8")
+    html = (root / "index.html").read_text("utf-8")
+    js = (root / "app.js").read_text("utf-8")
+
+    used = set()
+    for blob in re.findall(r'class="btn([^"]*)"', html):
+        used.update(blob.split())
+    for blob in re.findall(r'el\("button", "btn([^"]*)"', js):
+        used.update(w for w in blob.split() if w)
+    used.add("btn")
+
+    for name in sorted(used):
+        # A bare declaration, not just a :disabled or :hover variant.
+        assert re.search(r"\.%s\s*[,{]" % re.escape(name), css), (
+            f".{name} is used on a button but has no rule in style.css"
+        )
+
+
+def test_a_button_is_the_same_height_as_the_field_beside_it():
+    """They sit in one row aligned on the bottom edge, so a different box
+    height is visible as a step."""
+    import re
+
+    css = (Path(__file__).resolve().parents[1]
+           / "app/static/style.css").read_text("utf-8")
+
+    def block(marker):
+        i = css.index(marker)
+        return css[i:css.index("}", i)]
+
+    btn = block(".btn {")
+    field = block(".field input:not([type=checkbox])")
+
+    def vpad(text):
+        return re.search(r"padding:\s*([\d.]+rem)", text).group(1)
+
+    assert vpad(btn) == vpad(field), "different vertical padding"
+    assert "font: inherit" in btn and "font: inherit" in field
+    # The inputs inherit the body's 1.5; the button has to say so explicitly.
+    assert re.search(r"line-height:\s*1\.5", btn), (
+        "the button's line-height does not match the body's, so it is shorter"
+    )
+
+
+def test_a_form_row_does_not_lift_its_fields_above_the_button():
+    """.field has a bottom margin the button does not, so in a row aligned on
+    the bottom edge the input floated exactly that margin higher."""
+    css = (Path(__file__).resolve().parents[1]
+           / "app/static/style.css").read_text("utf-8")
+
+    i = css.index(".pw-form .field, .new-user-form .field")
+    rule = css[i:css.index("}", i)]
+    assert "margin-bottom: 0" in rule, (
+        "the field keeps its bottom margin inside a bottom-aligned row"
+    )
+
+
 # ------------------------------------------------------- password dialog
 def test_a_password_is_never_typed_into_a_visible_prompt():
     """window.prompt() cannot mask input.

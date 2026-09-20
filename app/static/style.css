@@ -420,6 +420,23 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: .72rem; line-height: 1.45; white-space: pre-wrap; color: var(--ink);
 }
+/* `.btn` was being used on a dozen buttons with no base rule behind it, so
+   they fell back to the browser's own padding and font and never matched the
+   height of the inputs they sit next to. Same box as a .field input: same
+   padding, border and radius, so they line up by construction. */
+.btn {
+  padding: .5rem .9rem; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel); color: var(--ink); font: inherit;
+  /* 1.5 is the body's, which the inputs inherit; anything else makes the
+     button a few pixels shorter than the field beside it. */
+  line-height: 1.5; cursor: pointer; white-space: nowrap;
+}
+.btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+/* `.ghost` was used on Sign out, Delete and Cancel but never defined, so a
+   secondary action looked exactly like a primary one. Quieter until hovered,
+   and the same box, so it still lines up in a row. */
+.btn.ghost { background: none; color: var(--muted); }
+.btn.ghost:hover:not(:disabled) { color: var(--ink); border-color: var(--muted); }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 
 /* Result of the last update, so "do I need to restart?" is answered outright */
@@ -559,8 +576,19 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 
 /* --------------------------------------------------------------- accounts */
 .pw-form, .new-user-form { display: flex; gap: .6rem; flex-wrap: wrap; align-items: flex-end; }
-.pw-form .field, .new-user-form .field { flex: 1 1 11rem; min-width: 0; }
-.nu-admin { display: flex; align-items: center; gap: .35rem; font-size: .8rem; padding-bottom: .45rem; }
+/* No bottom margin in a row that aligns on its bottom edge: it lifted the
+   input above the button by exactly that margin. The row gap spaces things
+   instead, which is what it is for. */
+.pw-form .field, .new-user-form .field {
+  flex: 1 1 11rem; min-width: 0; margin-bottom: 0;
+}
+/* The checkbox has no label above it, so it needs to be as tall as the input
+   box beside it to sit on the same line. 2.65rem is that box measured, not a
+   guess: 15px x 1.5 line-height + .5rem padding twice + two 1px borders. */
+.nu-admin {
+  display: flex; align-items: center; gap: .35rem; font-size: .8rem;
+  min-height: 2.65rem;
+}
 .users-list { display: flex; flex-direction: column; gap: .25rem; margin: .5rem 0 .9rem; }
 .user-row {
   display: flex; align-items: center; gap: .5rem; flex-wrap: wrap;
@@ -699,6 +727,14 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
   flex-wrap: wrap; margin: .6rem 0;
 }
 .sbom-actions input[type=text] { flex: 1 1 14rem; }
+
+/* The note about which account a token belongs to is explanatory text, not a
+   control, so it goes under the field rather than competing with it for the
+   row -- which is what pushed the button hard against the edge. */
+#new-token-form { align-items: flex-end; }
+#token-owner {
+  flex: 1 1 100%; order: 10; margin: .15rem 0 0; font-size: .78rem;
+}
 .sbom-only { display: flex; align-items: center; gap: .3rem;
              font-size: .82rem; color: var(--muted); white-space: nowrap; }
 #sbom-table { width: 100%; }
