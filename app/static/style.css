@@ -655,3 +655,16 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 .net-tag.net-query, .net-tag.net-rules {
   color: var(--accent); border-color: var(--accent);
 }
+
+/* Who is signed in, in the top bar rather than inside a settings panel that
+   only some accounts can see. */
+.me-label {
+  color: var(--muted); font-size: .8rem; white-space: nowrap;
+}
+
+/* A token's account, shown on every row. Your own is toned down rather than
+   hidden: the answer is still there when auditing a list. */
+.user-row .u-tag.owner {
+  font-family: ui-monospace, monospace; font-size: .74rem;
+}
+.user-row .u-tag.owner.mine { color: var(--muted); border-color: var(--line); }

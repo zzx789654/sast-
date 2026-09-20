@@ -17,6 +17,8 @@
     </div>
     <div class="topbar-right">
       <div id="tool-status" class="tool-status" aria-label="tool availability"></div>
+      <span id="me-label" class="me-label"></span>
+      <button id="logout-btn" class="lang-toggle" data-i18n="settings.logout">登出</button>
       <button id="lang-toggle" class="lang-toggle" title="切換語言 / switch language">EN</button>
     </div>
   </header>
@@ -192,10 +194,9 @@
     <!-- ====================================================== account -->
     <div class="subview" data-sub="account">
 
-      <div class="panel">
+      <div class="panel" id="account-panel">
         <div class="mon-head">
-          <h2 data-i18n="settings.account">我的帳號</h2>
-          <span id="me-label" class="admin-state"></span>
+          <h2 data-i18n="settings.changePw">變更密碼</h2>
         </div>
         <p id="pw-expired" class="warn-line hidden" data-i18n="settings.pwExpired"></p>
         <form id="pw-form" class="pw-form">
@@ -210,9 +211,6 @@
           <button type="submit" class="btn" data-i18n="settings.changePw">變更密碼</button>
         </form>
         <p id="pw-result" class="rule-result hidden"></p>
-        <div class="admin-actions">
-          <button id="logout-btn" class="btn ghost" data-i18n="settings.logout">登出</button>
-        </div>
       </div>
 
       <!-- administrators only: other people's accounts -->
@@ -294,6 +292,7 @@
             <span data-i18n="tokens.name">用途說明</span>
             <input id="nt-name" placeholder="CI / MCP client" required>
           </label>
+          <p id="token-owner" class="mon-subnote"></p>
           <button type="submit" class="btn" data-i18n="tokens.create">建立權杖</button>
         </form>
         <pre id="token-secret" class="rule-result hidden"></pre>

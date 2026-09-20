@@ -2203,6 +2203,68 @@ def test_the_scanner_matrix_states_network_behaviour():
     assert '"none"' in gitleaks_row[:gitleaks_row.index("]")]
 
 
+def test_nobody_is_left_without_a_way_to_change_their_password():
+    """The change-password form is hidden for admins, who reset from the
+    user table instead. It must stay for everyone else, who has no other
+    way in -- and the user table is administrators-only.
+    """
+    root = Path(__file__).resolve().parents[1] / "app/static"
+    js = (root / "app.js").read_text("utf-8")
+    html = (root / "index.html").read_text("utf-8")
+
+    assert 'id="account-panel"' in html, "the change-password panel is gone"
+    assert 'id="pw-form"' in html
+
+    fn = js[js.index("async function loadWhoami"):]
+    fn = fn[:fn.index("\n}")]
+    # Hidden when admin, shown otherwise. If this is ever flipped to hide it
+    # unconditionally, an ordinary account can never change its password.
+    assert 'account.classList.toggle("hidden", admin)' in fn
+
+
+def test_signing_out_does_not_depend_on_a_panel_you_may_not_see():
+    """Logout moved to the top bar when the account panel became conditional."""
+    html = (Path(__file__).resolve().parents[1]
+            / "app/static/index.html").read_text("utf-8")
+
+    header = html[html.index("<header"):html.index("</header>")]
+    assert 'id="logout-btn"' in header, "logout is not reachable from the top bar"
+    assert 'id="me-label"' in header, "there is no sign of who is signed in"
+
+
+def test_an_api_token_always_names_the_account_it_belongs_to():
+    """A token is bound to an account so its use can be traced back.
+
+    The owner used to be hidden when it was your own, which is the common
+    case, so the column that carries the whole point was usually blank.
+    """
+    root = Path(__file__).resolve().parents[1] / "app/static"
+    js = (root / "app.js").read_text("utf-8")
+
+    fn = js[js.index("async function loadTokens"):]
+    fn = fn[:fn.index("\n}\n")]
+
+    assert 'el("span", "u-tag owner", tk.username)' in fn, (
+        "the owning account is not rendered on every token row"
+    )
+    # It must not be put back behind a condition on it being someone else's.
+    assert "tk.username !== AUTH.user.username" not in fn, (
+        "the owner is hidden again for your own tokens"
+    )
+
+
+def test_token_creation_says_which_account_it_will_belong_to(accounts_env):
+    """Stated before the token exists, not discovered from the list after."""
+    root = Path(__file__).resolve().parents[1] / "app/static"
+    html = (root / "index.html").read_text("utf-8")
+    js = (root / "app.js").read_text("utf-8")
+    i18n = (root / "i18n.js").read_text("utf-8")
+
+    assert 'id="token-owner"' in html
+    assert 't("tokens.createdAs", { name: AUTH.user.username })' in js
+    assert i18n.count('"tokens.createdAs"') == 2, "missing in one language"
+
+
 # -------------------------------------------------- forgotten-password reset
 def _reset_helper(monkeypatch, tmp_path, username, password, list_mode="0"):
     """Run scripts/_reset_password.py the way the shell wrapper does."""

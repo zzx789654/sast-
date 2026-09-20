@@ -106,11 +106,18 @@ async function loadWhoami() {
     me.textContent = AUTH.user.username
       + (AUTH.user.is_admin ? " \u2014 " + t("settings.adminBadge") : "");
   }
+  const admin = !!(AUTH.user && AUTH.user.is_admin);
+
   // Only an administrator can see or change other people's accounts.
   const panel = $("#users-panel");
-  if (panel) {
-    panel.classList.toggle("hidden", !(AUTH.user && AUTH.user.is_admin));
-  }
+  if (panel) panel.classList.toggle("hidden", !admin);
+
+  // An administrator already has a reset button on their own row in the
+  // table above, so the separate change-password form is a second control
+  // for the same job. Everyone else has no other way to change a password,
+  // so for them it stays.
+  const account = $("#account-panel");
+  if (account) account.classList.toggle("hidden", admin);
 }
 
 // ------------------------------------------------------------- API tokens
@@ -135,9 +142,14 @@ async function loadTokens() {
     const row = el("div", "user-row");
     row.appendChild(el("span", "u-name", tk.prefix + "\u2026"));
     row.appendChild(el("span", "tk-name", tk.name));
-    if (AUTH.user && AUTH.user.is_admin && tk.username !== AUTH.user.username) {
-      row.appendChild(el("span", "u-tag", tk.username));
+    // Always shown, including your own: "whose token is this" is the
+    // question the binding exists to answer.
+    const owner = el("span", "u-tag owner", tk.username);
+    if (AUTH.user && tk.username === AUTH.user.username) {
+      owner.classList.add("mine");
+      owner.title = t("tokens.yours");
     }
+    row.appendChild(owner);
     row.appendChild(el("span", "u-last",
       tk.last_used ? t("tokens.lastUsed", { when: tk.last_used.slice(0, 16) })
                    : t("tokens.neverUsed")));
@@ -229,6 +241,11 @@ async function loadApiPanel() {
 
   const json = $("#mcp-json");
   if (json) json.textContent = JSON.stringify(MCP_CONFIG.config, null, 2);
+
+  const who = $("#token-owner");
+  if (who && AUTH.user) {
+    who.textContent = t("tokens.createdAs", { name: AUTH.user.username });
+  }
 
   const envBox = $("#env-template");
   if (envBox) envBox.textContent = MCP_CONFIG.env_template || "";
