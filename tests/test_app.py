@@ -1842,3 +1842,184 @@ def test_every_state_changing_route_is_behind_the_auth_gate(monkeypatch):
                     reachable.append(f"{method} {concrete}")
 
     assert not reachable, f"reachable without signing in: {reachable}"
+
+
+# ====================================================================
+# authorisation: signing in is not the same as being allowed
+# ====================================================================
+@pytest.fixture()
+def two_users(tmp_path, monkeypatch):
+    """An administrator and an ordinary user, both signed in."""
+    from fastapi.testclient import TestClient
+
+    from app import accounts
+    from app.config import config
+    from app.main import app
+
+    monkeypatch.setattr(config, "ACCOUNTS_DB", tmp_path / "accounts.db")
+    monkeypatch.setattr(config, "REQUIRE_AUTH", True)
+    accounts.init_db()
+    accounts.create_user("admin", "admin-password-1234", is_admin=True)
+    accounts.create_user("bob", "bob-password-123456")
+
+    admin = TestClient(app)
+    admin.post("/api/auth/login",
+               data={"username": "admin", "password": "admin-password-1234"})
+    user = TestClient(app)
+    user.post("/api/auth/login",
+              data={"username": "bob", "password": "bob-password-123456"})
+    return admin, user
+
+
+# A valid body where the endpoint requires one: FastAPI validates the body
+# before the handler runs, so an empty request returns 422 and never reaches
+# the authorisation check. Sending a well-formed request is what proves the
+# guard is what refuses it.
+@pytest.mark.parametrize("method,path,body", [
+    ("GET", "/api/admin/status", None),
+    ("POST", "/api/admin/update-tools", None),
+    ("POST", "/api/admin/restart", None),
+    ("POST", "/api/inspect", {"source_kind": "path", "local_path": "/tmp"}),
+    ("POST", "/api/rules/semgrep/x", {"content": "rules: []"}),
+    ("DELETE", "/api/rules/semgrep/x", None),
+    ("GET", "/api/users", None),
+    ("POST", "/api/users", {"username": "new", "password": "a-password-1234"}),
+])
+def test_operator_endpoints_need_an_administrator(two_users, method, path, body):
+    """Restarting the service and reading server paths are not ordinary acts.
+
+    The first version of this shipped with only the middleware, which answers
+    "are you signed in" -- so any account could install packages and restart
+    the service. Authentication is not authorisation.
+    """
+    _admin, user = two_users
+    assert user.request(method, path, data=body).status_code == 403
+
+
+def test_a_scan_belongs_to_whoever_started_it(two_users, monkeypatch):
+    """Findings quote the scanned source, so a scan is not public."""
+    from app import orchestrator
+    from app.models import ScanTarget
+
+    admin, user = two_users
+    job = orchestrator.manager.new_job(
+        ScanTarget(kind="git", display="https://github.com/x/y"),
+        ["semgrep"], owner="admin")
+
+    # 404 rather than 403: "exists but is not yours" is information.
+    assert user.get(f"/api/scans/{job.id}").status_code == 404
+    assert user.get(f"/api/scans/{job.id}/export.csv").status_code == 404
+    assert job.id not in [j["id"] for j in user.get("/api/scans").json()["jobs"]]
+
+    # The owner, and an administrator, can read it.
+    assert admin.get(f"/api/scans/{job.id}").status_code == 200
+
+
+def test_cross_site_state_changes_are_refused(two_users):
+    """SameSite=Lax is one flag in the browser's hands; check server-side too."""
+    _admin, user = two_users
+    assert user.post("/api/tokens", data={"name": "x"},
+                     headers={"Origin": "http://evil.example"}).status_code == 403
+    # A same-origin request is unaffected.
+    assert user.post("/api/tokens", data={"name": "ok"}).status_code == 201
+
+
+def test_a_bearer_token_is_not_subject_to_csrf(two_users):
+    """A token is not attached by the browser, so it cannot be abused this way."""
+    _admin, user = two_users
+    token = user.post("/api/tokens", data={"name": "cli"}).json()["token"]
+    user.cookies.clear()
+    res = user.get("/api/tools", headers={"Authorization": "Bearer " + token,
+                                          "Origin": "http://elsewhere.example"})
+    assert res.status_code == 200
+
+
+@pytest.mark.parametrize("url", [
+    "http://169.254.169.254/latest/meta-data/",   # cloud metadata
+    "http://localhost:8000/x",
+    "http://127.0.0.1/x",
+    "https://[::1]/x",
+    "http://10.0.0.5/internal.git",
+])
+def test_git_urls_cannot_reach_the_internal_network(url):
+    """Cloning is a request this server makes, so the address matters."""
+    from app.source import SourceError, validate_git_url
+
+    with pytest.raises(SourceError, match="private, loopback or link-local"):
+        validate_git_url(url)
+
+
+def test_a_public_git_url_is_still_accepted():
+    from app.source import validate_git_url
+
+    assert validate_git_url("https://github.com/example/repo.git")
+
+
+def test_session_cookie_is_secure_behind_a_tls_proxy(two_users):
+    """nginx terminates TLS and forwards http, so request.url.scheme lies."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    with TestClient(app) as client:
+        res = client.post("/api/auth/login",
+                          data={"username": "admin", "password": "admin-password-1234"},
+                          headers={"X-Forwarded-Proto": "https"})
+    cookie = res.headers.get("set-cookie", "")
+    assert "Secure" in cookie
+    assert "HttpOnly" in cookie
+
+
+def test_changing_a_password_revokes_api_tokens(accounts_env):
+    """A password is changed because it leaked; a token is another way in."""
+    user = accounts_env.create_user("gina", "gina-password-1234")
+    _record, secret = accounts_env.create_token(user.id, "ci")
+    assert accounts_env.token_user(secret) is not None
+
+    accounts_env.set_password(user.id, "gina-new-password-99")
+    assert accounts_env.token_user(secret) is None
+
+
+def test_login_takes_the_same_time_for_a_missing_user(accounts_env):
+    """A measurable difference is a way to enumerate accounts.
+
+    The first version hashed a dummy and then verified it, doing two scrypt
+    passes on the miss path -- twice the work, and the opposite of the intent.
+    """
+    import statistics
+    import time
+
+    accounts_env.create_user("realuser", "real-password-12345")
+
+    def median_ms(username):
+        samples = []
+        for _ in range(7):
+            start = time.perf_counter()
+            accounts_env.authenticate(username, "wrong-password-xx")
+            samples.append(time.perf_counter() - start)
+        return statistics.median(samples) * 1000
+
+    existing = median_ms("realuser")
+    missing = median_ms("nosuchuser")
+    ratio = max(existing, missing) / max(min(existing, missing), 0.001)
+    assert ratio < 1.5, f"timing differs by {ratio:.2f}x, which leaks whether a user exists"
+
+
+def test_mcp_scan_results_are_not_readable_by_another_token(accounts_env, monkeypatch):
+    """A token reads its owner's scans, not everyone's."""
+    from app import mcp, orchestrator
+    from app.config import config
+    from app.models import ScanTarget
+
+    monkeypatch.setattr(config, "REQUIRE_AUTH", True)
+    mgr = orchestrator.JobManager()
+    monkeypatch.setattr(mcp, "manager", mgr)
+
+    owner = accounts_env.create_user("owner", "owner-password-1234")
+    other = accounts_env.create_user("other", "other-password-1234")
+    job = mgr.new_job(ScanTarget(kind="git", display="https://github.com/x/y"),
+                      ["semgrep"], owner="owner")
+
+    assert mcp._read_scan({"scan_id": job.id}, owner)      # the owner may read it
+    with pytest.raises(ValueError, match="no scan"):
+        mcp._read_scan({"scan_id": job.id}, other)

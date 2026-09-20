@@ -37,11 +37,12 @@ class JobManager:
     # ---- lifecycle ----------------------------------------------------
     def new_job(self, target: ScanTarget, tools: list[str],
                 custom_rules: "dict[str, list[str]] | None" = None,
-                rulesets: "dict[str, list[str]] | None" = None) -> Job:
+                rulesets: "dict[str, list[str]] | None" = None,
+                owner: "str | None" = None) -> Job:
         job_id = uuid.uuid4().hex[:12]
         job = Job(id=job_id, target=target, requested_tools=tools,
                   custom_rules=custom_rules or {},
-                  rulesets=rulesets or {})
+                  rulesets=rulesets or {}, owner=owner)
         with self._lock:
             self._jobs[job_id] = job
             self._prune_locked()

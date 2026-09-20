@@ -189,3 +189,21 @@
 - **問題 3 的答案**：Semgrep 規則集是**每次掃描即時向 registry 取得**，容器內無快取（已實測確認），所以規則層面不需任何動作；引擎版本用監控頁「更新掃描工具」。
 - **自行驗證**：auth bypass 探測 14 種路徑（大小寫、尾斜線、雙斜線、`..`、百分號編碼、從 public 前綴逃逸）全部 401；權限分離測試（一般使用者存取管理端點全 403、無法撤銷他人 token、只看得到自己的 token）通過。
 - **影響範圍**：新增 `accounts.py`、`mcp.py`、`login.html`、`login.js`；改 `main.py`、`config.py`、前端三檔、`Dockerfile`、`docker-compose.yml`、`scripts/deploy.sh`、README 中英、`CoreMain.md`；測試 126 → 143。
+
+## [2026-09-20] #015 — 資安複驗抓到「有認證但沒有授權」
+
+- **背景**：#014 的登入系統經 security-scanner 獨立複驗，結果 **Critical 2 / High 5 / Medium 6 / Low 3**，且每一項都在執行中的應用上實證，不是靜態推論。
+- **最關鍵的發現（我設計上的缺口）**：我做了 `_auth_gate` 中介層回答「你登入了嗎」，卻沒有任何地方回答「你被允許嗎」。實測確認：
+  - 一般使用者可呼叫 `/api/admin/restart`（202，真的送出 SIGTERM）與 `/api/admin/update-tools`（觸發套件安裝）。
+  - 一般使用者可用 `/api/inspect` 讀取伺服器上任意目錄（200）。
+  - 等於把「完全無認證」降級成「任何一個帳號都能重啟服務、裝套件、讀任意路徑」——**權限邊界根本沒建立**。
+- **已修並逐項實證**：
+  - FIND-001/002/003：維運、本機路徑、規則寫入全部加 `require_admin`（實測 403）。
+  - FIND-004 IDOR：掃描結果會夾帶被掃描專案的原始碼，改為綁定 owner；非擁有者一律 404（不是 403——「存在但不是你的」本身就是資訊）。REST 與 MCP 兩邊都修。
+  - FIND-005 SSRF：`validate_git_url` 加入位址檢查，擋掉 metadata（169.254.169.254）、loopback、IPv6 `[::1]`、私有網段；GitHub 仍可用。需要內網 git mirror 時用 `SAST_ALLOW_INTERNAL_GIT_HOSTS=true`。
+  - FIND-006 CSRF：SameSite=Lax 只是瀏覽器端一個旗標，補伺服器端 Origin 驗證（實測跨站 POST 403、同源 201）。Bearer token 不受影響，因為它不會被瀏覽器自動附加。
+  - FIND-007：nginx 終止 TLS 後轉 http，`request.url.scheme` 永遠是 http，Secure 旗標永遠設不上。改讀 `X-Forwarded-Proto`（實測 Secure + HttpOnly 都在）。
+  - FIND-008 時間差：原本 miss 路徑做了兩次 scrypt，比 hit 慢一倍，反而成了帳號列舉管道。改用預先算好的固定 decoy hash，實測 **2x → 1.00x**。
+  - FIND-010：改密碼會撤銷 session，但不會撤銷 API token——而 token 比 session 長壽。已一併撤銷。
+- **教訓**：驗證（authentication）與授權（authorization）是兩件事。我把「加登入」當成一個功能做完了，但登入只回答「你是誰」；「你能做什麼」需要在**每一個有能力的端點**上獨立回答。
+- **影響範圍**：`main.py`、`accounts.py`、`mcp.py`、`source.py`、`config.py`、`models.py`、`orchestrator.py`；測試 144 → 165。

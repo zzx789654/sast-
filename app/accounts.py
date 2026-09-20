@@ -152,6 +152,12 @@ def check_password_policy(password: str) -> Optional[str]:
     return None
 
 
+# One fixed hash, computed once, for logins naming a user that does not
+# exist. Its value is irrelevant; what matters is that checking it costs the
+# same as checking a real one.
+_DECOY_HASH = hash_password(secrets.token_urlsafe(16))
+
+
 # -------------------------------------------------------------------- users
 
 def _row_to_user(row: sqlite3.Row) -> User:
@@ -216,8 +222,11 @@ def set_password(user_id: int, password: str) -> None:
                      (hash_password(password), user_id))
         # Changing a password ends every session for that user: if it was
         # changed because it leaked, leaving the old sessions alive defeats
-        # the point.
+        # the point. The same argument applies to API tokens, which are
+        # credentials for the same account and outlive sessions.
         conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        conn.execute("UPDATE api_tokens SET revoked = 1 WHERE user_id = ?",
+                     (user_id,))
 
 
 def set_disabled(user_id: int, disabled: bool) -> None:
@@ -253,9 +262,11 @@ def authenticate(username: str, password: str) -> Optional[User]:
         row = conn.execute("SELECT * FROM users WHERE username = ?",
                            ((username or "").strip().lower(),)).fetchone()
 
-    # Hash even when the user does not exist, so that "no such user" and
-    # "wrong password" take the same time and cannot be told apart.
-    stored = row["password"] if row else hash_password("dummy-for-timing")
+    # Verify against a fixed decoy when the user does not exist, so both
+    # paths do exactly one scrypt. Hashing a dummy *and then* verifying it
+    # did two, which made a missing user measurably slower -- the opposite of
+    # what the check was for.
+    stored = row["password"] if row else _DECOY_HASH
     ok = verify_password(password or "", stored)
 
     if not row or not ok or row["disabled"]:

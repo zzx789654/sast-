@@ -45,7 +45,13 @@ class Config:
     # Allow scanning an arbitrary server-local path. Powerful (operator-only).
     ALLOW_LOCAL_PATH = _env_bool("SAST_ALLOW_LOCAL_PATH", True)
 
-    # Git clone url schemes that are permitted.
+    # Whether a git url may point at a private, loopback or link-local
+    # address. Off by default: cloning is a request this server makes, so
+    # allowing it is a way to reach the metadata service or another container.
+    # Turn it on for an internal git mirror.
+    ALLOW_INTERNAL_GIT_HOSTS = _env_bool("SAST_ALLOW_INTERNAL_GIT_HOSTS", False)
+
+    # Comma-separated git url schemes permitted for clone.
     ALLOWED_GIT_SCHEMES = {
         s.strip()
         for s in os.environ.get("SAST_GIT_SCHEMES", "http,https").split(",")
@@ -65,6 +71,14 @@ class Config:
         o.strip() for o in os.environ.get("SAST_MCP_ORIGINS", "").split(",")
         if o.strip()
     ]
+
+    # Force the Secure flag on the session cookie. None means "decide from
+    # the request", which is right for a direct connection but wrong behind a
+    # proxy that terminates TLS. Set it explicitly on such a deployment.
+    COOKIE_SECURE = (
+        None if os.environ.get("SAST_COOKIE_SECURE", "") == ""
+        else _env_bool("SAST_COOKIE_SECURE", False)
+    )
 
     # Whether the UI and API require a login. Off by default so an existing
     # deployment keeps working after an upgrade; the compose file turns it on.

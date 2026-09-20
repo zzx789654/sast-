@@ -10,6 +10,8 @@ import enum
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from typing import Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -134,6 +136,10 @@ class Job(BaseModel):
     status: JobStatus = JobStatus.QUEUED
     target: ScanTarget
     requested_tools: list[str] = Field(default_factory=list)
+    # Who started this scan. A scan carries the scanned project's source in
+    # its findings, so it is only for the person who asked for it (and for an
+    # administrator, who can already read everything).
+    owner: Optional[str] = None
     # Custom rules the user ticked, as {engine: [name, ...]}.
     custom_rules: dict[str, list[str]] = Field(default_factory=dict)
     # Published rulesets per tool, as {tool: [ruleset, ...]}; empty uses the

@@ -13,6 +13,8 @@ from __future__ import annotations
 import os
 import zipfile
 from pathlib import Path
+import ipaddress
+import socket
 from urllib.parse import urlparse
 
 from .adapters.base import run_command
@@ -85,6 +87,37 @@ def resolve_local_path(raw_path: str) -> Path:
 
 
 # ---------------------------------------------------------------- git clone
+def _is_internal_address(host: str) -> bool:
+    """Whether this host resolves somewhere that is not the public internet.
+
+    "Clone this URL" is a request the server makes on the caller's behalf, so
+    without this check it is a way to reach anything the container can: the
+    cloud metadata service, another container, a database on the host network.
+    Every address a name resolves to is checked, because one public A record
+    alongside a private one is enough.
+    """
+    host = (host or "").strip().strip("[]")
+    if not host:
+        return True
+
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        # A name that does not resolve is not reachable either; let git report
+        # it rather than guessing here.
+        return False
+
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if (addr.is_private or addr.is_loopback or addr.is_link_local
+                or addr.is_reserved or addr.is_multicast or addr.is_unspecified):
+            return True
+    return False
+
+
 def validate_git_url(url: str) -> str:
     url = (url or "").strip()
     if not url:
@@ -97,6 +130,16 @@ def validate_git_url(url: str) -> str:
         )
     if not parsed.netloc:
         raise SourceError("git url has no host")
+
+    if not config.ALLOW_INTERNAL_GIT_HOSTS and _is_internal_address(parsed.hostname):
+        # Named rather than described, because "not allowed" without a reason
+        # reads like a bug to someone cloning their own internal mirror.
+        raise SourceError(
+            f"host '{parsed.hostname}' is a private, loopback or link-local "
+            "address. Cloning it would make this server fetch from its own "
+            "network. Set SAST_ALLOW_INTERNAL_GIT_HOSTS=true if that is "
+            "intended, for example for an internal git mirror."
+        )
     return url
 
 

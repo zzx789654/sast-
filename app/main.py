@@ -56,19 +56,26 @@ async def system_status() -> dict:
 
 
 @app.get("/api/admin/status")
-async def admin_status() -> dict:
+async def admin_status(request: Request) -> dict:
     """State of the operator panel: any job running, and what can be updated."""
     from . import admin
+
+    require_admin(request)
     return admin.status()
 
 
 @app.post("/api/admin/update-tools")
-async def admin_update_tools(tools: Optional[str] = Form(None)) -> JSONResponse:
+async def admin_update_tools(request: Request,
+                             tools: Optional[str] = Form(None)) -> JSONResponse:
     """Update the scanners that can be updated in place.
 
     Returns immediately; the Monitor tab polls /api/admin/status for progress.
     """
     from . import admin
+
+    # Installing packages on the host is an administrator's job. Being signed
+    # in only says who you are, not that you may do this.
+    require_admin(request)
     wanted = [t.strip() for t in (tools or "").split(",") if t.strip()]
     # An update is the one thing that changes a version, so the cached probe
     # is wrong from here on. A stale version after an update would look like
@@ -79,9 +86,11 @@ async def admin_update_tools(tools: Optional[str] = Form(None)) -> JSONResponse:
 
 
 @app.post("/api/admin/restart")
-async def admin_restart() -> JSONResponse:
+async def admin_restart(request: Request) -> JSONResponse:
     """Restart the application process so updated scanners are picked up."""
     from . import admin
+
+    require_admin(request)
     result = admin.restart_app()
     return JSONResponse(result, status_code=202 if result.get("restarting") else 409)
 
@@ -149,6 +158,51 @@ def require_admin(request: Request):
     return user
 
 
+def _owner_name(request: Request) -> Optional[str]:
+    """Who to record as the owner of a scan, or None when auth is off."""
+    user = current_user(request)
+    return user.username if user else None
+
+
+def _may_see_scan(request: Request, job) -> bool:
+    """A scan's findings quote the scanned source, so it is not public.
+
+    With auth off nothing changes: there are no users to tell apart. With auth
+    on, an administrator can already read everything on the host, so
+    restricting them would be theatre rather than a boundary.
+    """
+    if not config.REQUIRE_AUTH:
+        return True
+    user = current_user(request)
+    if user is None:
+        return False
+    if user.is_admin or job.owner is None:
+        return True
+    return job.owner == user.username
+
+
+def _request_is_https(request: Request) -> bool:
+    forwarded = request.headers.get("x-forwarded-proto", "")
+    if forwarded:
+        # A comma-separated list means several proxies; the first is the one
+        # the client actually spoke to.
+        return forwarded.split(",")[0].strip().lower() == "https"
+    return request.url.scheme == "https"
+
+
+def _same_site_request(request: Request) -> bool:
+    """Whether this request came from our own page.
+
+    An absent Origin is a non-browser client (curl, a CI job), which cannot be
+    tricked into making this request by a page the user is visiting -- the
+    thing CSRF is. A present but foreign Origin is exactly that attack.
+    """
+    origin = request.headers.get("origin")
+    if not origin:
+        return True
+    return _origin_allowed(origin, request)
+
+
 @app.middleware("http")
 async def _auth_gate(request: Request, call_next):
     """Refuse unauthenticated requests when auth is on.
@@ -165,6 +219,15 @@ async def _auth_gate(request: Request, call_next):
               or path == "/login"
               or path.startswith("/static/")
               or path in {"/i18n.js", "/app.js", "/style.css", "/login.js"})
+    # A state-changing request authenticated by a cookie is the CSRF case:
+    # the browser attaches the cookie whoever asked for the request. A bearer
+    # token is not attached automatically, so it is not affected.
+    if (request.method in {"POST", "PUT", "PATCH", "DELETE"}
+            and not request.headers.get("authorization")
+            and not _same_site_request(request)):
+        return JSONResponse({"detail": "cross-site request refused"},
+                            status_code=403)
+
     if public or current_user(request) is not None:
         return await call_next(request)
 
@@ -189,7 +252,12 @@ async def login(request: Request, response: Response,
         httponly=True,          # not readable from JavaScript, so an XSS bug
                                 # cannot walk off with the session
         samesite="lax",         # blocks the cross-site form-post case
-        secure=request.url.scheme == "https",
+        # X-Forwarded-Proto, not request.url.scheme: nginx terminates TLS and
+        # forwards over http, so the scheme here is always http and the flag
+        # would never be set on exactly the deployment that needs it.
+        secure=(config.COOKIE_SECURE
+                if config.COOKIE_SECURE is not None
+                else _request_is_https(request)),
         max_age=accounts.SESSION_TTL,
         path="/",
     )
@@ -471,18 +539,25 @@ async def read_custom_rule(engine: str, name: str) -> dict:
 
 
 @app.post("/api/rules/validate")
-async def validate_custom_rule(engine: str = Form(...),
+async def validate_custom_rule(request: Request, engine: str = Form(...),
                                content: str = Form(...)) -> dict:
     """Ask the scanner whether this rule compiles, without saving it."""
     from . import rules as rules_mod
+
+    # Validating runs the scanner, so this spends CPU on the host.
+    require_user(request)
     return await run_in_threadpool(rules_mod.validate_rule, engine, content)
 
 
 @app.post("/api/rules/{engine}/{name}")
-async def save_custom_rule(engine: str, name: str,
+async def save_custom_rule(request: Request, engine: str, name: str,
                            content: str = Form(...)) -> JSONResponse:
     """Save a rule. It is validated first, so a broken rule is never stored."""
     from . import rules as rules_mod
+
+    # A saved rule is executed by a scanner on every later scan, so writing
+    # one changes what everybody else's scans run.
+    require_admin(request)
     try:
         saved = await run_in_threadpool(rules_mod.save_rule, engine, name, content)
     except ValueError as exc:
@@ -491,8 +566,10 @@ async def save_custom_rule(engine: str, name: str,
 
 
 @app.delete("/api/rules/{engine}/{name}")
-async def delete_custom_rule(engine: str, name: str) -> dict:
+async def delete_custom_rule(request: Request, engine: str, name: str) -> dict:
     from . import rules as rules_mod
+
+    require_admin(request)
     try:
         rules_mod.delete_rule(engine, name)
     except FileNotFoundError:
@@ -591,12 +668,16 @@ async def policies() -> dict:
 
 @app.post("/api/inspect")
 async def inspect_project(
+    request: Request,
     source_kind: str = Form(...),
     local_path: Optional[str] = Form(None),
 ) -> dict:
     """Pre-scan look at a project: file/size/language inventory plus, for each
     tool, whether it applies to this project and why not. Available for local
     paths only (uploads/git aren't on disk until a scan starts)."""
+    # Reading server-local paths is an operator capability, not an ordinary
+    # one: it exposes every file this container can read.
+    require_admin(request)
     if source_kind != "path":
         raise HTTPException(400, "inspection is available for local paths only")
     if not config.ALLOW_LOCAL_PATH:
@@ -626,6 +707,7 @@ async def inspect_project(
 
 @app.post("/api/scans")
 async def create_scan(
+    request: Request,
     source_kind: str = Form(...),
     tools: str = Form(""),
     git_url: Optional[str] = Form(None),
@@ -671,7 +753,8 @@ async def create_scan(
         except SourceError as exc:
             raise HTTPException(400, str(exc)) from exc
         target = ScanTarget(kind="git", display=git_url)
-        job = manager.new_job(target, requested, chosen_rules, chosen_sets)
+        job = manager.new_job(target, requested, chosen_rules, chosen_sets,
+                              owner=_owner_name(request))
         manager.start(job.id, {"kind": "git", "url": git_url}, confirm=want_confirm)
 
     elif source_kind == "path":
@@ -680,14 +763,16 @@ async def create_scan(
         if not local_path:
             raise HTTPException(400, "local_path is required for source_kind=path")
         target = ScanTarget(kind="path", display=local_path)
-        job = manager.new_job(target, requested, chosen_rules, chosen_sets)
+        job = manager.new_job(target, requested, chosen_rules, chosen_sets,
+                              owner=_owner_name(request))
         manager.start(job.id, {"kind": "path", "path": local_path}, confirm=False)
 
     elif source_kind == "upload":
         if file is None:
             raise HTTPException(400, "file is required for source_kind=upload")
         target = ScanTarget(kind="upload", display=file.filename or "upload.zip")
-        job = manager.new_job(target, requested, chosen_rules, chosen_sets)
+        job = manager.new_job(target, requested, chosen_rules, chosen_sets,
+                              owner=_owner_name(request))
         zip_path = manager.job_dir(job.id) / "upload.zip"
         try:
             await _save_upload(file, zip_path)
@@ -721,8 +806,10 @@ async def cancel_scan(job_id: str) -> dict:
 
 
 @app.get("/api/scans")
-async def list_scans() -> dict:
-    jobs = manager.list_jobs()
+async def list_scans(request: Request) -> dict:
+    # Only your own scans. A scan's summary names the project someone scanned,
+    # which is not everybody's business on a shared deployment.
+    jobs = [j for j in manager.list_jobs() if _may_see_scan(request, j)]
     return {
         "jobs": [
             {
@@ -761,10 +848,11 @@ _CSV_COLUMNS = [
 
 
 @app.get("/api/scans/{job_id}/export.csv")
-async def export_scan_csv(job_id: str) -> Response:
+async def export_scan_csv(request: Request, job_id: str) -> Response:
     """Download one scan's findings as CSV (stdlib csv, no extra dependency)."""
     job = manager.get(job_id)
-    if job is None:
+    # 404 rather than 403: "exists but is not yours" is itself information.
+    if job is None or not _may_see_scan(request, job):
         raise HTTPException(404, "scan not found")
 
     buf = io.StringIO()
@@ -806,9 +894,9 @@ async def export_scan_csv(job_id: str) -> Response:
 
 
 @app.get("/api/scans/{job_id}")
-async def get_scan(job_id: str) -> dict:
+async def get_scan(request: Request, job_id: str) -> dict:
     job = manager.get(job_id)
-    if job is None:
+    if job is None or not _may_see_scan(request, job):
         raise HTTPException(404, "scan not found")
     return job.model_dump()
 

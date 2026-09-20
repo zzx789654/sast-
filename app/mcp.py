@@ -168,7 +168,7 @@ def _call_tool(name: str, args: dict, user) -> dict:
         return _start_git_scan(args, user)
 
     if name == "get_scan_result":
-        return _read_scan(args)
+        return _read_scan(args, user)
 
     raise ValueError(f"unknown tool '{name}'")
 
@@ -192,7 +192,8 @@ def _start_git_scan(args: dict, user) -> dict:
         requested = sorted(known)
 
     target = ScanTarget(kind="git", display=git_url)
-    job = manager.new_job(target, requested)
+    job = manager.new_job(target, requested,
+                          owner=getattr(user, "username", None))
     # confirm=False: an assistant cannot click a confirmation dialog, and the
     # dialog exists to let a person review the inventory first.
     manager.start(job.id, {"kind": "git", "url": git_url}, confirm=False)
@@ -207,12 +208,26 @@ def _start_git_scan(args: dict, user) -> dict:
     })
 
 
-def _read_scan(args: dict) -> dict:
+def _may_read(job, user) -> bool:
+    """Whether this caller may see this scan."""
+    if not config.REQUIRE_AUTH:
+        return True
+    if user is None:
+        return False
+    if getattr(user, "is_admin", False) or job.owner is None:
+        return True
+    return job.owner == user.username
+
+
+def _read_scan(args: dict, user=None) -> dict:
     scan_id = (args.get("scan_id") or "").strip()
     if not scan_id:
         raise ValueError("scan_id is required")
     job = manager.get(scan_id)
-    if job is None:
+    # A scan's findings quote the scanned source, so a token reads its own
+    # owner's scans and not everyone else's. Same message either way: "exists
+    # but is not yours" is information in itself.
+    if job is None or not _may_read(job, user):
         raise ValueError(f"no scan with id '{scan_id}'")
 
     floor = (args.get("severity") or "info").lower()
