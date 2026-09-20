@@ -630,7 +630,11 @@ def _public_origin(request: Request) -> tuple[str, str]:
     candidate = (request.headers.get("x-forwarded-host", "").split(",")[0].strip()
                  or request.headers.get("host", "").strip())
 
-    if not candidate or not _HOST_RE.match(candidate):
+    # Bounded before it is matched. The pattern has no nested quantifiers so
+    # it cannot backtrack badly (measured flat against 10k-character input),
+    # but there is no reason to hand an unbounded header to a matcher when a
+    # host name has a known maximum length anyway.
+    if not candidate or len(candidate) > 260 or not _HOST_RE.match(candidate):
         return scheme, "localhost:8080"
 
     allowed = config.ALLOWED_HOSTS

@@ -537,11 +537,78 @@ async function setUserState(id, changes) {
 }
 
 async function resetUserPassword(u) {
-  const pw = prompt(t("settings.promptPw", { name: u.username }));
+  // Not prompt(): it renders the password in clear text and offers it to
+  // autofill afterwards. Typed twice, because an administrator setting a
+  // password they cannot see has no other way to catch a typo.
+  const pw = await askForPassword(u.username);
   if (!pw) return;
   const body = new FormData();
   body.append("password", pw);
   await postUsers(`/api/users/${u.id}/password`, body, t("settings.pwReset"));
+}
+
+// Resolves to the password, or null when cancelled.
+function askForPassword(username) {
+  const dlg = $("#pw-dialog");
+  const form = $("#pw-dialog-form");
+  const input = $("#pw-dialog-input");
+  const confirmField = $("#pw-dialog-confirm");
+  const error = $("#pw-dialog-error");
+
+  // A browser too old for <dialog> still gets a working control rather than
+  // a dead button; the clear-text prompt is the lesser evil against nothing.
+  if (!dlg || !dlg.showModal) {
+    const typed = prompt(t("settings.promptPw", { name: username }));
+    return Promise.resolve(typed || null);
+  }
+
+  $("#pw-dialog-title").textContent =
+    t("settings.promptPwTitle", { name: username });
+  $("#pw-dialog-hint").textContent = t("settings.promptPwHint");
+  input.value = "";
+  confirmField.value = "";
+  error.classList.add("hidden");
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      // Do not leave the password sitting in the DOM after the dialog closes.
+      input.value = "";
+      confirmField.value = "";
+      if (dlg.open) dlg.close();
+      resolve(value);
+    };
+
+    const onSubmit = (ev) => {
+      ev.preventDefault();
+      if (input.value !== confirmField.value) {
+        error.textContent = t("settings.pwMismatch");
+        error.classList.remove("hidden");
+        confirmField.focus();
+        return;
+      }
+      finish(input.value);
+    };
+    const onCancel = () => finish(null);
+
+    function cleanup() {
+      form.removeEventListener("submit", onSubmit);
+      $("#pw-dialog-cancel").removeEventListener("click", onCancel);
+      dlg.removeEventListener("cancel", onCancel);
+      dlg.removeEventListener("close", onCancel);
+    }
+
+    form.addEventListener("submit", onSubmit);
+    $("#pw-dialog-cancel").addEventListener("click", onCancel);
+    dlg.addEventListener("cancel", onCancel);   // Esc
+    dlg.addEventListener("close", onCancel);    // closed some other way
+
+    dlg.showModal();
+    input.focus();
+  });
 }
 
 async function deleteUser(u) {

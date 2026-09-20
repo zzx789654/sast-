@@ -2265,6 +2265,74 @@ def test_token_creation_says_which_account_it_will_belong_to(accounts_env):
     assert i18n.count('"tokens.createdAs"') == 2, "missing in one language"
 
 
+# ------------------------------------------------------- password dialog
+def test_a_password_is_never_typed_into_a_visible_prompt():
+    """window.prompt() cannot mask input.
+
+    An administrator resetting someone's password had it rendered in clear
+    text on screen, and offered back by autofill afterwards.
+    """
+    root = Path(__file__).resolve().parents[1] / "app/static"
+    js = (root / "app.js").read_text("utf-8")
+    html = (root / "index.html").read_text("utf-8")
+
+    fn = js[js.index("async function resetUserPassword"):]
+    fn = fn[:fn.index("\n}")]
+    # Comments mention prompt() to explain why it is not used.
+    code = "\n".join(l for l in fn.splitlines() if not l.strip().startswith("//"))
+    assert "prompt(" not in code, "the reset still goes through prompt()"
+    assert "askForPassword" in code
+
+    # The dialog's fields must actually be password fields.
+    dlg = html[html.index('id="pw-dialog"'):html.index("</dialog>")]
+    assert dlg.count('type="password"') == 2, (
+        "the dialog does not mask both fields"
+    )
+    # Typed twice: the person setting it cannot see what they typed.
+    assert 'id="pw-dialog-confirm"' in dlg
+
+
+def test_the_password_dialog_behaves(tmp_path):
+    """Run the dialog's real source against a DOM stub.
+
+    Covers submit, mismatch, Esc, cancel, that the value is wiped from the
+    DOM afterwards, and that it resolves exactly once -- the close handler
+    fires on a successful submit too, so double-resolution is a real risk.
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available")
+
+    harness = Path(__file__).resolve().parent / "dialog_test.js"
+    out = subprocess.run([node, str(harness)], capture_output=True, text=True)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "ALL DIALOG CHECKS PASSED" in out.stdout
+
+
+def test_the_host_pattern_cannot_be_made_to_backtrack():
+    """A scanner flagged this as ReDoS; measure rather than argue.
+
+    The pattern is a constant with no nested quantifiers, so it is linear.
+    The length cap in front of it is belt-and-braces.
+    """
+    import time
+
+    from app.main import _HOST_RE
+
+    hostile = [".'" * 200, "." * 253 + ":", "a" * 252 + ":" + "9" * 6,
+               "-" * 253 + "!", "a" * 10000, "a." * 5000]
+    start = time.perf_counter()
+    for s in hostile:
+        for _ in range(500):
+            _HOST_RE.match(s)
+    elapsed = time.perf_counter() - start
+    # Catastrophic backtracking takes seconds on inputs this size, not ms.
+    assert elapsed < 2.0, f"matching took {elapsed:.2f}s; check for backtracking"
+
+
 # ------------------------------------------------ host header in client config
 def _mcp_config(client, **headers):
     return client.get("/api/mcp/config", headers=headers).json()

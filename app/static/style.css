@@ -668,3 +668,16 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
   font-family: ui-monospace, monospace; font-size: .74rem;
 }
 .user-row .u-tag.owner.mine { color: var(--muted); border-color: var(--line); }
+
+/* Password dialog. Replaces prompt(), which shows what is typed. */
+.pw-dialog {
+  border: 1px solid var(--line); border-radius: 12px; padding: 1.2rem;
+  background: var(--panel); color: var(--ink);
+  min-width: min(26rem, 92vw); box-shadow: 0 18px 48px rgba(0, 0, 0, .35);
+}
+.pw-dialog::backdrop { background: rgba(0, 0, 0, .55); }
+.pw-dialog h3 { margin: 0 0 .3rem; font-size: 1rem; }
+.pw-dialog .field { display: block; margin-bottom: .7rem; }
+.pw-dialog-actions {
+  display: flex; justify-content: flex-end; gap: .5rem; margin-top: .9rem;
+}

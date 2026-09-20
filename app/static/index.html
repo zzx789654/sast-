@@ -389,6 +389,32 @@
     </div>
   </section>
 
+  <!-- window.prompt() cannot mask what is typed, so a password set through
+       it is shown on screen and lands in the browser's autofill history.
+       A real dialog with type=password is the only way to avoid that. -->
+  <dialog id="pw-dialog" class="pw-dialog">
+    <form method="dialog" id="pw-dialog-form">
+      <h3 id="pw-dialog-title"></h3>
+      <p class="mon-hint" id="pw-dialog-hint"></p>
+      <label class="field">
+        <span data-i18n="settings.newPw">新密碼</span>
+        <input id="pw-dialog-input" type="password" autocomplete="new-password"
+               required>
+      </label>
+      <label class="field">
+        <span data-i18n="settings.confirmPw">再輸入一次</span>
+        <input id="pw-dialog-confirm" type="password"
+               autocomplete="new-password" required>
+      </label>
+      <p id="pw-dialog-error" class="rule-result bad hidden"></p>
+      <div class="pw-dialog-actions">
+        <button type="button" id="pw-dialog-cancel" class="btn ghost"
+                data-i18n="btn.cancel">取消</button>
+        <button type="submit" class="btn" data-i18n="settings.resetPw">重設密碼</button>
+      </div>
+    </form>
+  </dialog>
+
   <script src="/i18n.js"></script>
   <script src="/app.js"></script>
 </body>
