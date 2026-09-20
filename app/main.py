@@ -24,7 +24,7 @@ from starlette.concurrency import run_in_threadpool
 from .adapters import ADAPTERS
 from .config import config
 from .inventory import inventory
-from .models import ScanTarget
+from .models import JobStatus, ScanTarget
 from .orchestrator import manager
 from .source import SourceError, resolve_local_path, validate_git_url
 
@@ -322,9 +322,17 @@ async def change_expired_password(request: Request,
     """
     from . import accounts
 
-    user = accounts.authenticate(username, password=current)
     source = (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
               or (request.client.host if request.client else "unknown"))
+    # This endpoint checks a password too, so without the same throttle it
+    # would be an unlimited guessing oracle sitting next to a limited one.
+    wait = accounts.login_blocked(username, source)
+    if wait:
+        raise HTTPException(
+            429, f"too many failed attempts; try again in {_human_wait(wait)}",
+            headers={"Retry-After": str(wait)})
+
+    user = accounts.authenticate(username, password=current)
     if user is None:
         accounts.record_login(username, False, source)
         raise HTTPException(401, "invalid username or password")
@@ -341,21 +349,41 @@ async def change_expired_password(request: Request,
     return {"ok": True}
 
 
+def _human_wait(seconds: int) -> str:
+    """"try again in 847 seconds" is worse than "in 15 minutes"."""
+    if seconds < 60:
+        return f"{seconds} seconds"
+    minutes = round(seconds / 60)
+    return "1 minute" if minutes == 1 else f"{minutes} minutes"
+
+
 @app.post("/api/auth/login")
 async def login(request: Request, response: Response,
                 username: str = Form(...), password: str = Form(...)) -> dict:
     from . import accounts
 
-    user = accounts.authenticate(username, password)
     # The client address as the proxy saw it; "unknown" rather than a guess
     # when there is no proxy header to read.
     source = (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
               or (request.client.host if request.client else "unknown"))
+
+    # Checked before the password, so a locked-out attacker cannot keep
+    # measuring how long a hash takes, and cannot keep guessing at all.
+    wait = accounts.login_blocked(username, source)
+    if wait:
+        raise HTTPException(
+            429, f"too many failed attempts; try again in {_human_wait(wait)}",
+            headers={"Retry-After": str(wait)})
+
+    user = accounts.authenticate(username, password)
     accounts.record_login(username, user is not None, source)
     if user is None:
         # One message for every failure: saying which part was wrong tells an
         # attacker which usernames exist.
         raise HTTPException(401, "invalid username or password")
+    # Signing in clears the failures, so an earlier typo does not count
+    # towards a lockout days later.
+    accounts.clear_failures(username, source)
     token = accounts.start_session(user.id)
     response.set_cookie(
         SESSION_COOKIE, token,
@@ -664,7 +692,10 @@ async def update_auth_policy(request: Request,
                              reject_common: Optional[str] = Form(None),
                              history_count: Optional[str] = Form(None),
                              max_age_days: Optional[str] = Form(None),
-                             idle_minutes: Optional[str] = Form(None)) -> dict:
+                             idle_minutes: Optional[str] = Form(None),
+                             max_attempts: Optional[str] = Form(None),
+                             lockout_minutes: Optional[str] = Form(None),
+                             token_days: Optional[str] = Form(None)) -> dict:
     """Change the password rules. Administrators only: it applies to everyone."""
     from . import accounts
 
@@ -673,7 +704,10 @@ async def update_auth_policy(request: Request,
     for key, raw in (("min_length", min_length),
                      ("history_count", history_count),
                      ("max_age_days", max_age_days),
-                     ("idle_minutes", idle_minutes)):
+                     ("idle_minutes", idle_minutes),
+                     ("max_attempts", max_attempts),
+                     ("lockout_minutes", lockout_minutes),
+                     ("token_days", token_days)):
         if raw is not None and raw != "":
             changes[key] = raw
     for key, raw in (("require_upper", require_upper),
@@ -1167,6 +1201,61 @@ async def export_scan_csv(request: Request, job_id: str) -> Response:
         headers={"Content-Disposition":
                  f'attachment; filename="sast-scan-{job.id}.csv"'},
     )
+
+
+@app.get("/api/triage")
+async def list_triage(request: Request) -> dict:
+    """Every recorded judgement. Shared, not per-browser.
+
+    These used to live in localStorage, which was right while they were only
+    notes. Now that a mark can change a verdict it has to be recorded once,
+    for everyone, with the name of whoever made it.
+    """
+    from . import accounts
+
+    require_user(request)
+    return {"triage": accounts.get_triage()}
+
+
+@app.post("/api/triage")
+async def set_triage(request: Request,
+                     finding_key: str = Form(...),
+                     verdict: str = Form(""),
+                     note: str = Form("")) -> dict:
+    """Mark a finding, or clear the mark with an empty verdict."""
+    from . import accounts
+
+    user = require_user(request)
+    who = user.username if user is not None else ""
+    try:
+        return {"ok": True,
+                "mark": accounts.set_triage(finding_key, verdict, who, note)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/scans/{job_id}/reevaluate")
+async def reevaluate_scan(request: Request, job_id: str) -> dict:
+    """Judge an existing scan again against the current marks.
+
+    Without this a mark made while reading a report does nothing until the
+    next scan, which is exactly when somebody wants to see its effect.
+    """
+    from . import accounts
+    from .policies import evaluate_policy
+
+    job = manager.get(job_id)
+    if job is None or not _may_see_scan(request, job):
+        raise HTTPException(404, "scan not found")
+
+    job.policy_evaluation = evaluate_policy(job, accounts.get_triage())
+    decision = job.policy_evaluation["decision"]
+    # The status follows the verdict, or the badge and the verdict disagree.
+    if job.status in (JobStatus.DONE, JobStatus.BLOCKED, JobStatus.POLICY_REVIEW):
+        job.status = {"blocked": JobStatus.BLOCKED,
+                      "manual_review": JobStatus.POLICY_REVIEW,
+                      "passed": JobStatus.DONE}[decision]
+    return job.policy_evaluation
 
 
 @app.get("/api/scans/{job_id}/packages.csv")

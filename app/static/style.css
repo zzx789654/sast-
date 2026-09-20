@@ -759,3 +759,11 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 .login-rules {
   margin: .2rem 0 .8rem; color: var(--muted); font-size: .8rem;
 }
+
+/* How many findings a verdict set aside. Next to the verdict itself, because
+   "passed with 6 dismissed" and "passed" are not the same statement. */
+.dismissed-note {
+  font-size: .78rem; color: var(--muted);
+  border: 1px dashed var(--line); border-radius: 999px; padding: .05rem .5rem;
+}
+.ftriage .tri-note { font-size: .72rem; color: var(--muted); margin-left: .4rem; }

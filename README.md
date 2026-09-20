@@ -344,6 +344,37 @@ from the package name.
 Packages under copyleft or commercial-use terms are listed first and marked.
 That is a prompt to look, not a verdict, and it is not legal advice.
 
+### Marking a finding, and what it does to the verdict
+
+A finding can be marked **real**, **false positive** or **accepted**. The
+last two mean "this will not be fixed", so the finding stops counting
+towards the scan's verdict -- a page of false positives no longer reports
+"blocked".
+
+Two things keep that honest. The verdict always reports both numbers, so
+"passed, 6 of 7 set aside" never looks like a clean scan. And a **secret is
+never dismissible**: a credential that reached the repository is already
+exposed, and deciding it is a false positive does not un-expose it. If it
+genuinely is not a secret, the fix is a scanner rule, not a verdict
+override.
+
+Marks are recorded on the server with the name of whoever made them. They
+used to live in the browser, which was right while they were only notes for
+the reader; a mark that can clear a Critical finding has to be attributable.
+
+### Login throttling and token expiry
+
+Both are off-ish by default and live in **Settings -> Account -> password
+rules**:
+
+- **Failed logins** lock an account after `max_attempts` (10) for
+  `lockout_minutes` (15). Counted per username *and* per source address, so
+  spraying many usernames from one place is caught too, and one account
+  being attacked cannot lock out everybody else. A successful sign-in clears
+  the count. Set `max_attempts` to 0 to disable.
+- **API tokens** expire after `token_days` (0 = never, the previous
+  behaviour). An expired token is refused exactly like a revoked one.
+
 ### Telling the deployment its own address
 
 The MCP client entry and the `.env` template both say where a tool should

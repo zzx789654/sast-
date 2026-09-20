@@ -2546,6 +2546,249 @@ def test_a_token_created_via_a_token_belongs_to_the_right_account(tmp_path,
     assert made.username == "mine"
 
 
+# ------------------------------------------------------- login throttling
+@pytest.fixture()
+def throttled(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app import accounts
+    from app.config import config
+    from app.main import app
+
+    monkeypatch.setattr(config, "ACCOUNTS_DB", tmp_path / "accounts.db")
+    monkeypatch.setattr(config, "REQUIRE_AUTH", True)
+    accounts.init_db()
+    accounts.create_user("alice", "Alice-Password-123!")
+    accounts.create_user("bob", "Bob-Password-12345!")
+    accounts.set_policy({"max_attempts": 5, "lockout_minutes": 15})
+
+    def attempt(client, username, password, source="10.0.0.1"):
+        return client.post("/api/auth/login",
+                           data={"username": username, "password": password},
+                           headers={"Origin": "http://testserver",
+                                    "X-Forwarded-For": source})
+
+    return {"app": app, "accounts": accounts, "attempt": attempt,
+            "client": TestClient(app)}
+
+
+def test_guessing_a_password_is_eventually_refused(throttled):
+    """There was no limit at all: a password could be guessed as fast as the
+    server could hash."""
+    client, attempt = throttled["client"], throttled["attempt"]
+
+    for _ in range(5):
+        assert attempt(client, "alice", "wrong").status_code == 401
+
+    res = attempt(client, "alice", "wrong")
+    assert res.status_code == 429
+    assert res.headers.get("retry-after"), "no Retry-After for the caller"
+
+    # The correct password is refused too, or the lockout means nothing.
+    assert attempt(client, "alice", "Alice-Password-123!").status_code == 429
+
+
+def test_spraying_many_usernames_is_throttled_too(throttled):
+    """Counting per username only would be trivially sidestepped by changing
+    the username on every attempt."""
+    from fastapi.testclient import TestClient
+
+    client = TestClient(throttled["app"])
+    codes = [throttled["attempt"](client, f"user{i}", "guess",
+                                  source="10.9.9.9").status_code
+             for i in range(1, 8)]
+    assert 429 in codes, "an address spraying usernames was never slowed"
+
+
+def test_one_locked_account_does_not_lock_out_everyone(throttled):
+    """Otherwise the throttle is a denial-of-service against the deployment."""
+    from fastapi.testclient import TestClient
+
+    client, attempt = throttled["client"], throttled["attempt"]
+    for _ in range(6):
+        attempt(client, "alice", "wrong")
+
+    other = TestClient(throttled["app"])
+    res = attempt(other, "bob", "Bob-Password-12345!", source="10.0.0.2")
+    assert res.status_code == 200
+
+
+def test_signing_in_clears_the_earlier_failures(throttled):
+    """A typo today should not count towards a lockout next week."""
+    from fastapi.testclient import TestClient
+
+    client = TestClient(throttled["app"])
+    for _ in range(3):
+        throttled["attempt"](client, "bob", "wrong", source="10.0.0.7")
+    assert throttled["attempt"](client, "bob", "Bob-Password-12345!",
+                                source="10.0.0.7").status_code == 200
+    assert throttled["accounts"].login_blocked("bob", "10.0.0.7") == 0
+
+
+def test_the_expired_password_endpoint_is_throttled(throttled):
+    """It checks a password too, so an unthrottled one sitting beside a
+    throttled one is just a slower door with no lock."""
+    client, attempt = throttled["client"], throttled["attempt"]
+    for _ in range(6):
+        attempt(client, "alice", "wrong")
+
+    res = client.post("/api/auth/change-expired",
+                      data={"username": "alice", "current": "guess",
+                            "new_password": "Whatever-Password-1!"},
+                      headers={"Origin": "http://testserver",
+                               "X-Forwarded-For": "10.0.0.1"})
+    assert res.status_code == 429
+
+
+def test_throttling_can_be_turned_off(throttled):
+    from fastapi.testclient import TestClient
+
+    throttled["accounts"].set_policy({"max_attempts": 0})
+    client = TestClient(throttled["app"])
+    codes = [throttled["attempt"](client, "alice", "wrong",
+                                  source="10.4.4.4").status_code
+             for _ in range(12)]
+    assert set(codes) == {401}, "still throttling with max_attempts = 0"
+
+
+# ------------------------------------------------------------ token expiry
+def test_an_api_token_can_be_made_to_expire(accounts_env, tmp_path, monkeypatch):
+    """Tokens lived for ever and could only be revoked by hand."""
+    from datetime import datetime, timedelta, timezone
+
+    from fastapi.testclient import TestClient
+
+    from app.config import config
+    from app.main import app
+
+    monkeypatch.setattr(config, "REQUIRE_AUTH", True)
+    user = accounts_env.create_user("carol", "Carol-Password-123!")
+    token, secret = accounts_env.create_token(user.id, "ci")
+    client = TestClient(app)
+    auth = {"Authorization": f"Bearer {secret}"}
+
+    accounts_env.set_policy({"token_days": 30})
+    assert client.get("/api/tools", headers=auth).status_code == 200
+
+    old = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat()
+    with accounts_env._connect() as conn:
+        conn.execute("UPDATE api_tokens SET created_at = ? WHERE id = ?",
+                     (old, token.id))
+    assert client.get("/api/tools", headers=auth).status_code == 401
+
+    # And the setting can be turned off again.
+    accounts_env.set_policy({"token_days": 0})
+    assert client.get("/api/tools", headers=auth).status_code == 200
+
+
+# --------------------------------------------------- triage and the verdict
+def _job_with(*findings):
+    from app.models import (Job, ScanTarget, ToolKind, ToolResult, ToolStatus)
+
+    job = Job(id="j1", target=ScanTarget(kind="path", display="demo"))
+    job.results["semgrep"] = ToolResult(tool="semgrep", kind=ToolKind.SAST,
+                                        status=ToolStatus.OK,
+                                        findings=list(findings))
+    return job
+
+
+def _finding(severity, tool="semgrep", rule="r1", file="a.py", line=1, **extra):
+    from app.models import Finding
+
+    return Finding(tool=tool, rule_id=rule, severity=severity, title="t",
+                   file=file, start_line=line, extra=extra)
+
+
+def test_a_finding_marked_a_false_positive_stops_counting():
+    """The verdict read severity alone, so the triage marks were decoration:
+    a page full of "false positive" still said blocked."""
+    from app.models import Severity
+    from app.policies import evaluate_policy, finding_key
+
+    high = _finding(Severity.HIGH)
+    assert evaluate_policy(_job_with(high))["decision"] == "blocked"
+
+    marks = {finding_key(high): {"verdict": "false_positive",
+                                 "marked_by": "alice", "marked_at": "now"}}
+    out = evaluate_policy(_job_with(high), marks)
+    assert out["decision"] == "passed"
+    # Both numbers, or a verdict reached by dismissing looks like a clean one.
+    assert out["counts"]["dismissed"] == 1
+    assert out["counts"]["total_before_triage"] == 1
+    assert out["dismissed_findings"][0]["marked_by"] == "alice"
+
+
+def test_agreeing_a_finding_is_real_does_not_dismiss_it():
+    from app.models import Severity
+    from app.policies import evaluate_policy, finding_key
+
+    high = _finding(Severity.HIGH)
+    out = evaluate_policy(_job_with(high),
+                          {finding_key(high): {"verdict": "real"}})
+    assert out["decision"] == "blocked"
+
+
+@pytest.mark.parametrize("finding_kwargs", [
+    {"tool": "gitleaks", "rule": "aws-key"},
+    {"tool": "trivy", "rule": "s1", "category": "secret"},
+])
+def test_a_secret_cannot_be_dismissed(finding_kwargs):
+    """A credential in the repository is already exposed. Deciding it is a
+    false positive does not un-expose it, so the verdict must not move."""
+    from app.models import Severity
+    from app.policies import evaluate_policy, finding_key
+
+    secret = _finding(Severity.HIGH, **finding_kwargs)
+    out = evaluate_policy(_job_with(secret),
+                          {finding_key(secret): {"verdict": "false_positive",
+                                                 "marked_by": "someone"}})
+    assert out["decision"] == "blocked"
+    assert out["counts"]["dismissed"] == 0
+
+
+def test_a_mark_for_one_finding_does_not_apply_to_another():
+    from app.models import Severity
+    from app.policies import evaluate_policy
+
+    out = evaluate_policy(_job_with(_finding(Severity.HIGH)),
+                          {"semgrep|other|z.py|99": {"verdict": "accepted"}})
+    assert out["decision"] == "blocked"
+
+
+def test_the_marks_are_shared_and_attributed_not_per_browser(accounts_env):
+    """They lived in localStorage, which was right while they were notes.
+
+    A mark that can clear a Critical finding has to say who made it, and be
+    the same for everyone looking at the report.
+    """
+    accounts_env.set_triage("semgrep|r1|a.py|1", "false_positive", "alice",
+                            "shell=False")
+    marks = accounts_env.get_triage()
+    assert marks["semgrep|r1|a.py|1"]["marked_by"] == "alice"
+    assert marks["semgrep|r1|a.py|1"]["note"] == "shell=False"
+
+    accounts_env.set_triage("semgrep|r1|a.py|1", "", "bob")
+    assert accounts_env.get_triage() == {}
+
+    with pytest.raises(ValueError):
+        accounts_env.set_triage("k", "something-else", "alice")
+
+
+def test_the_ui_key_matches_the_backend_key():
+    """A mark made in the browser has to find the same finding on the server;
+    two different join orders would silently never match."""
+    from app.models import Severity
+    from app.policies import finding_key
+
+    js = (Path(__file__).resolve().parents[1]
+          / "app/static/app.js").read_text("utf-8")
+    fn = js[js.index("function findingKey(f)"):]
+    fn = fn[:fn.index("\n}")]
+    assert "[f.tool, f.rule_id, f.file, f.start_line].join(\"|\")" in fn
+
+    assert finding_key(_finding(Severity.HIGH)) == "semgrep|r1|a.py|1"
+
+
 # ------------------------------------------------------- password expiry
 @pytest.fixture()
 def expiring(tmp_path, monkeypatch):

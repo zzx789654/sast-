@@ -291,6 +291,18 @@
               <span data-i18n="policy.f.idle">閒置登出分鐘（0 = 不限）</span>
               <input id="po-idle" type="number" min="0" max="10080" required>
             </label>
+            <label class="field">
+              <span data-i18n="policy.f.attempts"></span>
+              <input id="po-attempts" type="number" min="0" max="1000" required>
+            </label>
+            <label class="field">
+              <span data-i18n="policy.f.lockout"></span>
+              <input id="po-lockout" type="number" min="1" max="1440" required>
+            </label>
+            <label class="field">
+              <span data-i18n="policy.f.tokenDays"></span>
+              <input id="po-token-days" type="number" min="0" max="3650" required>
+            </label>
           </div>
           <div class="policy-checks">
             <label><input id="po-upper" type="checkbox"> <span data-i18n="policy.f.upper">需大寫</span></label>

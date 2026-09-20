@@ -62,6 +62,7 @@ async function init() {
   await Promise.all([
     loadTools(),
     loadWhoami(),
+    loadTriage(),
     loadPolicies(),
     loadRules(),
     loadRulesets(),
@@ -329,6 +330,9 @@ function fillPolicyForm(policy) {
   num("#po-history", policy.history_count);
   num("#po-age", policy.max_age_days);
   num("#po-idle", policy.idle_minutes);
+  num("#po-attempts", policy.max_attempts);
+  num("#po-lockout", policy.lockout_minutes);
+  num("#po-token-days", policy.token_days);
   chk("#po-upper", policy.require_upper);
   chk("#po-lower", policy.require_lower);
   chk("#po-digit", policy.require_digit);
@@ -343,6 +347,9 @@ async function savePolicy(ev) {
   body.append("history_count", $("#po-history").value);
   body.append("max_age_days", $("#po-age").value);
   body.append("idle_minutes", $("#po-idle").value);
+  body.append("max_attempts", $("#po-attempts").value);
+  body.append("lockout_minutes", $("#po-lockout").value);
+  body.append("token_days", $("#po-token-days").value);
   [["require_upper", "#po-upper"], ["require_lower", "#po-lower"],
    ["require_digit", "#po-digit"], ["require_symbol", "#po-symbol"],
    ["reject_common", "#po-common"]].forEach(([key, sel]) => {
@@ -1700,6 +1707,14 @@ function renderJob(job) {
     const decision = job.policy_evaluation.decision;
     meta.appendChild(el("span", "policy-decision gate-" + decision,
       t("policy.gate", { decision: t("policy.decision." + decision) })));
+    // A verdict reached by setting findings aside must not look like one
+    // reached by having none.
+    const counts = job.policy_evaluation.counts || {};
+    if (counts.dismissed) {
+      meta.appendChild(el("span", "dismissed-note",
+        t("verdict.dismissed", { n: counts.dismissed,
+                                 total: counts.total_before_triage })));
+    }
   }
   const inv = job.inventory;
   if (inv && inv.total_files) {
@@ -2087,27 +2102,53 @@ function findingKey(f) {
   return [f.tool, f.rule_id, f.file, f.start_line].join("|");
 }
 
-// Judgements live in this browser. They are notes for the person reading the
-// report, not an audit trail -- the app has no login, so it cannot say who
-// marked what, and pretending otherwise would be worse than not storing it.
-const TRIAGE = (() => {
-  try {
-    return JSON.parse(localStorage.getItem("sast-triage") || "{}");
-  } catch (e) {
-    return {};
-  }
-})();
+// Judgements are recorded on the server, keyed by finding, with the name of
+// whoever made the call. They used to live in localStorage, which was the
+// right call while they were only notes for the reader -- but a mark now
+// changes the scan's verdict, and a judgement that can clear a Critical
+// finding has to be attributable and shared, not private to one browser.
+let TRIAGE = {};
 
-function saveTriage() {
+async function loadTriage() {
   try {
-    localStorage.setItem("sast-triage", JSON.stringify(TRIAGE));
-  } catch (e) { /* private window, quota: the UI still works */ }
+    const res = await fetch("/api/triage");
+    if (!res.ok) return;
+    TRIAGE = (await res.json()).triage || {};
+  } catch (e) { /* the findings still render; they are just unmarked */ }
+}
+
+// Returns false when the server refused, so the caller can leave the buttons
+// as they were rather than showing a mark that was not recorded.
+async function saveTriage(key, verdict, note) {
+  const body = new FormData();
+  body.append("finding_key", key);
+  body.append("verdict", verdict || "");
+  if (note) body.append("note", note);
+  try {
+    const res = await fetch("/api/triage", { method: "POST", body });
+    if (!res.ok) return false;
+    const data = await res.json();
+    if (verdict) TRIAGE[key] = data.mark || { verdict: verdict };
+    else delete TRIAGE[key];
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function triageVerdict(f) {
+  const mark = TRIAGE[findingKey(f)];
+  return (mark && mark.verdict) || "";
 }
 
 function renderTriage(f) {
   const key = findingKey(f);
   const wrap = el("div", "ftriage");
-  const current = TRIAGE[key] || "";
+  const mark = TRIAGE[key] || {};
+  const current = mark.verdict || "";
+  // A secret keeps counting whatever anyone marks it, so saying otherwise
+  // here would be a lie the server then ignores.
+  const secret = f.tool === "gitleaks" || (f.extra && f.extra.category === "secret");
 
   [["", "triage.unset"], ["real", "triage.real"],
    ["false_positive", "triage.falsePositive"],
@@ -2115,24 +2156,52 @@ function renderTriage(f) {
     const btn = el("button", "tri-btn" + (current === value ? " on" : ""),
                    t(label));
     btn.type = "button";
-    btn.addEventListener("click", () => {
-      if (value) TRIAGE[key] = value; else delete TRIAGE[key];
-      saveTriage();
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      const ok = await saveTriage(key, value);
+      btn.disabled = false;
+      if (!ok) return;            // leave the buttons as they were
       renderFindings();
+      // The verdict is computed from these marks, so it has to be asked for
+      // again -- otherwise the header still shows the old one.
+      refreshVerdict();
     });
     wrap.appendChild(btn);
   });
 
   if (current) {
     // Show the mark itself, so it survives into the printed report.
-    wrap.appendChild(el("span", "tri-mark tri-" + current,
-                        t("triage.marked." + current)));
+    const shown = el("span", "tri-mark tri-" + current,
+                     t("triage.marked." + current));
+    if (mark.marked_by) {
+      shown.title = t("triage.by", { who: mark.marked_by,
+                                     when: (mark.marked_at || "").slice(0, 16) });
+    }
+    wrap.appendChild(shown);
+    if (secret && current !== "real") {
+      // Say why the verdict did not move.
+      wrap.appendChild(el("span", "tri-note", t("triage.secretStands")));
+    }
   }
   return wrap;
 }
 
+async function refreshVerdict() {
+  if (!state.selectedJob) return;
+  try {
+    const res = await fetch(`/api/scans/${state.selectedJob}/reevaluate`,
+                            { method: "POST" });
+    if (!res.ok) return;
+    const evaluation = await res.json();
+    if (state.currentJob) {
+      state.currentJob.policy_evaluation = evaluation;
+      renderJob(state.currentJob);
+    }
+  } catch (e) { /* the marks are saved; only the badge is stale */ }
+}
+
 function renderFinding(f) {
-  const judged = TRIAGE[findingKey(f)] || "";
+  const judged = triageVerdict(f);
   const card = el("div", "finding " + f.severity
                   + (judged ? " judged judged-" + judged : ""));
   const x = f.extra || {};

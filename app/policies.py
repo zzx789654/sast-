@@ -57,9 +57,46 @@ RULE_CATALOG = [
 ]
 
 
-def evaluate_policy(job: Job) -> dict[str, Any]:
-    """Judge the combined findings of every tool that ran."""
-    findings = [f for result in job.results.values() for f in result.findings]
+#: A mark that means "this will not be fixed", so the finding no longer
+#: counts towards the verdict. "real" is not here: agreeing that a finding is
+#: real cannot be a way to dismiss it.
+DISMISSED = {"false_positive", "accepted"}
+
+
+def finding_key(finding: Finding) -> str:
+    """The identity of a finding across scans of the same project.
+
+    Matches the key the UI builds, so a mark made while reading one scan
+    still applies when the same code is scanned again.
+    """
+    return "|".join([finding.tool, finding.rule_id, finding.file,
+                     str(finding.start_line if finding.start_line is not None
+                         else "")])
+
+
+def evaluate_policy(job: Job, triage: "dict | None" = None) -> dict[str, Any]:
+    """Judge the combined findings of every tool that ran.
+
+    `triage` maps a finding key to a recorded judgement. A finding somebody
+    has marked a false positive, or knowingly accepted, stops counting --
+    with one exception below, and with the count of what was set aside
+    reported alongside the verdict so it is never silently smaller.
+    """
+    triage = triage or {}
+    all_findings = [f for result in job.results.values() for f in result.findings]
+
+    dismissed = []
+    findings = []
+    for f in all_findings:
+        mark = triage.get(finding_key(f)) or {}
+        if mark.get("verdict") in DISMISSED and not _is_secret(f):
+            dismissed.append((f, mark))
+        else:
+            # A secret is never dismissible. A credential that reached the
+            # repository is already exposed, and deciding it is a false
+            # positive does not un-expose it -- if it is genuinely not a
+            # secret, the fix is a scanner rule, not a verdict override.
+            findings.append(f)
 
     blocking_sev = [f for f in findings if f.severity in BLOCKING]
     secrets = [f for f in findings if _is_secret(f)]
@@ -93,7 +130,18 @@ def evaluate_policy(job: Job) -> dict[str, Any]:
             "low": len(low),
             "secrets": len(secrets),
             "total": len(findings),
+            # Both numbers, always: a verdict reached by setting findings
+            # aside should never look like a verdict reached by having none.
+            "dismissed": len(dismissed),
+            "total_before_triage": len(all_findings),
         },
+        "dismissed_findings": [
+            dict(_finding_ref(f), verdict=mark.get("verdict", ""),
+                 marked_by=mark.get("marked_by", ""),
+                 marked_at=mark.get("marked_at", ""),
+                 note=mark.get("note", ""))
+            for f, mark in dismissed
+        ],
         "rules": RULE_CATALOG,
     }
 

@@ -118,6 +118,14 @@ def init_db() -> None:
                 at          TEXT    NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_login_at ON login_events(at);
+            CREATE TABLE IF NOT EXISTS triage (
+                finding_key TEXT    NOT NULL,
+                verdict     TEXT    NOT NULL,
+                note        TEXT    NOT NULL DEFAULT '',
+                marked_by   TEXT    NOT NULL DEFAULT '',
+                marked_at   TEXT    NOT NULL,
+                PRIMARY KEY (finding_key)
+            );
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -188,9 +196,74 @@ DEFAULT_POLICY = {
     "history_count": 3,        # how many old passwords may not be reused
     "max_age_days": 0,         # 0 = passwords do not expire
     "idle_minutes": 0,         # 0 = only the session TTL applies
+    # Login throttling. Counted per username and per source address, so one
+    # account being attacked cannot lock out everybody else, and one address
+    # spraying many usernames is still stopped.
+    "max_attempts": 10,        # 0 = no limit
+    "lockout_minutes": 15,     # how long a locked account waits
+    # API tokens. 0 = they never expire, which is what they did before.
+    "token_days": 0,
 }
 
 _POLICY_KEY = "password_policy"
+
+
+#: What a person can say about a finding. "false_positive" and "accepted"
+#: both mean "this will not be fixed", but for different reasons, and the
+#: difference is worth keeping in the record.
+TRIAGE_VERDICTS = {"real", "false_positive", "accepted"}
+
+
+def set_triage(finding_key: str, verdict: str, username: str,
+               note: str = "") -> dict:
+    """Record a judgement about a finding, or clear it with an empty verdict.
+
+    Stored server-side rather than in the browser because it now changes the
+    scan's verdict. A judgement that silences a Critical finding has to say
+    who made it and when, or it is not a judgement, it is a way to hide
+    things.
+    """
+    finding_key = (finding_key or "").strip()
+    if not finding_key or len(finding_key) > 512:
+        raise ValueError("invalid finding reference")
+
+    with _lock, _connect() as conn:
+        if not verdict:
+            conn.execute("DELETE FROM triage WHERE finding_key = ?",
+                         (finding_key,))
+            return {}
+        if verdict not in TRIAGE_VERDICTS:
+            raise ValueError(f"unknown verdict '{verdict}'")
+        row = {"finding_key": finding_key, "verdict": verdict,
+               "note": (note or "")[:1000], "marked_by": username or "",
+               "marked_at": _now()}
+        conn.execute(
+            "INSERT INTO triage (finding_key, verdict, note, marked_by, marked_at) "
+            "VALUES (:finding_key, :verdict, :note, :marked_by, :marked_at) "
+            "ON CONFLICT(finding_key) DO UPDATE SET "
+            "  verdict = excluded.verdict, note = excluded.note, "
+            "  marked_by = excluded.marked_by, marked_at = excluded.marked_at",
+            row)
+        return row
+
+
+def get_triage(keys: "list[str] | None" = None) -> dict:
+    """The marks, as {finding_key: {...}}. All of them, or just the ones asked."""
+    with _connect() as conn:
+        if keys:
+            out = {}
+            # Chunked: SQLite has a limit on how many parameters one statement
+            # may carry, and a large scan has thousands of findings.
+            for i in range(0, len(keys), 400):
+                chunk = keys[i:i + 400]
+                marks = ",".join("?" * len(chunk))
+                for row in conn.execute(
+                        f"SELECT * FROM triage WHERE finding_key IN ({marks})",
+                        chunk):
+                    out[row["finding_key"]] = dict(row)
+            return out
+        return {row["finding_key"]: dict(row)
+                for row in conn.execute("SELECT * FROM triage")}
 
 
 def get_policy() -> dict:
@@ -234,6 +307,14 @@ def set_policy(changes: dict) -> dict:
             raise ValueError("max_age_days must be between 0 and 3650")
         if key == "idle_minutes" and not 0 <= number <= 10080:
             raise ValueError("idle_minutes must be between 0 and 10080")
+        if key == "max_attempts" and not 0 <= number <= 1000:
+            raise ValueError("max_attempts must be between 0 and 1000")
+        if key == "lockout_minutes" and not 1 <= number <= 1440:
+            # Zero would mean "lock out for no time at all", which reads as
+            # disabled but is not: max_attempts = 0 is how you turn it off.
+            raise ValueError("lockout_minutes must be between 1 and 1440")
+        if key == "token_days" and not 0 <= number <= 3650:
+            raise ValueError("token_days must be between 0 and 3650")
         policy[key] = number
 
     with _lock, _connect() as conn:
@@ -456,6 +537,67 @@ def authenticate(username: str, password: str) -> Optional[User]:
 MAX_LOGIN_EVENTS = 500      # a rolling window, not an archive
 
 
+def login_blocked(username: str, source: str = "") -> int:
+    """Seconds to wait before this login may be tried again; 0 if it may now.
+
+    Counted over a window rather than a running total, so a legitimate user
+    who mistypes a few times is not locked out for ever -- the count ages out.
+
+    Two counters, whichever trips first: one for the username, so guessing at
+    one account is slowed, and one for the source address, so spraying many
+    usernames from one place is slowed too. Without the second, an attacker
+    just changes the username on every attempt and is never throttled.
+    """
+    policy = get_policy()
+    limit = policy["max_attempts"]
+    if not limit:
+        return 0
+
+    window = policy["lockout_minutes"] * 60
+    cutoff = _iso_ago(window)
+    username = (username or "").strip().lower()
+
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT at FROM login_events "
+            "WHERE success = 0 AND at > ? AND (username = ? OR "
+            "      (source <> '' AND source = ?)) "
+            "ORDER BY at DESC", (cutoff, username, source or "\x00")
+        ).fetchall()
+
+    if len(rows) < limit:
+        return 0
+
+    # The lock lasts a full window from the most recent failure, so hammering
+    # it while locked does not shorten the wait.
+    from datetime import datetime, timezone
+    try:
+        newest = datetime.fromisoformat(rows[0]["at"])
+    except (TypeError, ValueError):
+        return 0
+    elapsed = (datetime.now(timezone.utc) - newest).total_seconds()
+    return max(1, int(window - elapsed))
+
+
+def _iso_ago(seconds: float) -> str:
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
+
+
+def clear_failures(username: str, source: str = "") -> None:
+    """Forget the failures for an account once it signs in successfully.
+
+    Otherwise a user who mistyped, then got it right, would still be counted
+    towards a lockout by the next mistake.
+    """
+    username = (username or "").strip().lower()
+    with _lock, _connect() as conn:
+        conn.execute(
+            "DELETE FROM login_events WHERE success = 0 AND (username = ? OR "
+            "  (source <> '' AND source = ?))",
+            (username, source or "\x00"))
+
+
 def record_login(username: str, success: bool, source: str = "") -> None:
     """Note an attempt, successful or not.
 
@@ -619,6 +761,19 @@ def revoke_token(token_id: int, user_id: Optional[int] = None) -> bool:
         return conn.execute(sql, args).rowcount > 0
 
 
+def token_expired(created_at: str) -> bool:
+    """Whether a token issued at this time is past the configured lifetime."""
+    days = get_policy()["token_days"]
+    if not days:
+        return False
+    from datetime import datetime, timezone
+    try:
+        made = datetime.fromisoformat(created_at)
+    except (TypeError, ValueError):
+        return False
+    return (datetime.now(timezone.utc) - made).days >= days
+
+
 def token_user(token: Optional[str]) -> Optional[User]:
     """The user a token belongs to, or None.
 
@@ -635,6 +790,7 @@ def token_user(token: Optional[str]) -> Optional[User]:
         # token columns apart and select the user's explicitly.
         rows = conn.execute(
             "SELECT t.id AS token_id, t.token_hash AS token_hash, "
+            "       t.created_at AS token_created_at, "
             "       u.id AS id, u.username AS username, u.password AS password, "
             "       u.is_admin AS is_admin, u.disabled AS disabled, "
             "       u.created_at AS created_at, u.last_login AS last_login "
@@ -645,6 +801,10 @@ def token_user(token: Optional[str]) -> Optional[User]:
     given = _hash_token(token)
     for row in rows:
         if hmac.compare_digest(given, row["token_hash"]):
+            # An expired token is refused like a revoked one. Checked here so
+            # every caller gets it, rather than at each endpoint.
+            if token_expired(row["token_created_at"]):
+                return None
             with _lock, _connect() as conn:
                 conn.execute("UPDATE api_tokens SET last_used = ? WHERE id = ?",
                              (_now(), row["token_id"]))

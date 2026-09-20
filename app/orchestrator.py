@@ -171,7 +171,7 @@ class JobManager:
             job.sbom = sbom.collect(Path(scan_root))
 
             job.compute_summary().compute_progress()
-            job.policy_evaluation = evaluate_policy(job)
+            job.policy_evaluation = evaluate_policy(job, _triage_marks())
             decision = job.policy_evaluation["decision"]
             if decision == "blocked":
                 job.stage = "blocked by policy"
@@ -292,3 +292,15 @@ def _now() -> str:
 
 
 manager = JobManager()
+
+
+def _triage_marks() -> dict:
+    """Recorded judgements, or nothing when accounts are not in use.
+
+    Never raises: a verdict must still be produced if the store is missing.
+    """
+    try:
+        from . import accounts
+        return accounts.get_triage()
+    except Exception:  # noqa: BLE001
+        return {}
