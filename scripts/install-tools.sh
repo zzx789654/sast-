@@ -7,7 +7,7 @@
 # result without losing the successful installations.
 set -uo pipefail
 
-OSV_SCANNER_VERSION="${OSV_SCANNER_VERSION:-1.9.2}"
+OSV_SCANNER_VERSION="${OSV_SCANNER_VERSION:-2.6.0}"
 GITLEAKS_VERSION="${GITLEAKS_VERSION:-8.30.1}"
 TRIVY_VERSION="${TRIVY_VERSION:-0.74.0}"
 BIN_DIR="${BIN_DIR:-/usr/local/bin}"

@@ -4,7 +4,7 @@
 # Desktop GUI carries a fee for large orgs, and a server image does not need it.
 FROM python:3.11-slim
 
-ARG OSV_SCANNER_VERSION=1.9.2
+ARG OSV_SCANNER_VERSION=2.6.0
 ARG GITLEAKS_VERSION=8.30.1
 ARG TRIVY_VERSION=0.74.0
 ARG PIP_TIMEOUT=600
@@ -57,6 +57,16 @@ RUN arch="$(dpkg --print-architecture)"; \
       curl -fsSL --retry 5 --retry-delay 5 --connect-timeout 30 --speed-limit 1024 --speed-time 120 -C - \
         -o /usr/local/bin/osv-scanner \
         "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_${A}"; \
+      echo "osv-scanner: verifying against the published checksums"; \
+      curl -fsSL --retry 3 --connect-timeout 30 -o /tmp/osv-sums \
+        "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_SHA256SUMS"; \
+      want="$(grep " osv-scanner_linux_${A}$" /tmp/osv-sums | cut -d" " -f1)"; \
+      got="$(sha256sum /usr/local/bin/osv-scanner | cut -d" " -f1)"; \
+      if [ -z "$want" ] || [ "$want" != "$got" ]; then \
+        echo "osv-scanner checksum mismatch: want ${want:-<none>}, got $got" >&2; \
+        exit 1; \
+      fi; \
+      rm -f /tmp/osv-sums; \
     fi; \
     chmod +x /usr/local/bin/osv-scanner; \
     /usr/local/bin/osv-scanner --version

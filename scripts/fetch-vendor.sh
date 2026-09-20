@@ -11,7 +11,7 @@
 set -euo pipefail
 
 # Keep these in step with the ARG defaults in the Dockerfile.
-OSV_SCANNER_VERSION="${OSV_SCANNER_VERSION:-1.9.2}"
+OSV_SCANNER_VERSION="${OSV_SCANNER_VERSION:-2.6.0}"
 GITLEAKS_VERSION="${GITLEAKS_VERSION:-8.30.1}"
 TRIVY_VERSION="${TRIVY_VERSION:-0.74.0}"
 
@@ -39,14 +39,9 @@ warn() { printf '  ! %s\n' "$*" >&2; }
 # artifact to refresh them):
 #   .../releases/download/v<ver>/trivy_<ver>_checksums.txt
 #   .../releases/download/v<ver>/gitleaks_<ver>_checksums.txt
-#   .../releases/download/v<ver>/osv-scanner_<ver>_checksums.txt
+#   .../releases/download/v<ver>/osv-scanner_SHA256SUMS
 # To see what you actually have on disk: ./scripts/fetch-vendor.sh --print-hashes
-# osv-scanner v1.9.2 publishes no checksums file, so this value is not an
-# upstream one: it is what two independent downloads both produced, and the
-# resulting binary reports "osv-scanner version: 1.9.2". Weaker provenance
-# than the other two -- it detects corruption and later tampering of the
-# cache, but cannot prove the original download was authentic.
-SHA_OSV="d6af4b67fa5de658598bd2d445efb99e90d1734b3146962418719c4350ecb74b"
+SHA_OSV="ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108"
 SHA_GITLEAKS="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
 SHA_TRIVY="2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a"
 

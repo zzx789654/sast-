@@ -2789,6 +2789,47 @@ def test_the_ui_key_matches_the_backend_key():
     assert finding_key(_finding(Severity.HIGH)) == "semgrep|r1|a.py|1"
 
 
+def test_the_scanner_versions_are_pinned_to_the_same_value_everywhere():
+    """Four files pin each scanner, and a bump that misses one is a build
+    that installs a different version than CI tested."""
+    import re
+
+    root = Path(__file__).resolve().parents[1]
+    sources = {
+        "Dockerfile": r"ARG {key}=([0-9][0-9.]*)",
+        ".github/workflows/ci.yml": r'{key}: "([0-9][0-9.]*)"',
+        "scripts/fetch-vendor.sh": r'{key}="\$\{{{key}:-([0-9][0-9.]*)\}}"',
+        "scripts/install-tools.sh": r'{key}="\$\{{{key}:-([0-9][0-9.]*)\}}"',
+    }
+
+    for key in ["OSV_SCANNER_VERSION", "GITLEAKS_VERSION", "TRIVY_VERSION"]:
+        found = {}
+        for rel, pattern in sources.items():
+            text = (root / rel).read_text("utf-8")
+            match = re.search(pattern.format(key=key), text)
+            if match:
+                found[rel] = match.group(1)
+        assert len(found) >= 3, f"{key} is pinned in only {list(found)}"
+        assert len(set(found.values())) == 1, (
+            f"{key} disagrees across files: {found}"
+        )
+
+
+def test_the_osv_download_is_checksummed():
+    """The cached path was verified by fetch-vendor.sh and the direct
+    download was not, so a build without a warm cache installed whatever
+    arrived. 2.6.0 publishes SHA256SUMS, so there is now something to check
+    against."""
+    dockerfile = (Path(__file__).resolve().parents[1]
+                  / "Dockerfile").read_text("utf-8")
+
+    block = dockerfile[dockerfile.index("--- OSV-Scanner"):]
+    block = block[:block.index("--- Gitleaks")]
+    assert "SHA256SUMS" in block, "the download is not verified"
+    assert "checksum mismatch" in block
+    assert "exit 1" in block, "a mismatch does not stop the build"
+
+
 # ------------------------------------------------ what can actually update
 def test_only_the_tools_that_can_update_in_place_are_offered():
     """Four of the six are pinned binaries in the image.
