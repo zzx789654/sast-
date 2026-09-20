@@ -208,6 +208,33 @@ def _same_site_request(request: Request) -> bool:
     return _origin_allowed(origin, request)
 
 
+#: The app's own front-end. Served straight from the image, so the file on
+#: disk changes on every deploy and the URL never does.
+_APP_ASSETS = {"/", "/login", "/index.html", "/login.html",
+               "/app.js", "/login.js", "/i18n.js", "/style.css"}
+
+
+@app.middleware("http")
+async def _no_stale_ui(request: Request, call_next):
+    """Make the browser check before reusing the UI it already has.
+
+    Nothing set Cache-Control, so browsers fell back to their own heuristic:
+    cache for some fraction of the age of the file and do not ask again. That
+    is why a deploy kept needing a hard refresh -- the server had the new CSS
+    and the browser never asked for it.
+
+    `no-cache` does not mean "do not store". It means "store it, but
+    revalidate before use", so the ETag that is already being sent does the
+    work and an unchanged file still costs one 304 rather than a download.
+    Versioned URLs would let us cache these forever, but the filenames are
+    referenced from hand-written HTML, so this is the honest trade for now.
+    """
+    response = await call_next(request)
+    if request.url.path in _APP_ASSETS:
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
+
+
 @app.middleware("http")
 async def _auth_gate(request: Request, call_next):
     """Refuse unauthenticated requests when auth is on.

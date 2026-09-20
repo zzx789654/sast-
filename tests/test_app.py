@@ -2760,6 +2760,35 @@ def test_a_form_row_does_not_lift_its_fields_above_the_button():
     )
 
 
+def test_the_browser_revalidates_the_ui_instead_of_reusing_it(client):
+    """Nothing set Cache-Control, so a deploy needed a hard refresh.
+
+    With no header the browser applies its own heuristic -- cache for a
+    fraction of the file's age and do not ask again -- so the server had the
+    new CSS and the browser never requested it. Every UI change this session
+    landed invisibly for that reason.
+    """
+    for path in ["/style.css", "/app.js", "/i18n.js", "/login.js", "/login"]:
+        res = client.get(path)
+        assert res.status_code == 200, path
+        cache = res.headers.get("cache-control", "")
+        assert "no-cache" in cache, f"{path} can be reused without asking"
+
+
+def test_revalidating_an_unchanged_asset_is_still_cheap(client):
+    """no-cache means "ask", not "download again".
+
+    If the ETag stopped being sent, every page load would re-download the
+    whole front-end instead of getting a 304.
+    """
+    first = client.get("/style.css")
+    etag = first.headers.get("etag")
+    assert etag, "no ETag, so revalidation would re-download the file"
+
+    again = client.get("/style.css", headers={"If-None-Match": etag})
+    assert again.status_code == 304
+
+
 # ------------------------------------------------------- password dialog
 def test_a_password_is_never_typed_into_a_visible_prompt():
     """window.prompt() cannot mask input.
