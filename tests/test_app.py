@@ -2847,6 +2847,24 @@ def test_revalidating_an_unchanged_asset_is_still_cheap(client):
     assert again.status_code == 304
 
 
+def test_scan_durations_are_shown_in_seconds():
+    """36493ms takes a moment to read as "about half a minute"."""
+    import shutil
+    import subprocess
+
+    root = Path(__file__).resolve().parents[1]
+    js = (root / "app/static/app.js").read_text("utf-8")
+    assert 'duration_ms || 0) + "ms"' not in js, "still printing raw milliseconds"
+    assert "elapsed(r.duration_ms" in js
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available")
+    out = subprocess.run([node, str(root / "tests/elapsed_test.js")],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stdout + out.stderr
+
+
 # ------------------------------------------------------- password dialog
 def test_a_password_is_never_typed_into_a_visible_prompt():
     """window.prompt() cannot mask input.

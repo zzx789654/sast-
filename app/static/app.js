@@ -1953,6 +1953,24 @@ function renderSummary(summary) {
   box.appendChild(total);
 }
 
+// Scan durations run from a few hundred milliseconds to several minutes, so
+// one unit cannot serve the whole range. Milliseconds were exact and unread:
+// "36493ms" takes a moment to turn into "half a minute".
+function elapsed(ms) {
+  if (ms < 1000) {
+    // Rounding these to 0.0s would report a real measurement as nothing.
+    return Math.round(ms) + "ms";
+  }
+  const seconds = ms / 1000;
+  // Compare the rounded value, or 59999ms prints "60.0s" while 60000ms
+  // prints "1m 0s" -- the same duration shown two different ways.
+  if (Number(seconds.toFixed(1)) < 60) return seconds.toFixed(1) + "s";
+  const mins = Math.floor(seconds / 60);
+  const rest = Math.round(seconds - mins * 60);
+  // 2m 0s rather than 1m 60s when the remainder rounds up.
+  return rest === 60 ? (mins + 1) + "m 0s" : mins + "m " + rest + "s";
+}
+
 function renderToolRows(results) {
   const box = $("#tool-results");
   box.innerHTML = "";
@@ -1981,7 +1999,7 @@ function renderToolRows(results) {
     row.appendChild(el("span", "tstat " + r.status, statusLabel(r.status)));
     if (r.status === "ok") {
       row.appendChild(el("span", "thint", t("findings.count", { n: r.summary.total || 0 })));
-      row.appendChild(el("span", "telapsed", (r.duration_ms || 0) + "ms"));
+      row.appendChild(el("span", "telapsed", elapsed(r.duration_ms || 0)));
     } else if (r.status === "unavailable") {
       row.appendChild(el("span", "thint", r.install_hint || ""));
     } else if (r.status === "not_applicable") {
