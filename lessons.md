@@ -845,3 +845,33 @@ osv 約 58 KB（送相依清單）、trivy 約 129 MB（下載弱點庫）。
 
 準則：**說明文件裡的數字要自己量過。** 文件寫「會連線」跟實測 0 bytes
 是兩回事，而使用者會拿這欄來做決定。
+
+### 補充（第 24 輪後段）：只測了一條路徑，另一條在 VM 上直接掛掉
+
+`reset-password.sh --generate` 在 VM 上印完第一行就 exit 141，密碼完全沒改。
+
+```bash
+tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20
+```
+
+`head` 讀滿 20 個字元就關掉管線，核心對 `tr` 送 SIGPIPE，
+而腳本開頭的 `set -o pipefail` 把它升級成致命錯誤。
+
+本機測不出來是因為**我只測了輸入密碼那條路徑**，沒測 `--generate`。
+兩條路徑共用後面所有邏輯，所以我下意識覺得測一條就夠了——
+但分歧點本身就是沒被覆蓋的地方。
+
+準則：**有分支就每條都走一次。** 共用下游不代表上游不會壞，
+而且壞的往往就是那幾行不一樣的地方。
+
+改法是讓寫入端自己結束，不要讓讀取端提早關管線：
+`head -c 64 /dev/urandom | base64 | tr -cd ...`。
+順便解決 `$(...)` 吃到 null byte 會警告的問題。
+
+### 還有：`chmod` 沒進版控，下次 `git pull` 就被它擋住
+
+我在 VM 上 `chmod +x` 之後，那個 mode 變更變成 local change，
+接下來兩次 `git pull --ff-only` 都被 "local changes would be overwritten" 擋下。
+
+準則：**腳本要在 repo 裡就是可執行的**（`git update-index --chmod=+x`），
+不要靠部署後補 `chmod`——補出來的差異會變成下一次更新的阻礙。
