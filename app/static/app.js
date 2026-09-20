@@ -166,11 +166,166 @@ function wireTokens() {
   }
   const refresh = $("#tokens-refresh");
   if (refresh) refresh.addEventListener("click", loadTokens);
+  const dl = $("#mcp-download");
+  if (dl) dl.addEventListener("click", downloadMcpConfig);
+  const logins = $("#logins-refresh");
+  if (logins) logins.addEventListener("click", loadLoginHistory);
+}
+
+// ------------------------------------------------------- API and MCP panel
+// Shows how to call this deployment rather than describing it in the abstract:
+// the host in these snippets is the one the browser is actually on, so they
+// can be copied without editing.
+let MCP_CONFIG = null;
+
+async function loadApiPanel() {
+  try {
+    MCP_CONFIG = await (await fetch("/api/mcp/config")).json();
+  } catch (e) {
+    return;
+  }
+
+  const base = MCP_CONFIG.url.replace(/\/mcp$/, "");
+  const curl = $("#api-curl");
+  if (curl) {
+    curl.textContent =
+      "# every endpoint takes the same token\n" +
+      'curl -H "Authorization: Bearer sast_..." \\\n' +
+      `     ${base}/api/tools`;
+  }
+
+  const json = $("#mcp-json");
+  if (json) json.textContent = JSON.stringify(MCP_CONFIG.config, null, 2);
+
+  const tools = $("#mcp-tools");
+  if (tools) {
+    tools.innerHTML = "";
+    (MCP_CONFIG.tools || []).forEach((t) => {
+      const row = el("div", "user-row");
+      row.appendChild(el("span", "u-name", t.name));
+      row.appendChild(el("span", "tk-name", t.description));
+      tools.appendChild(row);
+    });
+  }
+}
+
+function downloadMcpConfig() {
+  if (!MCP_CONFIG) return;
+  // A file rather than a copy button: an MCP client wants this on disk, and
+  // the browser will not let a page write to the clipboard everywhere.
+  const blob = new Blob([JSON.stringify(MCP_CONFIG.config, null, 2)],
+                        { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "sast-studio-mcp.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ---------------------------------------------------------- password policy
+async function loadPasswordPolicy() {
+  const box = $("#pw-policy");
+  if (!box) return;
+  let policy;
+  try {
+    policy = await (await fetch("/api/auth/policy")).json();
+  } catch (e) {
+    return;
+  }
+  box.innerHTML = "";
+  const rules = [
+    t("policy.minLength", { n: policy.min_length }),
+    t("policy.common"),
+    t("policy.session", { h: policy.session_hours }),
+  ].concat(policy.notes || []);
+  rules.forEach((line) => {
+    const row = el("div", "policy-line");
+    row.appendChild(el("span", "policy-dot", "\u2022"));
+    row.appendChild(el("span", null, line));
+    box.appendChild(row);
+  });
+}
+
+// ------------------------------------------------------------ login history
+async function loadLoginHistory() {
+  const box = $("#logins-list");
+  if (!box) return;
+  let data;
+  try {
+    data = await (await fetch("/api/auth/logins")).json();
+  } catch (e) {
+    return;
+  }
+  const scope = $("#logins-scope");
+  if (scope) {
+    scope.textContent = data.scope === "all"
+      ? t("logins.scopeAll") : t("logins.scopeMine");
+  }
+  box.innerHTML = "";
+  if (!(data.events || []).length) {
+    box.appendChild(el("div", "mon-subnote", t("logins.none")));
+    return;
+  }
+  data.events.forEach((ev) => {
+    const row = el("div", "user-row" + (ev.success ? "" : " login-failed"));
+    row.appendChild(el("span", "u-tag " + (ev.success ? "ok-tag" : "off"),
+                       t(ev.success ? "logins.ok" : "logins.failed")));
+    row.appendChild(el("span", "u-name", ev.username));
+    if (ev.source) row.appendChild(el("span", "tk-name", ev.source));
+    row.appendChild(el("span", "u-last", (ev.at || "").slice(0, 19).replace("T", " ")));
+    box.appendChild(row);
+  });
+}
+
+// ------------------------------------------------------ scanner matrix
+// What each tool actually looks at. The recurring question has been "why did
+// this tool find nothing", and the answer is nearly always that it was never
+// looking at that kind of thing.
+const TOOL_MATRIX = [
+  ["semgrep", "sast", "code", "matrix.semgrep", true],
+  ["bearer", "sast", "code", "matrix.bearer", true],
+  ["trivy", "sca", "deps+config", "matrix.trivy", true],
+  ["npm_audit", "sca", "deps", "matrix.npm", false],
+  ["osv_scanner", "sca", "deps", "matrix.osv", false],
+  ["gitleaks", "secret", "files", "matrix.gitleaks", true],
+];
+
+function renderToolMatrix() {
+  const table = $("#tool-matrix");
+  if (!table) return;
+  table.innerHTML = "";
+  const head = el("tr");
+  ["matrix.tool", "matrix.kind", "matrix.looksAt", "matrix.finds",
+   "matrix.custom"].forEach((k) => head.appendChild(el("th", null, t(k))));
+  table.appendChild(head);
+
+  const installed = {};
+  ((state.toolsData && state.toolsData.tools) || [])
+    .forEach((tl) => { installed[tl.name] = tl.available; });
+
+  TOOL_MATRIX.forEach(([name, kind, looks, descKey, customisable]) => {
+    const row = el("tr");
+    const nameCell = el("td", "c-name", name);
+    if (installed[name] === false) {
+      nameCell.appendChild(el("span", "u-tag off", t("notInstalled").trim()));
+    }
+    row.appendChild(nameCell);
+    row.appendChild(el("td", null, kind));
+    row.appendChild(el("td", null, looks));
+    row.appendChild(el("td", "matrix-desc", t(descKey)));
+    row.appendChild(el("td", null, t(customisable ? "matrix.yes" : "matrix.no")));
+    table.appendChild(row);
+  });
 }
 
 async function renderSettings() {
   await loadWhoami();
-  await loadTokens();
+  // Independent fetches: one slow or failing panel should not hold up the
+  // rest of the page.
+  await Promise.all([
+    loadTokens(), loadApiPanel(), loadPasswordPolicy(), loadLoginHistory(),
+  ].map((p) => p.catch(() => {})));
+  renderToolMatrix();
   if (AUTH.user && AUTH.user.is_admin) await loadUsers();
 }
 
@@ -623,9 +778,13 @@ function showView(view) {
   $("#view-scan").classList.toggle("hidden", view !== "scan");
   $("#view-report").classList.toggle("hidden", view !== "report");
   $("#view-monitor").classList.toggle("hidden", view !== "monitor");
+  // Settings was missing from this list, so the section stayed hidden and the
+  // tab showed an empty page. Every view must be toggled here, not just the
+  // ones that existed when this function was written.
+  $("#view-settings").classList.toggle("hidden", view !== "settings");
   if (view === "monitor") { renderMonitor(); startMonitorPolling(); }
-  if (view === "settings") renderSettings();
   else stopMonitorPolling();
+  if (view === "settings") renderSettings();
   if (view === "report") refreshScanList(state.selectedJob);
 }
 

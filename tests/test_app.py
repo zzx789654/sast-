@@ -2068,3 +2068,92 @@ def test_login_works_from_a_browser_behind_the_proxy(tmp_path, monkeypatch):
             data={"username": "admin", "password": "admin-password-1234"},
             headers={**proxied, "Origin": "http://evil.example"})
         assert evil.status_code == 403
+
+
+def test_every_view_tab_has_a_section_that_showview_toggles():
+    """A tab whose section is never un-hidden renders an empty page.
+
+    The Settings tab shipped like that: the markup and the handler existed,
+    but showView only toggled the three views that predated it.
+    """
+    import re
+
+    root = Path(__file__).resolve().parents[1] / "app/static"
+    html = (root / "index.html").read_text("utf-8")
+    js = (root / "app.js").read_text("utf-8")
+
+    tabs = set(re.findall(r'class="viewtab[^"]*"[^>]*data-view="(\w+)"', html))
+    tabs |= set(re.findall(r'data-view="(\w+)"[^>]*class="viewtab', html))
+    assert tabs, "no view tabs found; the selector needs updating"
+
+    show_view = js[js.index("function showView(view)"):]
+    show_view = show_view[:show_view.index("\n}")]
+
+    for tab in sorted(tabs):
+        assert f'id="view-{tab}"' in html, f"no section for the {tab} tab"
+        assert f'$("#view-{tab}").classList.toggle' in show_view, (
+            f"showView never un-hides #view-{tab}, so that tab renders blank")
+
+
+# ------------------------------------------------------------ settings tab
+def test_login_attempts_are_recorded(accounts_env):
+    """Failures are the interesting ones: a run of them is somebody guessing."""
+    accounts_env.create_user("hank", "hank-password-1234")
+    accounts_env.record_login("hank", True, "10.0.0.1")
+    accounts_env.record_login("hank", False, "10.0.0.9")
+
+    events = accounts_env.list_login_events()
+    assert [e["success"] for e in events] == [False, True]   # newest first
+    assert events[0]["source"] == "10.0.0.9"
+
+
+def test_login_history_is_bounded(accounts_env, monkeypatch):
+    """An unbounded log on a volume is a slow way to fill a disk."""
+    monkeypatch.setattr(accounts_env, "MAX_LOGIN_EVENTS", 5)
+    for i in range(12):
+        accounts_env.record_login(f"user{i}", True)
+    assert len(accounts_env.list_login_events(limit=100)) == 5
+
+
+def test_a_user_sees_only_their_own_login_history(two_users):
+    """An administrator needs everyone's; a user does not."""
+    admin, user = two_users
+    assert admin.get("/api/auth/logins").json()["scope"] == "all"
+
+    body = user.get("/api/auth/logins").json()
+    assert body["scope"] == "bob"
+    assert all(e["username"] == "bob" for e in body["events"])
+
+
+def test_mcp_config_uses_the_host_the_browser_asked_for(two_users):
+    """Behind nginx, Host is a fixed value, so a config built from it is wrong."""
+    admin, _user = two_users
+    body = admin.get("/api/mcp/config",
+                     headers={"Host": "sast-studio",
+                              "X-Forwarded-Host": "192.168.99.145:8080"}).json()
+    assert body["url"] == "http://192.168.99.145:8080/mcp"
+    # The token is never handed back: it is shown once, at creation.
+    assert "YOUR_TOKEN_HERE" in json.dumps(body["config"])
+
+
+def test_password_policy_is_served_not_guessed(two_users):
+    """The UI states the rules; hard-coding them twice is how they drift."""
+    admin, _user = two_users
+    from app import accounts
+
+    body = admin.get("/api/auth/policy").json()
+    assert body["min_length"] == accounts.MIN_PASSWORD_LEN
+    assert body["session_hours"] == accounts.SESSION_TTL // 3600
+
+
+def test_the_scanner_matrix_covers_every_adapter():
+    """A tool missing from the matrix is the question it exists to answer."""
+    import re
+
+    from app.adapters import ADAPTERS
+
+    js = (Path(__file__).resolve().parents[1] / "app/static/app.js").read_text("utf-8")
+    table = js[js.index("const TOOL_MATRIX"):]
+    table = table[:table.index("];")]
+    for adapter in ADAPTERS:
+        assert f'"{adapter.name}"' in table, f"{adapter.name} is not in the matrix"

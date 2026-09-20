@@ -242,6 +242,11 @@ async def login(request: Request, response: Response,
     from . import accounts
 
     user = accounts.authenticate(username, password)
+    # The client address as the proxy saw it; "unknown" rather than a guess
+    # when there is no proxy header to read.
+    source = (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+              or (request.client.host if request.client else "unknown"))
+    accounts.record_login(username, user is not None, source)
     if user is None:
         # One message for every failure: saying which part was wrong tells an
         # attacker which usernames exist.
@@ -528,6 +533,59 @@ def _origin_allowed(origin: str, request: Request) -> bool:
     same_site = {f"{scheme}://{host}"
                  for host in hosts for scheme in ("http", "https")}
     return origin.rstrip("/") in (allowed | same_site)
+
+
+@app.get("/api/auth/policy")
+async def auth_policy() -> dict:
+    """The password rules, so the UI states them rather than guessing."""
+    from . import accounts
+    return accounts.password_policy()
+
+
+@app.get("/api/auth/logins")
+async def login_history(request: Request, limit: int = 50) -> dict:
+    """Recent sign-in attempts.
+
+    Your own by default. An administrator sees everyone's, because a run of
+    failures against one account is the thing worth noticing and nobody can
+    notice it from inside that account.
+    """
+    from . import accounts
+
+    user = require_user(request)
+    if user is None:
+        raise HTTPException(400, "authentication is disabled")
+    scope = None if user.is_admin else user.username
+    return {"events": accounts.list_login_events(limit, scope),
+            "scope": "all" if user.is_admin else user.username}
+
+
+@app.get("/api/mcp/config")
+async def mcp_config(request: Request) -> dict:
+    """A ready-to-paste MCP client entry for this deployment.
+
+    The token is left as a placeholder: it is shown once at creation and
+    handing it out again from an endpoint would undo that.
+    """
+    require_user(request)
+    host = (request.headers.get("x-forwarded-host", "").split(",")[0].strip()
+            or request.headers.get("host", "localhost:8080"))
+    scheme = "https" if _request_is_https(request) else "http"
+    from . import mcp
+    return {
+        "url": f"{scheme}://{host}/mcp",
+        "protocol_version": mcp.PROTOCOL_VERSION,
+        "tools": [{"name": t["name"], "description": t["description"]}
+                  for t in mcp.TOOLS],
+        "config": {
+            "mcpServers": {
+                "sast-studio": {
+                    "url": f"{scheme}://{host}/mcp",
+                    "headers": {"Authorization": "Bearer YOUR_TOKEN_HERE"},
+                }
+            }
+        },
+    }
 
 
 @app.get("/api/rulesets")

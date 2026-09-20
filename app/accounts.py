@@ -107,6 +107,14 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_tokens_user ON api_tokens(user_id);
             CREATE INDEX IF NOT EXISTS idx_tokens_prefix ON api_tokens(prefix);
+            CREATE TABLE IF NOT EXISTS login_events (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                username    TEXT    NOT NULL,
+                success     INTEGER NOT NULL,
+                source      TEXT    NOT NULL DEFAULT '',
+                at          TEXT    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_login_at ON login_events(at);
             """
         )
 
@@ -142,12 +150,32 @@ def verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(key, bytes.fromhex(key_hex))
 
 
+# Rules a password must satisfy. Length does most of the work: a long
+# passphrase beats a short one with a symbol bolted on, and character-class
+# rules mostly teach people to write "Password1!".
+COMMON_PASSWORDS = {"password", "administrator", "changeme", "sast-studio",
+                    "letmein", "12345678", "qwertyuiop", "password123"}
+
+
+def password_policy() -> dict:
+    """The rules, so the UI can state them instead of guessing."""
+    return {
+        "min_length": MIN_PASSWORD_LEN,
+        "rejects_common": True,
+        "session_hours": int(SESSION_TTL // 3600),
+        "notes": [
+            "length matters more than mixing character classes",
+            "changing a password ends every session and revokes that "
+            "account's API tokens",
+        ],
+    }
+
+
 def check_password_policy(password: str) -> Optional[str]:
     """Return why this password is refused, or None when it is acceptable."""
     if len(password) < MIN_PASSWORD_LEN:
         return f"password must be at least {MIN_PASSWORD_LEN} characters"
-    if password.lower() in {"password", "administrator", "changeme",
-                            "sast-studio", "letmein"}:
+    if password.lower() in COMMON_PASSWORDS:
         return "password is too common"
     return None
 
@@ -275,6 +303,43 @@ def authenticate(username: str, password: str) -> Optional[User]:
         conn.execute("UPDATE users SET last_login = ? WHERE id = ?",
                      (_now(), row["id"]))
     return _row_to_user(row)
+
+
+MAX_LOGIN_EVENTS = 500      # a rolling window, not an archive
+
+
+def record_login(username: str, success: bool, source: str = "") -> None:
+    """Note an attempt, successful or not.
+
+    Failures matter more than successes here: a run of them against one
+    account is what somebody guessing looks like, and without a record there
+    is nothing to notice it in.
+    """
+    with _lock, _connect() as conn:
+        conn.execute(
+            "INSERT INTO login_events (username, success, source, at) "
+            "VALUES (?, ?, ?, ?)",
+            ((username or "")[:64], int(success), (source or "")[:64], _now()))
+        # Keep the table bounded: this is for looking at recent activity, and
+        # an unbounded log on a volume is a slow way to fill a disk.
+        conn.execute(
+            "DELETE FROM login_events WHERE id NOT IN "
+            "(SELECT id FROM login_events ORDER BY id DESC LIMIT ?)",
+            (MAX_LOGIN_EVENTS,))
+
+
+def list_login_events(limit: int = 50, username: Optional[str] = None) -> list[dict]:
+    sql = "SELECT username, success, source, at FROM login_events"
+    args: list = []
+    if username is not None:
+        sql += " WHERE username = ?"
+        args.append(username)
+    sql += " ORDER BY id DESC LIMIT ?"
+    args.append(max(1, min(limit, MAX_LOGIN_EVENTS)))
+    with _connect() as conn:
+        return [{"username": r["username"], "success": bool(r["success"]),
+                 "source": r["source"], "at": r["at"]}
+                for r in conn.execute(sql, args).fetchall()]
 
 
 def start_session(user_id: int) -> str:

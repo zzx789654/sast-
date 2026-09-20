@@ -578,3 +578,25 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 .user-row .u-actions { display: flex; gap: .3rem; flex-wrap: wrap; }
 .btn.small { font-size: .7rem; padding: .12rem .4rem; }
 .user-row .tk-name { color: var(--muted); font-size: .78rem; }
+
+/* ----------------------------------------------------------- settings tab */
+.api-block { margin-top: .7rem; }
+.api-label {
+  font-size: .7rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .02em; color: var(--muted); margin-bottom: .25rem;
+}
+.api-code {
+  margin: 0; padding: .6rem .7rem; overflow-x: auto;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .74rem; line-height: 1.5; color: var(--ink); white-space: pre;
+}
+.pw-policy { display: flex; flex-direction: column; gap: .25rem; margin-top: .3rem; }
+.policy-line { display: flex; gap: .45rem; font-size: .82rem; color: var(--ink); }
+.policy-line .policy-dot { color: var(--muted); }
+.user-row.login-failed { border-left: 2px solid var(--high); }
+.user-row .u-tag.ok-tag { color: var(--ok); border-color: var(--ok); }
+.matrix-wrap { overflow-x: auto; }
+#tool-matrix { width: 100%; }
+#tool-matrix .matrix-desc { color: var(--muted); font-size: .78rem; }
+#tool-matrix .c-name .u-tag { margin-left: .35rem; }

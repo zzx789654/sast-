@@ -176,7 +176,10 @@
 
   <!-- ---- monitor view ------------------------------------------- -->
   <!-- ---- settings view (accounts) ------------------------------- -->
+  <!-- ---- settings view ------------------------------------------ -->
   <section id="view-settings" class="monitor-wrap hidden">
+
+    <!-- 1. the signed-in account, and its tokens -->
     <div class="panel">
       <div class="mon-head">
         <h2 data-i18n="settings.account">我的帳號</h2>
@@ -216,6 +219,56 @@
       <pre id="token-secret" class="rule-result hidden"></pre>
     </div>
 
+    <!-- 2. how to call the API, and the MCP client entry -->
+    <div class="panel">
+      <div class="mon-head">
+        <h2 data-i18n="api.title">API 與 MCP</h2>
+        <button id="mcp-download" class="linkbtn" data-i18n="api.download">下載 MCP 設定</button>
+      </div>
+      <p class="mon-hint" data-i18n="api.hint"></p>
+
+      <div class="api-block">
+        <div class="api-label" data-i18n="api.rest">REST API</div>
+        <pre id="api-curl" class="api-code"></pre>
+      </div>
+
+      <div class="api-block">
+        <div class="api-label" data-i18n="api.mcp">MCP 用戶端設定</div>
+        <pre id="mcp-json" class="api-code"></pre>
+      </div>
+
+      <div class="api-block">
+        <div class="api-label" data-i18n="api.tools">MCP 可用工具</div>
+        <div id="mcp-tools" class="users-list"></div>
+      </div>
+    </div>
+
+    <!-- 3. the password rules, stated rather than guessed at -->
+    <div class="panel">
+      <h2 data-i18n="policy.title">帳號密碼原則</h2>
+      <div id="pw-policy" class="pw-policy"></div>
+    </div>
+
+    <!-- 4. who signed in, and who failed to -->
+    <div class="panel">
+      <div class="mon-head">
+        <h2 data-i18n="logins.title">登入紀錄</h2>
+        <button id="logins-refresh" class="linkbtn" data-i18n="mon.refresh">重新整理</button>
+      </div>
+      <p class="mon-hint" id="logins-scope"></p>
+      <div id="logins-list" class="users-list"></div>
+    </div>
+
+    <!-- 5. what each scanner actually looks at -->
+    <div class="panel">
+      <h2 data-i18n="matrix.title">掃描工具說明</h2>
+      <p class="mon-hint" data-i18n="matrix.hint"></p>
+      <div class="matrix-wrap">
+        <table id="tool-matrix" class="mon-table"></table>
+      </div>
+    </div>
+
+    <!-- administrators only -->
     <div class="panel hidden" id="users-panel">
       <div class="mon-head">
         <h2 data-i18n="settings.users">使用者管理</h2>
@@ -242,6 +295,8 @@
       <p id="users-result" class="rule-result hidden"></p>
     </div>
   </section>
+
+
 
   <section id="view-monitor" class="monitor-wrap hidden">
     <div class="panel">
