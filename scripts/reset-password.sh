@@ -82,7 +82,17 @@ else
 fi
 
 if [ "${GENERATE}" = "1" ]; then
-  PASSWORD="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)Aa1!"
+  # No pipe: whatever reads the tail of /dev/urandom closes the pipe early
+  # and kills the writer with SIGPIPE, which pipefail turns into a fatal
+  # error. Read a bounded chunk, then filter in the shell. The suffix
+  # guarantees the character classes a policy may require, whatever the
+  # random part happened to produce.
+  # base64 rather than raw bytes: command substitution strips null bytes and
+  # warns about them, and /dev/urandom is full of them.
+  RAND="$(head -c 64 /dev/urandom | base64 | LC_ALL=C tr -cd 'A-Za-z0-9')"
+  RAND="${RAND:0:20}"
+  [ ${#RAND} -ge 16 ] || die "could not read randomness from /dev/urandom"
+  PASSWORD="${RAND}Aa1!"
   GENERATED=1
 else
   GENERATED=0

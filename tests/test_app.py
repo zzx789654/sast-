@@ -2358,6 +2358,40 @@ def test_resetting_an_unknown_account_is_refused(accounts_env, monkeypatch,
     assert "admin" in err, "the message should name the accounts that exist"
 
 
+def test_the_generated_password_survives_pipefail(tmp_path):
+    """`tr </dev/urandom | head` dies of SIGPIPE under `set -o pipefail`.
+
+    It failed exactly this way on the VM: the script printed its first line
+    and exited 141 without resetting anything. The generator must not put a
+    reader that stops early at the end of a pipe from /dev/urandom.
+    """
+    import re
+    import shutil
+    import subprocess
+
+    sh = (Path(__file__).resolve().parents[1]
+          / "scripts/reset-password.sh").read_text("utf-8")
+
+    line = next(l for l in sh.splitlines() if "RAND=" in l and "urandom" in l)
+    assert not re.search(r"/dev/urandom.*\|\s*head", line), (
+        "head at the end of a urandom pipe: SIGPIPE kills the writer"
+    )
+
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("no bash available to run the snippet")
+
+    # Run the real generator lines under the same flags the script uses.
+    gen = "\n".join(l for l in sh.splitlines()
+                     if l.strip().startswith(("RAND=", "PASSWORD=\"${RAND}")))
+    script = "set -euo pipefail\n" + gen + '\nprintf "%s" "${PASSWORD}"\n'
+    out = subprocess.run([bash, "-c", script], capture_output=True, text=True)
+
+    assert out.returncode == 0, f"rc={out.returncode} err={out.stderr}"
+    assert len(out.stdout) >= 16, f"short password: {out.stdout!r}"
+    assert not out.stderr.strip(), f"noise on stderr: {out.stderr!r}"
+
+
 def test_the_reset_script_never_takes_the_password_as_an_argument():
     """Arguments show up in ps output and in shell history."""
     sh = (Path(__file__).resolve().parents[1]
