@@ -122,8 +122,20 @@ URL="http://localhost:8080"
 code="$(curl -s -o /dev/null -w '%{http_code}' "${URL}/api/health" || echo 000)"
 [ "${code}" = "200" ] || die "health endpoint returned ${code} -- ./scripts/deploy.sh --rollback"
 
-tools_ok="$(curl -s "${URL}/api/tools" | grep -o '"available": *true' | wc -l | tr -d ' ')"
-echo "  health 200; ${tools_ok}/6 scanners available"
+# /api/tools needs a login once accounts are enabled, so a 401 here is the
+# system working, not a failure. Report the scanner count when it is readable
+# and say why when it is not, rather than failing a healthy deployment.
+tools_code="$(curl -s -o /tmp/sast-tools.$$ -w '%{http_code}' "${URL}/api/tools" || echo 000)"
+if [ "${tools_code}" = "200" ]; then
+  tools_ok="$(grep -o '"available": *true' /tmp/sast-tools.$$ | wc -l | tr -d ' ')"
+  echo "  health 200; ${tools_ok}/6 scanners available"
+elif [ "${tools_code}" = "401" ]; then
+  echo "  health 200; /api/tools requires a sign-in (accounts are enabled)"
+else
+  rm -f /tmp/sast-tools.$$
+  die "/api/tools returned ${tools_code} -- ./scripts/deploy.sh --rollback"
+fi
+rm -f /tmp/sast-tools.$$
 
 # On a first run the application generates an administrator password and
 # prints it once. Surface it here rather than leaving it buried in the log:
