@@ -162,12 +162,27 @@ _upstream_lock = threading.Lock()
 
 
 def _installed_version(name: str) -> str:
+    """The version string the tool reports, or "" when it cannot be read.
+
+    probe() returns (available, version) -- reading it as an object was how
+    this silently reported nothing, because the broad except below hid the
+    AttributeError and every tool looked unversioned.
+    """
     for adapter in ADAPTERS:
-        if adapter.name == name:
-            try:
-                return (adapter.probe().version or "").strip()
-            except Exception:  # noqa: BLE001 - a probe must not break the panel
-                return ""
+        if adapter.name != name:
+            continue
+        try:
+            available, version = adapter.probe()
+        except Exception:  # noqa: BLE001 - a probe must not break the panel
+            return ""
+        if not available:
+            return ""
+        # Tools print things like "osv-scanner version: 1.9.2" or
+        # "Version: 0.74.0"; the number is what matters here.
+        for token in (version or "").replace(":", " ").split():
+            if token and token[0].isdigit():
+                return token.lstrip("v")
+        return (version or "").strip()
     return ""
 
 

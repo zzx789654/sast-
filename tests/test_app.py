@@ -2835,6 +2835,40 @@ def test_a_pinned_tool_reports_whether_a_newer_release_exists(monkeypatch):
     assert "outdated" not in rows["gitleaks"], "a current tool was called outdated"
 
 
+def test_the_installed_version_is_actually_read_from_the_tool(monkeypatch):
+    """It was not: probe() returns (available, version) and the code read
+    .version off the tuple. The broad except swallowed the AttributeError,
+    so every tool reported no version and nothing was ever outdated -- the
+    check looked like it worked and could not fire.
+    """
+    from app import admin
+
+    class FakeAdapter:
+        name = "gitleaks"
+
+        def probe(self):
+            return True, "8.30.1"
+
+    monkeypatch.setattr(admin, "ADAPTERS", [FakeAdapter()])
+    assert admin._installed_version("gitleaks") == "8.30.1"
+
+    # The real tools print a label with the number.
+    class Labelled(FakeAdapter):
+        def probe(self):
+            return True, "osv-scanner version: 1.9.2"
+
+    monkeypatch.setattr(admin, "ADAPTERS", [Labelled()])
+    assert admin._installed_version("gitleaks") == "1.9.2"
+
+    # A tool that is not installed has no version to report.
+    class Missing(FakeAdapter):
+        def probe(self):
+            return False, ""
+
+    monkeypatch.setattr(admin, "ADAPTERS", [Missing()])
+    assert admin._installed_version("gitleaks") == ""
+
+
 def test_an_unreadable_version_is_not_reported_as_outdated(monkeypatch):
     """Saying "out of date" on a version we could not read would send
     somebody rebuilding for nothing."""
