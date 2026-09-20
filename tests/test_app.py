@@ -2397,6 +2397,97 @@ def test_the_package_csv_is_not_readable_by_another_account(two_users):
     assert admin.get(f"/api/scans/{job.id}/packages.csv").status_code == 200
 
 
+# ------------------------------------------------- the user behind a token
+def test_a_token_resolves_to_the_right_user(accounts_env):
+    """row["id"] was the TOKEN's id, not the user's.
+
+    The query selected `t.id, t.token_hash, u.*`: both tables have an "id",
+    and sqlite3.Row returns the first match, so every User built from a
+    bearer token carried the token's id. Everything keyed on user.id was
+    then wrong -- token scoping, and the password-expiry check, which looked
+    up a different row entirely and reported "not expired".
+
+    It only shows once the ids diverge, which needs more tokens than users.
+    """
+    user = accounts_env.create_user("solo", "Solo-Password-1234!")
+    for i in range(7):
+        accounts_env.create_token(user.id, f"noise{i}")
+    _, secret = accounts_env.create_token(user.id, "real")
+
+    resolved = accounts_env.token_user(secret)
+    assert resolved is not None
+    assert resolved.id == user.id, (
+        f"token resolved to id {resolved.id}, the account is {user.id}"
+    )
+    assert resolved.username == "solo"
+
+
+def test_a_token_still_records_when_it_was_used(accounts_env):
+    """The same row rename must not break last_used, which keys on the token."""
+    user = accounts_env.create_user("solo", "Solo-Password-1234!")
+    for i in range(4):
+        accounts_env.create_token(user.id, f"noise{i}")
+    _, secret = accounts_env.create_token(user.id, "real")
+
+    assert accounts_env.token_user(secret) is not None
+    real = next(t for t in accounts_env.list_tokens(user.id) if t.name == "real")
+    assert real.last_used, "last_used was not recorded"
+    # And it marked the right token.
+    others = [t for t in accounts_env.list_tokens(user.id) if t.name != "real"]
+    assert all(not t.last_used for t in others), "it stamped the wrong token"
+
+
+def test_a_token_only_sees_its_own_account_tokens(tmp_path, monkeypatch):
+    """Scoping keys on user.id, so the wrong id scoped to the wrong account."""
+    from fastapi.testclient import TestClient
+
+    from app import accounts
+    from app.config import config
+    from app.main import app
+
+    monkeypatch.setattr(config, "ACCOUNTS_DB", tmp_path / "accounts.db")
+    monkeypatch.setattr(config, "REQUIRE_AUTH", True)
+    accounts.init_db()
+    victim = accounts.create_user("victim", "Victim-Password-123!")
+    attacker = accounts.create_user("attacker", "Attack-Password-123!")
+    for i in range(5):
+        accounts.create_token(victim.id, f"victim{i}")
+    _, secret = accounts.create_token(attacker.id, "mine")
+
+    client = TestClient(app)
+    res = client.get("/api/tokens", headers={"Authorization": f"Bearer {secret}"})
+    assert res.status_code == 200
+    assert [t["name"] for t in res.json()["tokens"]] == ["mine"]
+
+
+def test_a_token_created_via_a_token_belongs_to_the_right_account(tmp_path,
+                                                                  monkeypatch):
+    """Creating one keys on user.id too, so it was attributed to whoever
+    happened to own that id."""
+    from fastapi.testclient import TestClient
+
+    from app import accounts
+    from app.config import config
+    from app.main import app
+
+    monkeypatch.setattr(config, "ACCOUNTS_DB", tmp_path / "accounts.db")
+    monkeypatch.setattr(config, "REQUIRE_AUTH", True)
+    accounts.init_db()
+    accounts.create_user("other", "Other-Password-1234!")
+    mine = accounts.create_user("mine", "Mine-Password-12345!")
+    for i in range(6):
+        accounts.create_token(mine.id, f"noise{i}")
+    _, secret = accounts.create_token(mine.id, "bootstrap")
+
+    client = TestClient(app)
+    res = client.post("/api/tokens", data={"name": "made-via-token"},
+                      headers={"Authorization": f"Bearer {secret}",
+                               "Origin": "http://testserver"})
+    assert res.status_code == 201, res.text
+    made = next(t for t in accounts.list_tokens() if t.name == "made-via-token")
+    assert made.username == "mine"
+
+
 # ------------------------------------------------------- password expiry
 @pytest.fixture()
 def expiring(tmp_path, monkeypatch):

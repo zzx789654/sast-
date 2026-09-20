@@ -629,9 +629,16 @@ def token_user(token: Optional[str]) -> Optional[User]:
         return None
     prefix = token[:PREFIX_LEN]
     with _connect() as conn:
+        # u.* last would still collide: both tables have "id" and sqlite3's
+        # Row returns the FIRST match, so row["id"] was the token's id and
+        # every User built from a token carried the wrong one. Name the
+        # token columns apart and select the user's explicitly.
         rows = conn.execute(
-            "SELECT t.id, t.token_hash, u.* FROM api_tokens t "
-            "JOIN users u ON u.id = t.user_id "
+            "SELECT t.id AS token_id, t.token_hash AS token_hash, "
+            "       u.id AS id, u.username AS username, u.password AS password, "
+            "       u.is_admin AS is_admin, u.disabled AS disabled, "
+            "       u.created_at AS created_at, u.last_login AS last_login "
+            "FROM api_tokens t JOIN users u ON u.id = t.user_id "
             "WHERE t.prefix = ? AND t.revoked = 0 AND u.disabled = 0",
             (prefix,)).fetchall()
 
@@ -640,7 +647,7 @@ def token_user(token: Optional[str]) -> Optional[User]:
         if hmac.compare_digest(given, row["token_hash"]):
             with _lock, _connect() as conn:
                 conn.execute("UPDATE api_tokens SET last_used = ? WHERE id = ?",
-                             (_now(), row["id"]))
+                             (_now(), row["token_id"]))
             return _row_to_user(row)
     return None
 
