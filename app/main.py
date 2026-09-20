@@ -501,13 +501,33 @@ async def mcp_stream() -> Response:
 
 
 def _origin_allowed(origin: str, request: Request) -> bool:
-    """Same host as this request, or explicitly configured."""
+    """Whether this Origin is our own site.
+
+    Host alone is not enough: nginx rewrites it to a fixed value on purpose
+    (so nothing downstream builds links from a header the client controls),
+    which meant every browser form post looked cross-site and logging in was
+    refused. X-Forwarded-Host carries what the browser actually asked for.
+
+    Both are compared, not trusted: an attacker can set X-Forwarded-Host, but
+    doing so only ever makes their Origin match the value they also chose --
+    and a browser will not let a page on evil.example set either header. What
+    this check catches is the browser attaching our cookie to a form on
+    somebody else's page, and for that the browser's own Origin is honest.
+    """
     allowed = {o.strip().rstrip("/") for o in config.MCP_ALLOWED_ORIGINS if o.strip()}
     if "*" in allowed:
         return True
-    host = request.headers.get("host", "")
-    same_host = {f"http://{host}", f"https://{host}"}
-    return origin.rstrip("/") in (allowed | same_host)
+
+    hosts = {request.headers.get("host", "")}
+    forwarded = request.headers.get("x-forwarded-host", "")
+    if forwarded:
+        # Several proxies produce a list; the first is the client's own.
+        hosts.add(forwarded.split(",")[0].strip())
+    hosts.discard("")
+
+    same_site = {f"{scheme}://{host}"
+                 for host in hosts for scheme in ("http", "https")}
+    return origin.rstrip("/") in (allowed | same_site)
 
 
 @app.get("/api/rulesets")

@@ -1455,10 +1455,18 @@ def test_nginx_config_does_not_name_the_host_variable():
     doing it.
     """
     conf = (Path(__file__).resolve().parents[1] / "nginx/nginx.conf").read_text("utf-8")
-    assert "$host" not in conf
-    assert "$http_host" not in conf
-    # The protection itself is still in place.
+    # The Host the backend receives must stay a fixed value, so nothing
+    # downstream can build a link from a header the client controls.
     assert "proxy_set_header Host              sast-studio;" in conf
+    assert "proxy_set_header Host              $host" not in conf
+
+    # X-Forwarded-Host does carry the client's value, deliberately: the CSRF
+    # check needs to know what the browser actually asked for, and rewriting
+    # Host had made every legitimate form post look cross-site. It is compared
+    # against the request's own Origin, never used to build anything.
+    forwarded = [l for l in conf.splitlines() if "$http_host" in l]
+    assert len(forwarded) == 1
+    assert "X-Forwarded-Host" in forwarded[0]
 
 
 # ------------------------------------------------------------ page load speed
@@ -2023,3 +2031,40 @@ def test_mcp_scan_results_are_not_readable_by_another_token(accounts_env, monkey
     assert mcp._read_scan({"scan_id": job.id}, owner)      # the owner may read it
     with pytest.raises(ValueError, match="no scan"):
         mcp._read_scan({"scan_id": job.id}, other)
+
+
+def test_login_works_from_a_browser_behind_the_proxy(tmp_path, monkeypatch):
+    """The CSRF check must not refuse the site's own login form.
+
+    nginx rewrites Host to a fixed value on purpose, so comparing Origin
+    against Host made every legitimate form post look cross-site and nobody
+    could sign in. Two correct fixes collided; this pins the combination.
+    """
+    from fastapi.testclient import TestClient
+
+    from app import accounts
+    from app.config import config
+    from app.main import app
+
+    monkeypatch.setattr(config, "ACCOUNTS_DB", tmp_path / "accounts.db")
+    monkeypatch.setattr(config, "REQUIRE_AUTH", True)
+    accounts.init_db()
+    accounts.create_user("admin", "admin-password-1234", is_admin=True)
+
+    # What the backend sees behind nginx.
+    proxied = {"Host": "sast-studio",
+               "X-Forwarded-Host": "192.168.99.145:8080"}
+
+    with TestClient(app, base_url="http://192.168.99.145:8080") as client:
+        good = client.post(
+            "/api/auth/login",
+            data={"username": "admin", "password": "admin-password-1234"},
+            headers={**proxied, "Origin": "http://192.168.99.145:8080"})
+        assert good.status_code == 200, "the site's own login form was refused"
+
+        # And the protection still works: this is the attack it exists for.
+        evil = client.post(
+            "/api/auth/login",
+            data={"username": "admin", "password": "admin-password-1234"},
+            headers={**proxied, "Origin": "http://evil.example"})
+        assert evil.status_code == 403

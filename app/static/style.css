@@ -110,9 +110,29 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 
 .field { display: block; margin-bottom: .7rem; }
 .field span { display: block; font-size: .82rem; color: var(--muted); margin-bottom: .25rem; }
-.field input[type=text], .field input[type=file] {
-  width: 100%; padding: .5rem .6rem; border: 1px solid var(--line);
+/* Every text-like input, not just [type=text]: a password field, a bare
+   input with no type, and the rule-name box were all falling through to the
+   browser's default white box on a dark page. Listing the types that are not
+   text-like is shorter and does not need revisiting for each new field. */
+.field input:not([type=checkbox]):not([type=radio]),
+.field select,
+.field textarea {
+  width: 100%; box-sizing: border-box;
+  padding: .5rem .6rem; border: 1px solid var(--line);
   border-radius: 8px; background: var(--bg); color: var(--ink);
+  font: inherit;
+}
+.field input:not([type=checkbox]):not([type=radio]):focus,
+.field select:focus,
+.field textarea:focus {
+  outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent);
+}
+.field input::placeholder, .field textarea::placeholder { color: var(--muted); }
+/* The file picker's button is drawn by the browser; give it the same skin. */
+.field input[type=file]::file-selector-button {
+  margin-right: .6rem; padding: .25rem .6rem; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--panel); color: var(--ink); font: inherit;
 }
 .hidden { display: none !important; }
 .note { font-size: .8rem; color: var(--high); }

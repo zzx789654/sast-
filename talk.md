@@ -207,3 +207,16 @@
   - FIND-010：改密碼會撤銷 session，但不會撤銷 API token——而 token 比 session 長壽。已一併撤銷。
 - **教訓**：驗證（authentication）與授權（authorization）是兩件事。我把「加登入」當成一個功能做完了，但登入只回答「你是誰」；「你能做什麼」需要在**每一個有能力的端點**上獨立回答。
 - **影響範圍**：`main.py`、`accounts.py`、`mcp.py`、`source.py`、`config.py`、`models.py`、`orchestrator.py`；測試 144 → 165。
+
+## [2026-09-20] #016 — 登入被自己的 CSRF 防護擋住，以及輸入框樣式
+
+- **使用者回報**：(1) 登入失敗，畫面顯示 `cross-site request refused`；(2) 輸入欄位樣式與網站不符。
+- **問題 1 根因（我兩個修正互相撞到）**：
+  - 第 21 輪修 nginx Host header 時，我把 `proxy_set_header Host` 改成固定值 `sast-studio`。
+  - 第 23 輪加 CSRF 防護時，`_origin_allowed()` 用 `Host` 標頭和 `Origin` 比對。
+  - 結果瀏覽器送 `Origin: http://192.168.99.145:8080`，後端看到的 `Host` 卻是 `sast-studio`——**永遠不相等，所以每一次合法的表單送出都被判定為跨站**。實測重現：帶 Origin 403、不帶 Origin 401。
+- **修法**：nginx 新增 `X-Forwarded-Host $http_host`（瀏覽器實際請求的主機），`_origin_allowed()` 同時比對 `Host` 與 `X-Forwarded-Host`。
+  - **安全性考量**：`X-Forwarded-Host` 是客戶端可控的，但這裡只用於「比對」不用於「建構」——攻擊者設定它只會讓自己的 Origin 對上自己設的值，而瀏覽器不允許 evil.example 上的頁面設定這兩個標頭中的任何一個。CSRF 真正要擋的是「瀏覽器把我們的 cookie 附到別人頁面的表單上」，那種情況下瀏覽器送出的 Origin 是誠實的。
+  - 實測：合法登入 200、來自 evil.example 的登入 403、跨站 POST /api/tokens 403、同源 201。
+- **問題 2 根因**：`style.css` 只寫了 `.field input[type=text]`，所以 `type=password` 和沒寫 type 的 input 都掉回瀏覽器預設白底方框。改為 `input:not([type=checkbox]):not([type=radio])`，並補上 focus 樣式、placeholder 顏色、檔案選擇按鈕樣式。這同時修好了規則編輯器的名稱欄與使用者管理的所有欄位。
+- **測試**：165 → 166（新增「代理後方的瀏覽器登入」回歸測試，同時驗證 CSRF 仍然擋得住）。
