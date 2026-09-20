@@ -325,6 +325,20 @@ Two roles only: administrator and user. An administrator manages accounts; the
 last one cannot be deleted, disabled or demoted, because that click would lock
 everybody out.
 
+### Telling the deployment its own address
+
+The MCP client entry and the `.env` template both say where a tool should
+send its bearer token. Deriving that from the `Host` header would let whoever
+sets the header choose the destination, so set the address explicitly:
+
+```bash
+SAST_PUBLIC_URL=https://sast.example.com
+```
+
+Without it, the host is taken from the request but only if it is in
+`SAST_ALLOWED_HOSTS` (comma separated); anything else falls back rather than
+being echoed into a file somebody will paste into a client.
+
 ### Forgotten password
 
 There is no reset link on the login page: sending one needs mail this

@@ -2265,6 +2265,106 @@ def test_token_creation_says_which_account_it_will_belong_to(accounts_env):
     assert i18n.count('"tokens.createdAs"') == 2, "missing in one language"
 
 
+# ------------------------------------------------ host header in client config
+def _mcp_config(client, **headers):
+    return client.get("/api/mcp/config", headers=headers).json()
+
+
+def test_a_forged_host_header_cannot_redirect_a_token(client, monkeypatch):
+    """The MCP config and .env tell a client where to send a bearer token.
+
+    Building that address from a request header means an attacker who gets a
+    signed-in user to load this endpoint chooses the destination. The header
+    is not in the allow-list, so it must not appear anywhere in the answer.
+    """
+    from app.config import config
+
+    monkeypatch.setattr(config, "ALLOWED_HOSTS", ["sast.internal:8080"])
+    monkeypatch.setattr(config, "PUBLIC_URL", "")
+
+    body = _mcp_config(client, **{"X-Forwarded-Host": "evil.example"})
+    blob = json.dumps(body)
+
+    assert "evil.example" not in blob, "a forged host reached the client config"
+    assert "sast.internal:8080" in blob
+    assert "evil.example" not in body["env_template"]
+
+
+def test_a_configured_public_url_wins_over_any_header(client, monkeypatch):
+    """The deployment's own address is not a matter of opinion."""
+    from app.config import config
+
+    monkeypatch.setattr(config, "PUBLIC_URL", "https://sast.example.com")
+
+    body = _mcp_config(client, **{"X-Forwarded-Host": "evil.example",
+                                       "Host": "evil.example"})
+    assert body["url"] == "https://sast.example.com/mcp"
+    assert "evil.example" not in json.dumps(body)
+
+
+def test_a_host_that_is_not_a_host_is_refused(client, monkeypatch):
+    """Header injection shapes never become part of a generated config."""
+    from app.config import config
+
+    monkeypatch.setattr(config, "ALLOWED_HOSTS", [])
+    monkeypatch.setattr(config, "PUBLIC_URL", "")
+
+    for bad in ["evil.example/path", "evil example", "a" * 300,
+                "evil.example\r\nX-Injected: 1"]:
+        body = _mcp_config(client, **{"X-Forwarded-Host": bad})
+        assert body["url"] == "http://localhost:8080/mcp", (
+            f"{bad!r} was accepted as a host"
+        )
+
+
+def test_the_ordinary_host_still_works(client, monkeypatch):
+    """The hardening must not break the normal case it exists to protect."""
+    from app.config import config
+
+    monkeypatch.setattr(config, "ALLOWED_HOSTS", [])
+    monkeypatch.setattr(config, "PUBLIC_URL", "")
+
+    body = _mcp_config(client, **{"X-Forwarded-Host": "192.168.99.145:8080"})
+    assert body["url"] == "http://192.168.99.145:8080/mcp"
+    assert "SAST_STUDIO_MCP_URL=http://192.168.99.145:8080/mcp" in body["env_template"]
+
+
+def test_no_installer_is_piped_into_a_shell():
+    """`curl ... | sh` runs whatever the URL serves, unpinned and unverified.
+
+    Bearer's installer was fetched from a branch URL and piped straight into
+    sh, in CI and in the local installer. Both now download a pinned release
+    and check its checksum before anything runs.
+    """
+    import re
+
+    root = Path(__file__).resolve().parents[1]
+    for rel in [".github/workflows/ci.yml", "scripts/install-tools.sh",
+                "scripts/fetch-vendor.sh", "scripts/deploy.sh"]:
+        path = root / rel
+        if not path.exists():
+            continue
+        text = path.read_text("utf-8")
+        # Ignore comment lines: they explain why the pattern is avoided.
+        code = "\n".join(l for l in text.splitlines()
+                          if not l.lstrip().startswith("#"))
+        assert not re.search(r"(curl|wget)[^\n|]*\|\s*(sudo\s+)?(ba)?sh\b", code), (
+            f"{rel} pipes a download into a shell"
+        )
+
+
+def test_bearer_is_pinned_and_checksummed():
+    """A pinned version with no checksum is only half the fix."""
+    root = Path(__file__).resolve().parents[1]
+    ci = (root / ".github/workflows/ci.yml").read_text("utf-8")
+    sh = (root / "scripts/install-tools.sh").read_text("utf-8")
+
+    assert "BEARER_VERSION" in ci and "BEARER_SHA256" in ci
+    assert "sha256sum -c -" in ci, "the CI download is not verified"
+    assert "BEARER_VERSION" in sh and "BEARER_SHA256_AMD64" in sh
+    assert "checksum mismatch" in sh, "the local install does not verify"
+
+
 # -------------------------------------------------- forgotten-password reset
 def _reset_helper(monkeypatch, tmp_path, username, password, list_mode="0"):
     """Run scripts/_reset_password.py the way the shell wrapper does."""

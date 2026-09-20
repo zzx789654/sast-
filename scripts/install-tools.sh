@@ -65,10 +65,16 @@ if [ "$(uname -s)" != "Linux" ]; then
   exit 1
 fi
 
+# Pinned like every other scanner. Checksums are the values published in
+# https://github.com/Bearer/bearer/releases/download/v<ver>/checksums.txt
+BEARER_VERSION="${BEARER_VERSION:-2.1.1}"
+BEARER_SHA256_AMD64="6b79d315577fea8305dfe08577bea6ad53852a929cd24de9211d39750a194bbb"
+BEARER_SHA256_ARM64="ef05756d374aeb179534e1bb441cd2c3bd56b8fcf21c693d71078859c6721916"
+
 arch="$(uname -m)"
 case "$arch" in
-  x86_64) OSV_A=amd64; GL_A=x64; TRIVY_A=64bit ;;
-  aarch64|arm64) OSV_A=arm64; GL_A=arm64; TRIVY_A=ARM64 ;;
+  x86_64) OSV_A=amd64; GL_A=x64; TRIVY_A=64bit; BEARER_A=amd64 ;;
+  aarch64|arm64) OSV_A=arm64; GL_A=arm64; TRIVY_A=ARM64; BEARER_A=arm64 ;;
   *) echo "Unsupported Linux architecture: $arch" >&2; exit 1 ;;
 esac
 
@@ -112,13 +118,34 @@ install_trivy() (
   install -m 0755 "${tmp}/trivy" "${BIN_DIR}/trivy"
 )
 
-install_bearer() {
+install_bearer() (
   want bearer || { echo "   already installed: ${BIN_DIR}/bearer"; return 0; }
-  # Bearer's official installer selects the matching Linux release and keeps
-  # the version decision in the upstream project.
-  curl -sSfL https://raw.githubusercontent.com/Bearer/bearer/main/contrib/install.sh \
-    | sh -s -- -b "$BIN_DIR"
-}
+  # Was: curl the installer from the main branch straight into sh. That runs
+  # whatever that URL returns at the moment it is fetched -- an unreviewed
+  # branch, with no version and nothing to check the bytes against. The
+  # release archive is pinned and its checksum is the one Bearer publishes,
+  # so a tampered or truncated download fails instead of executing.
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  archive="bearer_${BEARER_VERSION}_linux_${BEARER_A}.tar.gz"
+  download "https://github.com/Bearer/bearer/releases/download/v${BEARER_VERSION}/${archive}" "${tmp}/${archive}" || return 1
+
+  case "$BEARER_A" in
+    amd64) want_sum="$BEARER_SHA256_AMD64" ;;
+    arm64) want_sum="$BEARER_SHA256_ARM64" ;;
+    *)     want_sum="" ;;
+  esac
+  if [ -n "$want_sum" ] && have sha256sum; then
+    got="$(sha256sum "${tmp}/${archive}" | cut -d' ' -f1)"
+    if [ "$got" != "$want_sum" ]; then
+      echo "   [error] bearer checksum mismatch: expected $want_sum, got $got" >&2
+      return 1
+    fi
+  fi
+
+  tar -xzf "${tmp}/${archive}" -C "$tmp" bearer
+  install -m 0755 "${tmp}/bearer" "${BIN_DIR}/bearer"
+)
 
 run_install "Semgrep" install_semgrep
 if installed npm; then
@@ -130,7 +157,7 @@ fi
 run_install "OSV-Scanner ${OSV_SCANNER_VERSION}" install_osv
 run_install "Gitleaks ${GITLEAKS_VERSION}" install_gitleaks
 run_install "Trivy ${TRIVY_VERSION}" install_trivy
-run_install "Bearer" install_bearer
+run_install "Bearer ${BEARER_VERSION}" install_bearer
 
 echo "==> Installed tools"
 for tool in semgrep bearer trivy npm osv-scanner gitleaks; do

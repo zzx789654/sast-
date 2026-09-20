@@ -7,11 +7,13 @@ import csv
 import io
 import json
 import os
+import re
 from contextlib import asynccontextmanager
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import (FileResponse, JSONResponse, RedirectResponse,
@@ -602,6 +604,44 @@ async def login_history(request: Request, limit: int = 50) -> dict:
             "scope": "all" if user.is_admin else user.username}
 
 
+_HOST_RE = re.compile(r"^[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?$")
+
+
+def _public_origin(request: Request) -> tuple[str, str]:
+    """The scheme and host to put into something the client keeps.
+
+    The bug this closes: these values end up in an MCP client entry and a
+    .env, both of which a person pastes into a tool that will then send a
+    bearer token to whatever address is written there. Working the host out
+    from Host or X-Forwarded-Host means an attacker who gets a signed-in user
+    to load this endpoint with a forged header chooses where that token goes.
+
+    So: a configured address wins outright. Otherwise the header is only
+    accepted if it is in the allow-list, or -- when no list is configured --
+    if it at least looks like a host name. Anything else falls back to a
+    value that is obviously wrong rather than quietly pointing elsewhere.
+    """
+    if config.PUBLIC_URL:
+        parsed = urlparse(config.PUBLIC_URL)
+        if parsed.scheme and parsed.netloc:
+            return parsed.scheme, parsed.netloc
+
+    scheme = "https" if _request_is_https(request) else "http"
+    candidate = (request.headers.get("x-forwarded-host", "").split(",")[0].strip()
+                 or request.headers.get("host", "").strip())
+
+    if not candidate or not _HOST_RE.match(candidate):
+        return scheme, "localhost:8080"
+
+    allowed = config.ALLOWED_HOSTS
+    if allowed and candidate.lower() not in allowed:
+        # A host we do not answer to. Use the first configured name rather
+        # than echoing back what the caller asked for.
+        return scheme, allowed[0]
+
+    return scheme, candidate
+
+
 @app.get("/api/mcp/config")
 async def mcp_config(request: Request) -> dict:
     """A ready-to-paste MCP client entry for this deployment.
@@ -610,9 +650,7 @@ async def mcp_config(request: Request) -> dict:
     handing it out again from an endpoint would undo that.
     """
     require_user(request)
-    host = (request.headers.get("x-forwarded-host", "").split(",")[0].strip()
-            or request.headers.get("host", "localhost:8080"))
-    scheme = "https" if _request_is_https(request) else "http"
+    scheme, host = _public_origin(request)
     from . import mcp
     return {
         "url": f"{scheme}://{host}/mcp",

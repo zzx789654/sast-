@@ -36,6 +36,9 @@ jobs:
       OSV_SCANNER_VERSION: "1.9.2"
       TRIVY_VERSION: "0.74.0"
       GITLEAKS_VERSION: "8.30.1"
+      BEARER_VERSION: "2.1.1"
+      # From https://github.com/Bearer/bearer/releases/download/v2.1.1/checksums.txt
+      BEARER_SHA256: "6b79d315577fea8305dfe08577bea6ad53852a929cd24de9211d39750a194bbb"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
@@ -68,9 +71,17 @@ jobs:
             -C "$RUNNER_TEMP/security-tools" gitleaks
           chmod +x "$RUNNER_TEMP/security-tools/gitleaks"
 
+          # Not `curl ... | sh`: that runs whatever the main branch serves at
+          # the moment of the fetch, unreviewed and unpinned, with nothing to
+          # verify. Same shape as the other three -- pinned release, checksum
+          # checked before anything is executed.
           curl -fsSL --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 600 \
-            https://raw.githubusercontent.com/Bearer/bearer/main/contrib/install.sh \
-            | sh -s -- -b "$RUNNER_TEMP/security-tools"
+            -o "$RUNNER_TEMP/security-tools/bearer.tgz" \
+            "https://github.com/Bearer/bearer/releases/download/v${BEARER_VERSION}/bearer_${BEARER_VERSION}_linux_amd64.tar.gz"
+          echo "${BEARER_SHA256}  $RUNNER_TEMP/security-tools/bearer.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/security-tools/bearer.tgz" \
+            -C "$RUNNER_TEMP/security-tools" bearer
+          chmod +x "$RUNNER_TEMP/security-tools/bearer"
 
       # Findings are reported and uploaded as artifacts. The first rollout is
       # non-blocking so all scanners can complete and the team can set policy

@@ -27,6 +27,12 @@ services:
       # commands on this host, and nothing else establishes who is asking.
       SAST_REQUIRE_AUTH: "true"
       SAST_ACCOUNTS_DB: "/data/accounts/accounts.db"
+      # The address this deployment is reached at. Generated MCP/.env files
+      # tell a client where to send its token, so that address must not be
+      # worked out from a request header the caller controls. Set this to
+      # your own URL; the allow-list below is the fallback when it is unset.
+      SAST_PUBLIC_URL: "${SAST_PUBLIC_URL:-}"
+      SAST_ALLOWED_HOSTS: "${SAST_ALLOWED_HOSTS:-}"
       SAST_ALLOW_LOCAL_PATH: "true"
       SAST_TOOL_TIMEOUT: "900"
       # Monitor tab — per-container CPU/memory. Reads the docker socket that is

@@ -72,6 +72,20 @@ class Config:
         if o.strip()
     ]
 
+    # The address this deployment is reached at, e.g. https://sast.example.com
+    # When set, generated client configs use it instead of working the host
+    # out from request headers, which the client controls.
+    PUBLIC_URL = os.environ.get("SAST_PUBLIC_URL", "").strip().rstrip("/")
+
+    # Host names this deployment answers to. A Host or X-Forwarded-Host that
+    # is not in this list is not put into anything handed back to a client.
+    # Empty means "no list configured"; the host is then still checked for
+    # shape, but cannot be validated against an expected value.
+    ALLOWED_HOSTS = [
+        h.strip().lower() for h in os.environ.get("SAST_ALLOWED_HOSTS", "").split(",")
+        if h.strip()
+    ]
+
     # Force the Secure flag on the session cookie. None means "decide from
     # the request", which is right for a direct connection but wrong behind a
     # proxy that terminates TLS. Set it explicitly on such a deployment.
