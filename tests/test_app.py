@@ -2095,6 +2095,113 @@ def test_every_view_tab_has_a_section_that_showview_toggles():
             f"showView never un-hides #view-{tab}, so that tab renders blank")
 
 
+def test_every_settings_group_has_a_subview():
+    """A sub-tab with no matching panel is the blank-tab bug one level down."""
+    import re
+
+    root = Path(__file__).resolve().parents[1] / "app/static"
+    html = (root / "index.html").read_text("utf-8")
+
+    subtabs = set(re.findall(r'class="subtab[^"]*"\s+data-sub="(\w+)"', html))
+    subviews = set(re.findall(r'class="subview[^"]*"\s+data-sub="(\w+)"', html))
+
+    assert subtabs, "no settings sub-tabs found; the selector needs updating"
+    assert subtabs == subviews, (
+        f"sub-tabs without a panel: {subtabs - subviews}; "
+        f"panels with no tab: {subviews - subtabs}"
+    )
+
+
+def test_settings_panels_survived_the_regrouping():
+    """Every element the settings JS reaches for must still exist.
+
+    Restructuring the markup is exactly when an id quietly disappears and the
+    panel it fed goes silently empty, because $() returning null is guarded
+    for everywhere.
+    """
+    root = Path(__file__).resolve().parents[1] / "app/static"
+    html = (root / "index.html").read_text("utf-8")
+
+    for element_id in [
+        # account
+        "pw-form", "pw-current", "pw-new", "pw-result", "logout-btn",
+        "me-label", "pw-expired",
+        # users (admin)
+        "users-panel", "users-list", "new-user-form", "nu-name", "nu-pass",
+        "nu-admin", "users-refresh",
+        # password policy, read-only summary plus the admin form
+        "pw-policy", "policy-form", "po-min", "po-history", "po-age",
+        "po-idle", "po-upper", "po-lower", "po-digit", "po-symbol",
+        "po-common", "policy-result",
+        # tokens
+        "tokens-list", "new-token-form", "nt-name", "token-secret",
+        # MCP
+        "api-curl", "mcp-json", "mcp-tools", "mcp-download",
+        "env-template", "env-download",
+        # history and matrix
+        "logins-list", "logins-scope", "tool-matrix",
+    ]:
+        assert f'id="{element_id}"' in html, f"#{element_id} is gone"
+
+
+def test_the_open_tab_is_remembered_across_a_reload():
+    """Reloading dropped the user back on Scan every time."""
+    js = (Path(__file__).resolve().parents[1]
+          / "app/static/app.js").read_text("utf-8")
+
+    show_view = js[js.index("function showView(view)"):]
+    show_view = show_view[:show_view.index("\n}")]
+    assert "rememberView(view)" in show_view, "showView does not save the tab"
+
+    assert "localStorage.setItem(VIEW_KEY" in js
+    assert "lastView()" in js, "nothing reads the saved tab back"
+    # Restoring must respect the role gate, or an ordinary account reloading
+    # on Monitor lands on a panel it may not see.
+    assert "visibleViews().includes(wanted)" in js
+
+
+def test_an_ordinary_account_is_not_offered_admin_tabs():
+    """Hiding a door that only returns 403. The server still enforces it."""
+    js = (Path(__file__).resolve().parents[1]
+          / "app/static/app.js").read_text("utf-8")
+
+    fn = js[js.index("function visibleViews()"):]
+    fn = fn[:fn.index("\n}")]
+    assert '"monitor"' in fn, "the function never mentions monitor"
+
+    # The non-admin branch is the last return in the function.
+    non_admin = fn[fn.rindex("return ["):]
+    assert "monitor" not in non_admin, (
+        "an ordinary account is being offered the Monitor tab"
+    )
+    assert "scan" in non_admin and "report" in non_admin
+
+
+def test_the_scanner_matrix_states_network_behaviour():
+    """The custom-rules column was replaced by what each tool sends out."""
+    root = Path(__file__).resolve().parents[1] / "app/static"
+    js = (root / "app.js").read_text("utf-8")
+    i18n = (root / "i18n.js").read_text("utf-8")
+
+    table = js[js.index("const TOOL_MATRIX = ["):]
+    table = table[:table.index("];")]
+
+    assert "matrix.custom" not in js, "the custom-rules column is still there"
+    assert "matrix.network" in js
+
+    # Every tool needs a network entry, in both languages.
+    for tool in ["semgrep", "bearer", "trivy", "npm_audit", "osv_scanner",
+                 "gitleaks"]:
+        assert tool in table, f"{tool} dropped out of the matrix"
+        key = f'"matrix.net.{tool.split("_")[0]}"'
+        assert i18n.count(key) == 2, f"{key} is not in both languages"
+
+    # gitleaks is the one that never leaves the host; that must not be
+    # silently downgraded to "fetches rules" in a later edit.
+    gitleaks_row = table[table.index('["gitleaks"'):]
+    assert '"none"' in gitleaks_row[:gitleaks_row.index("]")]
+
+
 # ------------------------------------------------------------ settings tab
 def test_login_attempts_are_recorded(accounts_env):
     """Failures are the interesting ones: a run of them is somebody guessing."""

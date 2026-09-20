@@ -284,11 +284,18 @@ async def whoami(request: Request) -> dict:
     The UI asks this first so it knows whether to show a login form, a user
     menu, or neither.
     """
+    from . import accounts
+
     user = current_user(request)
     return {
         "auth_required": config.REQUIRE_AUTH,
-        "user": None if user is None else
-                {"username": user.username, "is_admin": user.is_admin},
+        "user": None if user is None else {
+            "username": user.username,
+            "is_admin": user.is_admin,
+            # The UI shows a change-password prompt rather than letting the
+            # person discover the expiry by being refused.
+            "password_expired": accounts.password_expired(user),
+        },
     }
 
 
@@ -542,6 +549,41 @@ async def auth_policy() -> dict:
     return accounts.password_policy()
 
 
+@app.post("/api/auth/policy")
+async def update_auth_policy(request: Request,
+                             min_length: Optional[str] = Form(None),
+                             require_upper: Optional[str] = Form(None),
+                             require_lower: Optional[str] = Form(None),
+                             require_digit: Optional[str] = Form(None),
+                             require_symbol: Optional[str] = Form(None),
+                             reject_common: Optional[str] = Form(None),
+                             history_count: Optional[str] = Form(None),
+                             max_age_days: Optional[str] = Form(None),
+                             idle_minutes: Optional[str] = Form(None)) -> dict:
+    """Change the password rules. Administrators only: it applies to everyone."""
+    from . import accounts
+
+    require_admin(request)
+    changes: dict = {}
+    for key, raw in (("min_length", min_length),
+                     ("history_count", history_count),
+                     ("max_age_days", max_age_days),
+                     ("idle_minutes", idle_minutes)):
+        if raw is not None and raw != "":
+            changes[key] = raw
+    for key, raw in (("require_upper", require_upper),
+                     ("require_lower", require_lower),
+                     ("require_digit", require_digit),
+                     ("require_symbol", require_symbol),
+                     ("reject_common", reject_common)):
+        if raw is not None:
+            changes[key] = _parse_bool(raw, False)
+    try:
+        return accounts.set_policy(changes)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.get("/api/auth/logins")
 async def login_history(request: Request, limit: int = 50) -> dict:
     """Recent sign-in attempts.
@@ -585,6 +627,17 @@ async def mcp_config(request: Request) -> dict:
                 }
             }
         },
+        # A .env alongside the client config, because that is where a token
+        # belongs: a file you do not commit, rather than pasted into a
+        # config that often ends up in a repository.
+        "env_template": (
+            "# SAST Studio\n"
+            "# Create the token in Settings -> API tokens. It is shown once.\n"
+            "# Keep this file out of version control.\n"
+            f"SAST_STUDIO_URL={scheme}://{host}\n"
+            f"SAST_STUDIO_MCP_URL={scheme}://{host}/mcp\n"
+            "SAST_STUDIO_TOKEN=paste-your-token-here\n"
+        ),
     }
 
 

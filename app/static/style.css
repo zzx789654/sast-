@@ -600,3 +600,58 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 #tool-matrix { width: 100%; }
 #tool-matrix .matrix-desc { color: var(--muted); font-size: .78rem; }
 #tool-matrix .c-name .u-tag { margin-left: .35rem; }
+
+/* ---------------------------------------------- settings sub-navigation */
+/* Settings holds four unrelated groups. Showing them all at once meant a
+   password field sat under a full scanner table; one group at a time. */
+.subnav {
+  display: flex; gap: .3rem; flex-wrap: wrap;
+  margin-bottom: .9rem; border-bottom: 1px solid var(--line);
+}
+.subtab {
+  padding: .4rem .85rem; border: none; background: none;
+  color: var(--muted); cursor: pointer; font-size: .86rem;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.subtab:hover { color: var(--ink); }
+.subtab.active {
+  color: var(--accent); font-weight: 600; border-bottom-color: var(--accent);
+}
+.subview { display: flex; flex-direction: column; gap: 1rem; }
+
+/* An expired password is a dead end until it is changed, so it is stated at
+   the top of the account panel rather than discovered on the next refusal. */
+.warn-line {
+  margin: 0 0 .6rem; padding: .5rem .7rem; border-radius: 8px;
+  background: color-mix(in srgb, var(--high) 12%, transparent);
+  border: 1px solid var(--high); color: var(--ink); font-size: .84rem;
+}
+
+/* --------------------------------------------------- password policy form */
+.policy-form { margin-top: .9rem; border-top: 1px solid var(--line); padding-top: .8rem; }
+.policy-grid {
+  display: grid; gap: .7rem;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+.policy-checks {
+  display: flex; flex-wrap: wrap; gap: .5rem 1.1rem; margin: .8rem 0;
+}
+.policy-checks label {
+  display: flex; align-items: center; gap: .35rem;
+  font-size: .84rem; color: var(--ink);
+}
+
+/* ------------------------------------------------ scanner network column */
+/* "Fully offline" is the answer people are looking for before pointing this
+   at private code, so it reads differently from the rest. */
+#tool-matrix .matrix-net { min-width: 15rem; }
+.net-tag {
+  display: inline-block; padding: .1rem .45rem; border-radius: 999px;
+  font-size: .72rem; font-weight: 600; border: 1px solid var(--line);
+  color: var(--muted); margin-bottom: .25rem;
+}
+.net-tag.net-none { color: var(--ok); border-color: var(--ok); }
+.net-tag.net-db { color: var(--high); border-color: var(--high); }
+.net-tag.net-query, .net-tag.net-rules {
+  color: var(--accent); border-color: var(--accent);
+}

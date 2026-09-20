@@ -69,6 +69,14 @@ async function init() {
     // One failing endpoint must not leave the rest of the page empty.
     console.error("startup load failed:", e);
   })));
+
+  // Reopen the tab this browser was last on. It waits for the loads above
+  // because whoami decides which tabs this account may see, and restoring a
+  // tab that is not allowed would land on a hidden panel.
+  const wanted = lastView();
+  if (wanted !== state.view && visibleViews().includes(wanted)) {
+    showView(wanted);
+  }
 }
 
 // --------------------------------------------------------------- accounts
@@ -85,8 +93,13 @@ async function loadWhoami() {
     return;
   }
 
-  const tab = $("#tab-settings");
-  if (tab) tab.classList.toggle("hidden", !AUTH.required);
+  applyRoleVisibility();
+
+  const expired = $("#pw-expired");
+  if (expired) {
+    expired.classList.toggle("hidden",
+                             !(AUTH.user && AUTH.user.password_expired));
+  }
 
   const me = $("#me-label");
   if (me && AUTH.user) {
@@ -168,8 +181,28 @@ function wireTokens() {
   if (refresh) refresh.addEventListener("click", loadTokens);
   const dl = $("#mcp-download");
   if (dl) dl.addEventListener("click", downloadMcpConfig);
+  const env = $("#env-download");
+  if (env) env.addEventListener("click", downloadEnvTemplate);
   const logins = $("#logins-refresh");
   if (logins) logins.addEventListener("click", loadLoginHistory);
+
+  document.querySelectorAll("#settings-nav .subtab").forEach((tab) => {
+    tab.addEventListener("click", () => showSettingsGroup(tab.dataset.sub));
+  });
+
+  const policy = $("#policy-form");
+  if (policy) policy.addEventListener("submit", savePolicy);
+}
+
+// Settings has four groups; only one is on screen at a time, so a password
+// field is never below a full scanner table.
+function showSettingsGroup(name) {
+  document.querySelectorAll("#settings-nav .subtab").forEach((tab) => {
+    tab.classList.toggle("active", tab.dataset.sub === name);
+  });
+  document.querySelectorAll("#view-settings .subview").forEach((box) => {
+    box.classList.toggle("hidden", box.dataset.sub !== name);
+  });
 }
 
 // ------------------------------------------------------- API and MCP panel
@@ -197,6 +230,9 @@ async function loadApiPanel() {
   const json = $("#mcp-json");
   if (json) json.textContent = JSON.stringify(MCP_CONFIG.config, null, 2);
 
+  const envBox = $("#env-template");
+  if (envBox) envBox.textContent = MCP_CONFIG.env_template || "";
+
   const tools = $("#mcp-tools");
   if (tools) {
     tools.innerHTML = "";
@@ -218,6 +254,18 @@ function downloadMcpConfig() {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = "sast-studio-mcp.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function downloadEnvTemplate() {
+  if (!MCP_CONFIG || !MCP_CONFIG.env_template) return;
+  // The token belongs in a file that is not committed, not pasted into a
+  // client config that usually is.
+  const blob = new Blob([MCP_CONFIG.env_template], { type: "text/plain" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "sast-studio.env";
   a.click();
   URL.revokeObjectURL(a.href);
 }
@@ -244,6 +292,57 @@ async function loadPasswordPolicy() {
     row.appendChild(el("span", null, line));
     box.appendChild(row);
   });
+
+  fillPolicyForm(policy);
+}
+
+// The rules apply to everyone, so only an administrator may change them. The
+// form is hidden otherwise -- the server refuses either way.
+function fillPolicyForm(policy) {
+  const form = $("#policy-form");
+  if (!form) return;
+  const admin = !!(AUTH.user && AUTH.user.is_admin);
+  form.classList.toggle("hidden", !admin);
+  if (!admin) return;
+
+  const num = (id, v) => { const f = $(id); if (f) f.value = v; };
+  const chk = (id, v) => { const f = $(id); if (f) f.checked = !!v; };
+  num("#po-min", policy.min_length);
+  num("#po-history", policy.history_count);
+  num("#po-age", policy.max_age_days);
+  num("#po-idle", policy.idle_minutes);
+  chk("#po-upper", policy.require_upper);
+  chk("#po-lower", policy.require_lower);
+  chk("#po-digit", policy.require_digit);
+  chk("#po-symbol", policy.require_symbol);
+  chk("#po-common", policy.reject_common);
+}
+
+async function savePolicy(ev) {
+  ev.preventDefault();
+  const body = new FormData();
+  body.append("min_length", $("#po-min").value);
+  body.append("history_count", $("#po-history").value);
+  body.append("max_age_days", $("#po-age").value);
+  body.append("idle_minutes", $("#po-idle").value);
+  [["require_upper", "#po-upper"], ["require_lower", "#po-lower"],
+   ["require_digit", "#po-digit"], ["require_symbol", "#po-symbol"],
+   ["reject_common", "#po-common"]].forEach(([key, sel]) => {
+    body.append(key, $(sel).checked ? "true" : "false");
+  });
+
+  const res = await fetch("/api/auth/policy", { method: "POST", body });
+  const data = await res.json().catch(() => ({}));
+  const out = $("#policy-result");
+  if (out) {
+    out.textContent = res.ok ? t("policy.saved")
+                             : (data.detail || t("settings.failed"));
+    out.className = "rule-result " + (res.ok ? "ok" : "bad");
+    out.classList.remove("hidden");
+  }
+  // Re-read rather than trusting the form: the server clamps out-of-range
+  // values, so what was saved may not be what was typed.
+  if (res.ok) loadPasswordPolicy();
 }
 
 // ------------------------------------------------------------ login history
@@ -278,16 +377,22 @@ async function loadLoginHistory() {
 }
 
 // ------------------------------------------------------ scanner matrix
-// What each tool actually looks at. The recurring question has been "why did
-// this tool find nothing", and the answer is nearly always that it was never
-// looking at that kind of thing.
+// What each tool looks at, and -- the part that matters before pointing this
+// at private code -- whether it talks to the internet and what it sends.
+// The network column comes from measuring a real scan, not from the docs.
 const TOOL_MATRIX = [
-  ["semgrep", "sast", "code", "matrix.semgrep", true],
-  ["bearer", "sast", "code", "matrix.bearer", true],
-  ["trivy", "sca", "deps+config", "matrix.trivy", true],
-  ["npm_audit", "sca", "deps", "matrix.npm", false],
-  ["osv_scanner", "sca", "deps", "matrix.osv", false],
-  ["gitleaks", "secret", "files", "matrix.gitleaks", true],
+  ["semgrep", "sast", "matrix.looks.code", "matrix.semgrep",
+   "rules", "matrix.net.semgrep"],
+  ["bearer", "sast", "matrix.looks.code", "matrix.bearer",
+   "rules", "matrix.net.bearer"],
+  ["trivy", "sca", "matrix.looks.deps", "matrix.trivy",
+   "db", "matrix.net.trivy"],
+  ["npm_audit", "sca", "matrix.looks.deps", "matrix.npm",
+   "query", "matrix.net.npm"],
+  ["osv_scanner", "sca", "matrix.looks.deps", "matrix.osv",
+   "query", "matrix.net.osv"],
+  ["gitleaks", "secret", "matrix.looks.files", "matrix.gitleaks",
+   "none", "matrix.net.gitleaks"],
 ];
 
 function renderToolMatrix() {
@@ -296,14 +401,14 @@ function renderToolMatrix() {
   table.innerHTML = "";
   const head = el("tr");
   ["matrix.tool", "matrix.kind", "matrix.looksAt", "matrix.finds",
-   "matrix.custom"].forEach((k) => head.appendChild(el("th", null, t(k))));
+   "matrix.network"].forEach((k) => head.appendChild(el("th", null, t(k))));
   table.appendChild(head);
 
   const installed = {};
   ((state.toolsData && state.toolsData.tools) || [])
     .forEach((tl) => { installed[tl.name] = tl.available; });
 
-  TOOL_MATRIX.forEach(([name, kind, looks, descKey, customisable]) => {
+  TOOL_MATRIX.forEach(([name, kind, looksKey, descKey, netKind, netKey]) => {
     const row = el("tr");
     const nameCell = el("td", "c-name", name);
     if (installed[name] === false) {
@@ -311,11 +416,42 @@ function renderToolMatrix() {
     }
     row.appendChild(nameCell);
     row.appendChild(el("td", null, kind));
-    row.appendChild(el("td", null, looks));
+    row.appendChild(el("td", null, t(looksKey)));
     row.appendChild(el("td", "matrix-desc", t(descKey)));
-    row.appendChild(el("td", null, t(customisable ? "matrix.yes" : "matrix.no")));
+
+    // The column that matters when the code is private: offline is called
+    // out, and everything else says what it sends and where.
+    const net = el("td", "matrix-net");
+    net.appendChild(el("span", "net-tag net-" + netKind, t("matrix.net." + netKind)));
+    net.appendChild(el("div", "matrix-desc", t(netKey)));
+    row.appendChild(net);
     table.appendChild(row);
   });
+}
+
+// Which tabs this account may use. The server already refuses what it must;
+// hiding a tab that only ever returns 403 is about not offering a door that
+// does not open, not about the boundary itself.
+function visibleViews() {
+  if (!AUTH.required) return ["scan", "report", "monitor", "settings"];
+  if (AUTH.user && AUTH.user.is_admin) {
+    return ["scan", "report", "monitor", "settings"];
+  }
+  // An ordinary account scans and reads its own reports. Monitoring shows the
+  // host's containers and Settings manages accounts: neither is theirs.
+  return ["scan", "report", "settings"];
+}
+
+function applyRoleVisibility() {
+  const allowed = visibleViews();
+  document.querySelectorAll(".viewtab").forEach((tab) => {
+    const view = tab.dataset.view;
+    const show = allowed.includes(view)
+                 && (view !== "settings" || AUTH.required);
+    tab.classList.toggle("hidden", !show);
+  });
+  // Restoring a hidden tab would leave the page blank, so fall back.
+  if (!allowed.includes(state.view)) showView("scan");
 }
 
 async function renderSettings() {
@@ -771,8 +907,19 @@ function wireViewNav() {
   });
 }
 
+const VIEW_KEY = "sast-view";
+
+function rememberView(view) {
+  try { localStorage.setItem(VIEW_KEY, view); } catch (e) { /* private mode */ }
+}
+
+function lastView() {
+  try { return localStorage.getItem(VIEW_KEY) || "scan"; } catch (e) { return "scan"; }
+}
+
 function showView(view) {
   state.view = view;
+  rememberView(view);
   document.querySelectorAll(".viewtab").forEach((t) =>
     t.classList.toggle("active", t.dataset.view === view));
   $("#view-scan").classList.toggle("hidden", view !== "scan");

@@ -179,120 +179,183 @@
   <!-- ---- settings view ------------------------------------------ -->
   <section id="view-settings" class="monitor-wrap hidden">
 
-    <!-- 1. the signed-in account, and its tokens -->
-    <div class="panel">
-      <div class="mon-head">
-        <h2 data-i18n="settings.account">我的帳號</h2>
-        <span id="me-label" class="admin-state"></span>
+    <!-- Settings grew into seven flat panels, which meant scrolling past the
+         scanner matrix to reach a password field. They are grouped now, with
+         one group open at a time. -->
+    <nav class="subnav" id="settings-nav">
+      <button class="subtab active" data-sub="account" data-i18n="set.group.account">帳號</button>
+      <button class="subtab" data-sub="mcp" data-i18n="set.group.mcp">MCP</button>
+      <button class="subtab" data-sub="logins" data-i18n="set.group.logins">登入紀錄</button>
+      <button class="subtab" data-sub="tools" data-i18n="set.group.tools">掃描工具說明</button>
+    </nav>
+
+    <!-- ====================================================== account -->
+    <div class="subview" data-sub="account">
+
+      <div class="panel">
+        <div class="mon-head">
+          <h2 data-i18n="settings.account">我的帳號</h2>
+          <span id="me-label" class="admin-state"></span>
+        </div>
+        <p id="pw-expired" class="warn-line hidden" data-i18n="settings.pwExpired"></p>
+        <form id="pw-form" class="pw-form">
+          <label class="field">
+            <span data-i18n="settings.currentPw">目前密碼</span>
+            <input id="pw-current" type="password" autocomplete="current-password" required>
+          </label>
+          <label class="field">
+            <span data-i18n="settings.newPw">新密碼</span>
+            <input id="pw-new" type="password" autocomplete="new-password" required>
+          </label>
+          <button type="submit" class="btn" data-i18n="settings.changePw">變更密碼</button>
+        </form>
+        <p id="pw-result" class="rule-result hidden"></p>
+        <div class="admin-actions">
+          <button id="logout-btn" class="btn ghost" data-i18n="settings.logout">登出</button>
+        </div>
       </div>
-      <form id="pw-form" class="pw-form">
-        <label class="field">
-          <span data-i18n="settings.currentPw">目前密碼</span>
-          <input id="pw-current" type="password" autocomplete="current-password" required>
-        </label>
-        <label class="field">
-          <span data-i18n="settings.newPw">新密碼</span>
-          <input id="pw-new" type="password" autocomplete="new-password" required>
-        </label>
-        <button type="submit" class="btn" data-i18n="settings.changePw">變更密碼</button>
-      </form>
-      <p id="pw-result" class="rule-result hidden"></p>
-      <div class="admin-actions">
-        <button id="logout-btn" class="btn ghost" data-i18n="settings.logout">登出</button>
+
+      <!-- administrators only: other people's accounts -->
+      <div class="panel hidden" id="users-panel">
+        <div class="mon-head">
+          <h2 data-i18n="settings.users">使用者管理</h2>
+          <button id="users-refresh" class="linkbtn" data-i18n="mon.refresh">重新整理</button>
+        </div>
+        <p class="mon-hint" data-i18n="settings.usersHint"></p>
+        <div id="users-list" class="users-list"></div>
+
+        <form id="new-user-form" class="new-user-form">
+          <label class="field">
+            <span data-i18n="settings.newUser">新增使用者</span>
+            <input id="nu-name" placeholder="username" autocapitalize="off" required>
+          </label>
+          <label class="field">
+            <span data-i18n="settings.newPw">新密碼</span>
+            <input id="nu-pass" type="password" autocomplete="new-password" required>
+          </label>
+          <label class="nu-admin">
+            <input id="nu-admin" type="checkbox">
+            <span data-i18n="settings.isAdmin">管理員</span>
+          </label>
+          <button type="submit" class="btn" data-i18n="settings.addUser">新增</button>
+        </form>
+        <p id="users-result" class="rule-result hidden"></p>
+      </div>
+
+      <!-- the password rules. Read-only for a user, editable by an admin. -->
+      <div class="panel">
+        <div class="mon-head">
+          <h2 data-i18n="policy.title">帳號密碼原則</h2>
+        </div>
+        <div id="pw-policy" class="pw-policy"></div>
+
+        <form id="policy-form" class="policy-form hidden">
+          <p class="mon-hint" data-i18n="policy.editHint"></p>
+          <div class="policy-grid">
+            <label class="field">
+              <span data-i18n="policy.f.min">最短長度</span>
+              <input id="po-min" type="number" min="8" max="128" required>
+            </label>
+            <label class="field">
+              <span data-i18n="policy.f.history">不可重複前幾組</span>
+              <input id="po-history" type="number" min="0" max="24" required>
+            </label>
+            <label class="field">
+              <span data-i18n="policy.f.age">密碼有效天數（0 = 不過期）</span>
+              <input id="po-age" type="number" min="0" max="3650" required>
+            </label>
+            <label class="field">
+              <span data-i18n="policy.f.idle">閒置登出分鐘（0 = 不限）</span>
+              <input id="po-idle" type="number" min="0" max="10080" required>
+            </label>
+          </div>
+          <div class="policy-checks">
+            <label><input id="po-upper" type="checkbox"> <span data-i18n="policy.f.upper">需大寫</span></label>
+            <label><input id="po-lower" type="checkbox"> <span data-i18n="policy.f.lower">需小寫</span></label>
+            <label><input id="po-digit" type="checkbox"> <span data-i18n="policy.f.digit">需數字</span></label>
+            <label><input id="po-symbol" type="checkbox"> <span data-i18n="policy.f.symbol">需符號</span></label>
+            <label><input id="po-common" type="checkbox"> <span data-i18n="policy.f.common">排除常見密碼</span></label>
+          </div>
+          <button type="submit" class="btn" data-i18n="policy.save">儲存原則</button>
+          <p id="policy-result" class="rule-result hidden"></p>
+        </form>
+      </div>
+
+      <!-- tokens live under the account, because that is what they act as -->
+      <div class="panel">
+        <div class="mon-head">
+          <h2 data-i18n="tokens.title">API 權杖</h2>
+          <button id="tokens-refresh" class="linkbtn" data-i18n="mon.refresh">重新整理</button>
+        </div>
+        <p class="mon-hint" data-i18n="tokens.hint"></p>
+        <div id="tokens-list" class="users-list"></div>
+        <form id="new-token-form" class="new-user-form">
+          <label class="field">
+            <span data-i18n="tokens.name">用途說明</span>
+            <input id="nt-name" placeholder="CI / MCP client" required>
+          </label>
+          <button type="submit" class="btn" data-i18n="tokens.create">建立權杖</button>
+        </form>
+        <pre id="token-secret" class="rule-result hidden"></pre>
       </div>
     </div>
 
-    <div class="panel">
-      <div class="mon-head">
-        <h2 data-i18n="tokens.title">API 權杖</h2>
-        <button id="tokens-refresh" class="linkbtn" data-i18n="mon.refresh">重新整理</button>
-      </div>
-      <p class="mon-hint" data-i18n="tokens.hint"></p>
-      <div id="tokens-list" class="users-list"></div>
-      <form id="new-token-form" class="new-user-form">
-        <label class="field">
-          <span data-i18n="tokens.name">用途說明</span>
-          <input id="nt-name" placeholder="CI / MCP client" required>
-        </label>
-        <button type="submit" class="btn" data-i18n="tokens.create">建立權杖</button>
-      </form>
-      <pre id="token-secret" class="rule-result hidden"></pre>
-    </div>
+    <!-- ========================================================== MCP -->
+    <div class="subview hidden" data-sub="mcp">
+      <div class="panel">
+        <div class="mon-head">
+          <h2 data-i18n="api.title">API 與 MCP</h2>
+          <div class="mon-actions">
+            <button id="mcp-download" class="linkbtn" data-i18n="api.download">下載 MCP 設定</button>
+            <button id="env-download" class="linkbtn" data-i18n="api.downloadEnv">下載 .env 範本</button>
+          </div>
+        </div>
+        <p class="mon-hint" data-i18n="api.hint"></p>
 
-    <!-- 2. how to call the API, and the MCP client entry -->
-    <div class="panel">
-      <div class="mon-head">
-        <h2 data-i18n="api.title">API 與 MCP</h2>
-        <button id="mcp-download" class="linkbtn" data-i18n="api.download">下載 MCP 設定</button>
-      </div>
-      <p class="mon-hint" data-i18n="api.hint"></p>
+        <div class="api-block">
+          <div class="api-label" data-i18n="api.rest">REST API</div>
+          <pre id="api-curl" class="api-code"></pre>
+        </div>
 
-      <div class="api-block">
-        <div class="api-label" data-i18n="api.rest">REST API</div>
-        <pre id="api-curl" class="api-code"></pre>
-      </div>
+        <div class="api-block">
+          <div class="api-label" data-i18n="api.mcp">MCP 用戶端設定</div>
+          <pre id="mcp-json" class="api-code"></pre>
+        </div>
 
-      <div class="api-block">
-        <div class="api-label" data-i18n="api.mcp">MCP 用戶端設定</div>
-        <pre id="mcp-json" class="api-code"></pre>
-      </div>
+        <div class="api-block">
+          <div class="api-label" data-i18n="api.env">.env 範本</div>
+          <p class="mon-hint" data-i18n="api.envHint"></p>
+          <pre id="env-template" class="api-code"></pre>
+        </div>
 
-      <div class="api-block">
-        <div class="api-label" data-i18n="api.tools">MCP 可用工具</div>
-        <div id="mcp-tools" class="users-list"></div>
+        <div class="api-block">
+          <div class="api-label" data-i18n="api.tools">MCP 可用工具</div>
+          <div id="mcp-tools" class="users-list"></div>
+        </div>
       </div>
     </div>
 
-    <!-- 3. the password rules, stated rather than guessed at -->
-    <div class="panel">
-      <h2 data-i18n="policy.title">帳號密碼原則</h2>
-      <div id="pw-policy" class="pw-policy"></div>
-    </div>
-
-    <!-- 4. who signed in, and who failed to -->
-    <div class="panel">
-      <div class="mon-head">
-        <h2 data-i18n="logins.title">登入紀錄</h2>
-        <button id="logins-refresh" class="linkbtn" data-i18n="mon.refresh">重新整理</button>
-      </div>
-      <p class="mon-hint" id="logins-scope"></p>
-      <div id="logins-list" class="users-list"></div>
-    </div>
-
-    <!-- 5. what each scanner actually looks at -->
-    <div class="panel">
-      <h2 data-i18n="matrix.title">掃描工具說明</h2>
-      <p class="mon-hint" data-i18n="matrix.hint"></p>
-      <div class="matrix-wrap">
-        <table id="tool-matrix" class="mon-table"></table>
+    <!-- ================================================ login history -->
+    <div class="subview hidden" data-sub="logins">
+      <div class="panel">
+        <div class="mon-head">
+          <h2 data-i18n="logins.title">登入紀錄</h2>
+          <button id="logins-refresh" class="linkbtn" data-i18n="mon.refresh">重新整理</button>
+        </div>
+        <p class="mon-hint" id="logins-scope"></p>
+        <div id="logins-list" class="users-list"></div>
       </div>
     </div>
 
-    <!-- administrators only -->
-    <div class="panel hidden" id="users-panel">
-      <div class="mon-head">
-        <h2 data-i18n="settings.users">使用者管理</h2>
-        <button id="users-refresh" class="linkbtn" data-i18n="mon.refresh">重新整理</button>
+    <!-- ================================================ scanner matrix -->
+    <div class="subview hidden" data-sub="tools">
+      <div class="panel">
+        <h2 data-i18n="matrix.title">掃描工具說明</h2>
+        <p class="mon-hint" data-i18n="matrix.hint"></p>
+        <div class="matrix-wrap">
+          <table id="tool-matrix" class="mon-table"></table>
+        </div>
       </div>
-      <p class="mon-hint" data-i18n="settings.usersHint"></p>
-      <div id="users-list" class="users-list"></div>
-
-      <form id="new-user-form" class="new-user-form">
-        <label class="field">
-          <span data-i18n="settings.newUser">新增使用者</span>
-          <input id="nu-name" placeholder="username" autocapitalize="off" required>
-        </label>
-        <label class="field">
-          <span data-i18n="settings.newPw">新密碼</span>
-          <input id="nu-pass" type="password" autocomplete="new-password" required>
-        </label>
-        <label class="nu-admin">
-          <input id="nu-admin" type="checkbox">
-          <span data-i18n="settings.isAdmin">管理員</span>
-        </label>
-        <button type="submit" class="btn" data-i18n="settings.addUser">新增</button>
-      </form>
-      <p id="users-result" class="rule-result hidden"></p>
     </div>
   </section>
 
