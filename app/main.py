@@ -58,12 +58,17 @@ async def system_status() -> dict:
 
 
 @app.get("/api/admin/status")
-async def admin_status(request: Request) -> dict:
-    """State of the operator panel: any job running, and what can be updated."""
+async def admin_status(request: Request, check_upstream: bool = False) -> dict:
+    """State of the operator panel: any job running, and what can be updated.
+
+    `check_upstream` asks GitHub whether a newer release of each pinned tool
+    exists. Off by default because the panel polls, and the answer changes
+    about as often as a release is cut.
+    """
     from . import admin
 
     require_admin(request)
-    return admin.status()
+    return await run_in_threadpool(admin.status, check_upstream)
 
 
 @app.post("/api/admin/update-tools")

@@ -1021,6 +1021,16 @@ function wireViewNav() {
     });
   });
   $("#mon-refresh").addEventListener("click", renderMonitor);
+  const checkBtn = $("#admin-check-versions");
+  if (checkBtn) {
+    checkBtn.addEventListener("click", async () => {
+      checkBtn.disabled = true;
+      // loadAdminStatus fetches for itself, so ask it to include the check.
+      await loadAdminStatus(true);
+      checkBtn.disabled = false;
+    });
+  }
+
   $("#admin-update").addEventListener("click", runToolUpdate);
   $("#admin-restart").addEventListener("click", runRestart);
   $("#report-refresh").addEventListener("click", () => refreshScanList(state.selectedJob));
@@ -1090,10 +1100,13 @@ async function renderMonitor() {
 // Updating the scanners and restarting run on the server, so the panel makes
 // the state obvious: buttons disable while a job runs, output streams into the
 // log, and a restart says plainly that it drops scan history.
-async function loadAdminStatus() {
+async function loadAdminStatus(checkUpstream) {
   let d;
   try {
-    d = await (await fetch("/api/admin/status")).json();
+    // The upstream release check is a network call, so it is only made when
+    // asked for, not on every poll of this panel.
+    const url = "/api/admin/status" + (checkUpstream ? "?check_upstream=true" : "");
+    d = await (await fetch(url)).json();
   } catch (e) {
     return;
   }
@@ -1125,6 +1138,28 @@ async function loadAdminStatus() {
     note.textContent = "";
     if (inPlace.length) note.textContent += t("admin.canUpdate", { list: inPlace.join(", ") });
     if (pinned.length) note.textContent += " " + t("admin.pinned", { list: pinned.join(", ") });
+  }
+
+  // "needs a rebuild" leaves the useful question unanswered: does it need
+  // one now? Shown only once the versions have actually been fetched.
+  const versions = $("#admin-versions");
+  if (versions) {
+    const known = (d.tools_available || []).filter((x) => x.latest);
+    versions.innerHTML = "";
+    versions.classList.toggle("hidden", !known.length);
+    known.forEach((x) => {
+      const row = el("div", "av-row" + (x.outdated ? " av-old" : ""));
+      row.appendChild(el("span", "av-name", x.name));
+      row.appendChild(el("span", "av-have", x.installed || "?"));
+      if (x.outdated) {
+        row.appendChild(el("span", "av-arrow", "\u2192"));
+        row.appendChild(el("span", "av-new", x.latest));
+        row.appendChild(el("span", "av-tag", t("admin.needsRebuild")));
+      } else {
+        row.appendChild(el("span", "av-ok", t("admin.current")));
+      }
+      versions.appendChild(row);
+    });
   }
 
   // Say what the update actually did. Without this the user has to find

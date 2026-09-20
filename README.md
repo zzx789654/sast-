@@ -472,6 +472,24 @@ someone's browser (DNS rebinding). Same-host is allowed automatically; set
 
 ## Keeping the scanners up to date
 
+Only two of the six can be updated from the Monitor tab, and the reason is
+how they are installed rather than a shortcut:
+
+| tool | updates in place? | why |
+|---|---|---|
+| semgrep | yes | a pip package, so `pip install --upgrade` works |
+| trivy | its database | the binary is pinned; `--download-db-only` refreshes the part that changes daily |
+| bearer, gitleaks, osv-scanner | no | pinned binaries in `/usr/local/bin`, which the app's account cannot write, and none of them has a self-update command |
+| npm_audit | no | npm's global install needs root, and the advisories come from the registry at scan time anyway |
+
+For the four that cannot, **Check versions** asks GitHub for the newest
+release of each and says whether the pinned one is behind. Changing it means
+editing the `ARG`s at the top of the `Dockerfile` (and the matching defaults
+in `scripts/fetch-vendor.sh`) and rebuilding -- which is the point of pinning
+them: the version that ships is one somebody chose and checksummed.
+
+
+
 - **Vulnerability data updates itself.** Trivy pulls its DB, OSV-Scanner queries
   OSV.dev and npm audit queries the npm registry at scan time, so CVE/advisory
   freshness is automatic — only the tool *binaries* need version management.

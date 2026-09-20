@@ -144,17 +144,102 @@ def _update_commands(tools: list[str]) -> list[tuple[str, list[str]]]:
     return cmds
 
 
-def updatable_tools() -> list[dict]:
-    """Which tools can be updated from here, and which need an image rebuild."""
+#: Where each pinned tool's releases are published. Only used to ask "is
+#: there a newer one", never to download anything: the version that gets
+#: installed is the one pinned in the Dockerfile, reviewed and checksummed.
+UPSTREAM = {
+    "gitleaks": "gitleaks/gitleaks",
+    "osv_scanner": "google/osv-scanner",
+    "bearer": "Bearer/bearer",
+    "trivy": "aquasecurity/trivy",
+}
+
+#: Latest known upstream versions, refreshed at most this often. A release
+#: check is not worth a network round trip on every poll of the panel.
+_UPSTREAM_TTL = 6 * 3600
+_upstream_cache: dict = {"at": 0.0, "versions": {}}
+_upstream_lock = threading.Lock()
+
+
+def _installed_version(name: str) -> str:
+    for adapter in ADAPTERS:
+        if adapter.name == name:
+            try:
+                return (adapter.probe().version or "").strip()
+            except Exception:  # noqa: BLE001 - a probe must not break the panel
+                return ""
+    return ""
+
+
+def _latest_upstream() -> dict:
+    """The newest published release of each pinned tool, cached.
+
+    Best effort: no network, a rate limit or a changed API all mean "we do
+    not know", which the UI shows as nothing rather than as "up to date".
+    """
+    with _upstream_lock:
+        fresh = time.time() - _upstream_cache["at"] < _UPSTREAM_TTL
+        if fresh and _upstream_cache["versions"]:
+            return dict(_upstream_cache["versions"])
+
+    import json as _json
+    import urllib.request
+
+    found = {}
+    for name, repo in UPSTREAM.items():
+        try:
+            req = urllib.request.Request(
+                f"https://api.github.com/repos/{repo}/releases/latest",
+                headers={"Accept": "application/vnd.github+json",
+                         "User-Agent": "sast-studio"})
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                tag = _json.load(resp).get("tag_name") or ""
+            if tag:
+                found[name] = tag.lstrip("v")
+        except Exception:  # noqa: BLE001 - offline is a normal state here
+            continue
+
+    with _upstream_lock:
+        if found:
+            _upstream_cache["versions"] = found
+            _upstream_cache["at"] = time.time()
+    return found
+
+
+def _version_tuple(text: str) -> tuple:
+    parts = []
+    for chunk in (text or "").split("."):
+        digits = "".join(c for c in chunk if c.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts[:4])
+
+
+def updatable_tools(check_upstream: bool = False) -> list[dict]:
+    """Which tools can be updated from here, and which need an image rebuild.
+
+    The panel used to say only "this one needs a rebuild", which leaves the
+    obvious question unanswered: does it need one *now*? So each pinned tool
+    also reports what is installed and what the newest release is.
+    """
+    latest = _latest_upstream() if check_upstream else {}
     out = []
     for adapter in ADAPTERS:
         name = adapter.name
         in_place = bool(_update_commands([name]))
-        out.append({
+        row = {
             "name": name,
             "in_place": in_place,
             "note": "" if in_place else "pinned binary — rebuild the image to change its version",
-        })
+        }
+        if name in latest:
+            installed = _installed_version(name)
+            row["installed"] = installed
+            row["latest"] = latest[name]
+            # Only claim an upgrade when both versions parsed; an unreadable
+            # version string must not be reported as out of date.
+            if installed and _version_tuple(installed) < _version_tuple(latest[name]):
+                row["outdated"] = True
+        out.append(row)
     return out
 
 
@@ -335,9 +420,9 @@ def restart_app(delay: float = 0.5) -> dict:
     return {"restarting": True, "delay_seconds": delay}
 
 
-def status() -> dict:
+def status(check_upstream: bool = False) -> dict:
     """Everything the Monitor tab needs to render the operator panel."""
     snap = state.snapshot()
-    snap["tools_available"] = updatable_tools()
+    snap["tools_available"] = updatable_tools(check_upstream)
     snap["restart_note"] = "restarting clears scan history (jobs are kept in memory)"
     return snap

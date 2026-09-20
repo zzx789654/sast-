@@ -767,3 +767,19 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
   border: 1px dashed var(--line); border-radius: 999px; padding: .05rem .5rem;
 }
 .ftriage .tri-note { font-size: .72rem; color: var(--muted); margin-left: .4rem; }
+
+/* Installed vs latest for the pinned scanners. "Needs a rebuild" is only
+   useful next to whether it needs one now. */
+.admin-versions { display: flex; flex-direction: column; gap: .2rem; margin-top: .5rem; }
+.av-row {
+  display: flex; align-items: center; gap: .45rem;
+  font-size: .78rem; color: var(--muted);
+}
+.av-row .av-name { font-weight: 600; color: var(--ink); min-width: 7rem; }
+.av-row .av-have, .av-row .av-new { font-family: ui-monospace, monospace; }
+.av-row.av-old .av-new { color: var(--high); font-weight: 600; }
+.av-row .av-tag {
+  font-size: .68rem; border: 1px solid var(--high); color: var(--high);
+  border-radius: 999px; padding: 0 .4rem;
+}
+.av-row .av-ok { color: var(--ok); }

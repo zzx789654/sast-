@@ -2789,6 +2789,85 @@ def test_the_ui_key_matches_the_backend_key():
     assert finding_key(_finding(Severity.HIGH)) == "semgrep|r1|a.py|1"
 
 
+# ------------------------------------------------ what can actually update
+def test_only_the_tools_that_can_update_in_place_are_offered():
+    """Four of the six are pinned binaries in the image.
+
+    Verified on the deployment rather than assumed: /usr/local/bin is not
+    writable by the account the app runs as, npm's global install fails for
+    the same reason, and gitleaks, osv-scanner and bearer have no
+    self-update command at all. So offering an update button for them would
+    promise something that cannot happen.
+    """
+    from app.admin import _update_commands
+
+    assert _update_commands(["semgrep"]), "semgrep is a pip package; it can update"
+    for pinned in ["bearer", "gitleaks", "osv_scanner", "npm_audit"]:
+        assert not _update_commands([pinned]), (
+            f"{pinned} is a pinned binary and cannot be updated in place"
+        )
+
+
+def test_an_unknown_tool_cannot_smuggle_in_a_command():
+    """The update runs shell commands, so the name has to be a known one."""
+    from app.admin import _update_commands
+
+    assert _update_commands(["; rm -rf /"]) == []
+    assert _update_commands(["semgrep; whoami"]) == []
+
+
+def test_a_pinned_tool_reports_whether_a_newer_release_exists(monkeypatch):
+    """"Needs a rebuild" does not say whether it needs one now.
+
+    osv-scanner sat at 1.9.2 while 2.6.0 was current and nothing said so.
+    """
+    from app import admin
+
+    monkeypatch.setattr(admin, "_latest_upstream",
+                        lambda: {"osv_scanner": "2.6.0", "gitleaks": "8.30.1"})
+    monkeypatch.setattr(admin, "_installed_version",
+                        lambda name: {"osv_scanner": "1.9.2",
+                                      "gitleaks": "8.30.1"}.get(name, ""))
+
+    rows = {r["name"]: r for r in admin.updatable_tools(check_upstream=True)}
+    assert rows["osv_scanner"]["outdated"] is True
+    assert rows["osv_scanner"]["latest"] == "2.6.0"
+    assert "outdated" not in rows["gitleaks"], "a current tool was called outdated"
+
+
+def test_an_unreadable_version_is_not_reported_as_outdated(monkeypatch):
+    """Saying "out of date" on a version we could not read would send
+    somebody rebuilding for nothing."""
+    from app import admin
+
+    monkeypatch.setattr(admin, "_latest_upstream", lambda: {"gitleaks": "8.30.1"})
+    monkeypatch.setattr(admin, "_installed_version", lambda name: "")
+
+    rows = {r["name"]: r for r in admin.updatable_tools(check_upstream=True)}
+    assert "outdated" not in rows["gitleaks"]
+
+
+def test_the_upstream_check_is_skipped_by_default(monkeypatch):
+    """The panel polls; a release check per poll would be a network call
+    every few seconds for an answer that changes weekly."""
+    from app import admin
+
+    called = []
+    monkeypatch.setattr(admin, "_latest_upstream",
+                        lambda: called.append(1) or {})
+    admin.updatable_tools()
+    assert not called, "the upstream check ran without being asked for"
+
+
+def test_version_comparison_handles_a_major_bump():
+    from app.admin import _version_tuple
+
+    assert _version_tuple("1.9.2") < _version_tuple("2.6.0")
+    # Not a string compare: "1.9" must not beat "1.10".
+    assert _version_tuple("1.9.0") < _version_tuple("1.10.0")
+    assert _version_tuple("v8.30.1".lstrip("v")) == (8, 30, 1)
+
+
 # ------------------------------------------------------- password expiry
 @pytest.fixture()
 def expiring(tmp_path, monkeypatch):
