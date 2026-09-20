@@ -150,9 +150,15 @@ jobs:
 
       - name: Publish security scan reports
         if: always()
+        # Storing the reports is convenience, not the gate. A full artifact
+        # quota once reported the security job as failed when the scan had
+        # actually passed, which is the opposite of useful.
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: security-scan-reports
           path: reports/
           if-no-files-found: warn
-          retention-days: 14
+          # Short: these are a debugging aid for one run, not a record. The
+          # full history is in the job log.
+          retention-days: 7
