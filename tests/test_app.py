@@ -2852,13 +2852,19 @@ def test_the_installed_version_is_actually_read_from_the_tool(monkeypatch):
     monkeypatch.setattr(admin, "ADAPTERS", [FakeAdapter()])
     assert admin._installed_version("gitleaks") == "8.30.1"
 
-    # The real tools print a label with the number.
-    class Labelled(FakeAdapter):
-        def probe(self):
-            return True, "osv-scanner version: 1.9.2"
+    # Each tool prints the number in its own way, with its own punctuation.
+    for reported, expected in [
+        ("osv-scanner version: 1.9.2", "1.9.2"),
+        ("bearer version 2.1.1, build 600e551c", "2.1.1"),   # trailing comma
+        ("Version: 0.74.0", "0.74.0"),
+        ("v1.2.3", "1.2.3"),
+    ]:
+        class Labelled(FakeAdapter):
+            def probe(self, _r=reported):
+                return True, _r
 
-    monkeypatch.setattr(admin, "ADAPTERS", [Labelled()])
-    assert admin._installed_version("gitleaks") == "1.9.2"
+        monkeypatch.setattr(admin, "ADAPTERS", [Labelled()])
+        assert admin._installed_version("gitleaks") == expected, reported
 
     # A tool that is not installed has no version to report.
     class Missing(FakeAdapter):

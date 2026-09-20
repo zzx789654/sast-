@@ -179,9 +179,12 @@ def _installed_version(name: str) -> str:
             return ""
         # Tools print things like "osv-scanner version: 1.9.2" or
         # "Version: 0.74.0"; the number is what matters here.
-        for token in (version or "").replace(":", " ").split():
-            if token and token[0].isdigit():
-                return token.lstrip("v")
+        # bearer prints "bearer version 2.1.1, build <sha>", so the number
+        # arrives with punctuation attached.
+        for token in (version or "").replace(":", " ").replace(",", " ").split():
+            candidate = token.lstrip("vV").rstrip(".,;")
+            if candidate and candidate[0].isdigit():
+                return candidate
         return (version or "").strip()
     return ""
 
