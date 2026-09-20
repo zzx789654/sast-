@@ -1280,7 +1280,9 @@ def test_rulesets_endpoint_never_offers_auto(client):
     ids = [r["id"] for r in body["semgrep"]]
     assert "auto" not in ids
     assert "p/default" in ids and "p/owasp-top-ten" in ids
-    assert body["default"] == ["p/default", "p/owasp-top-ten"]
+    # Every published ruleset is on by default: semgrep unions them, so more
+    # rulesets means more coverage rather than a different set.
+    assert body["default"] == ids
 
 
 def test_unknown_rulesets_are_dropped(client, tmp_path, monkeypatch):
@@ -1549,3 +1551,257 @@ def test_monitor_tab_survives_a_response_without_config():
     # Never dereference .config directly; it must be guarded.
     assert "state.toolsData.config.allow_local_path" not in load
     assert "state.toolsData.config || {}" in load
+
+
+# ====================================================================
+# accounts, tokens and MCP
+# ====================================================================
+@pytest.fixture()
+def accounts_env(tmp_path, monkeypatch):
+    """A fresh account store per test, so none of them share state."""
+    from app import accounts
+    from app.config import config
+
+    monkeypatch.setattr(config, "ACCOUNTS_DB", tmp_path / "accounts.db")
+    accounts.init_db()
+    return accounts
+
+
+def test_passwords_are_hashed_not_stored(accounts_env):
+    """A stolen database must not hand over anyone's password."""
+    user = accounts_env.create_user("alice", "a-long-enough-password")
+    import sqlite3
+
+    with sqlite3.connect(accounts_env._db_path()) as conn:
+        stored = conn.execute("SELECT password FROM users WHERE id = ?",
+                              (user.id,)).fetchone()[0]
+    assert "a-long-enough-password" not in stored
+    assert stored.startswith("scrypt$")
+    # The parameters travel with the hash so the cost can be raised later
+    # without invalidating every existing password.
+    assert stored.split("$")[1] == str(accounts_env.SCRYPT_N)
+    assert accounts_env.verify_password("a-long-enough-password", stored)
+    assert not accounts_env.verify_password("wrong", stored)
+
+
+def test_authenticate_rejects_wrong_password_and_disabled_users(accounts_env):
+    user = accounts_env.create_user("bob", "bob-password-1234")
+    assert accounts_env.authenticate("bob", "bob-password-1234") is not None
+    assert accounts_env.authenticate("bob", "nope") is None
+    assert accounts_env.authenticate("nobody", "anything") is None
+
+    accounts_env.create_user("admin", "admin-password-x1", is_admin=True)
+    accounts_env.set_disabled(user.id, True)
+    assert accounts_env.authenticate("bob", "bob-password-1234") is None
+
+
+def test_the_last_administrator_cannot_be_removed(accounts_env):
+    """Otherwise a single click locks everybody out of the deployment."""
+    admin = accounts_env.create_user("admin", "admin-password-x1", is_admin=True)
+
+    with pytest.raises(ValueError, match="last"):
+        accounts_env.set_disabled(admin.id, True)
+    with pytest.raises(ValueError, match="last"):
+        accounts_env.set_admin(admin.id, False)
+    with pytest.raises(ValueError, match="last"):
+        accounts_env.delete_user(admin.id)
+
+    # With a second administrator, the first may go.
+    accounts_env.create_user("admin2", "another-password-1", is_admin=True)
+    accounts_env.set_disabled(admin.id, True)
+
+
+def test_changing_a_password_ends_every_session(accounts_env):
+    """A password is usually changed because it leaked."""
+    user = accounts_env.create_user("carol", "carol-password-12")
+    token = accounts_env.start_session(user.id)
+    assert accounts_env.session_user(token) is not None
+
+    accounts_env.set_password(user.id, "carol-new-password-9")
+    assert accounts_env.session_user(token) is None
+
+
+def test_api_token_is_bound_to_its_user(accounts_env):
+    """A token is that person acting, so it follows their account."""
+    accounts_env.create_user("admin", "admin-password-x1", is_admin=True)
+    user = accounts_env.create_user("dave", "dave-password-1234")
+    record, secret = accounts_env.create_token(user.id, "ci")
+
+    assert accounts_env.token_user(secret).username == "dave"
+
+    accounts_env.set_disabled(user.id, True)
+    assert accounts_env.token_user(secret) is None, "a disabled user's token must die"
+
+    accounts_env.set_disabled(user.id, False)
+    assert accounts_env.token_user(secret) is not None
+
+    accounts_env.revoke_token(record.id)
+    assert accounts_env.token_user(secret) is None
+
+
+def test_token_secret_is_not_recoverable(accounts_env):
+    """Only a hash is stored, so "show it again" is impossible by design."""
+    user = accounts_env.create_user("erin", "erin-password-1234")
+    record, secret = accounts_env.create_token(user.id, "mcp")
+
+    import sqlite3
+
+    with sqlite3.connect(accounts_env._db_path()) as conn:
+        row = conn.execute("SELECT token_hash FROM api_tokens WHERE id = ?",
+                           (record.id,)).fetchone()
+    assert secret not in row[0]
+    # Listing never carries the secret either.
+    assert all(not hasattr(tk, "token") for tk in accounts_env.list_tokens())
+
+
+def test_a_user_cannot_revoke_someone_elses_token(accounts_env):
+    one = accounts_env.create_user("f1", "f1-password-12345")
+    two = accounts_env.create_user("f2", "f2-password-12345")
+    record, secret = accounts_env.create_token(one.id, "theirs")
+
+    assert accounts_env.revoke_token(record.id, user_id=two.id) is False
+    assert accounts_env.token_user(secret) is not None
+    assert accounts_env.revoke_token(record.id, user_id=one.id) is True
+
+
+def test_first_admin_password_is_generated_not_fixed(accounts_env, monkeypatch):
+    """A fixed default would be a backdoor on every deployment."""
+    monkeypatch.delenv("SAST_ADMIN_PASSWORD", raising=False)
+    password = accounts_env.ensure_first_admin()
+    assert password and len(password) >= 20
+
+    # Runs once: a second call must not reset the account.
+    assert accounts_env.ensure_first_admin() is None
+
+
+# ------------------------------------------------------------------- MCP
+def test_mcp_refuses_an_unknown_method():
+    from app import mcp
+
+    reply = mcp.handle({"jsonrpc": "2.0", "id": 1, "method": "nope"}, None)
+    assert reply["error"]["code"] == mcp.METHOD_NOT_FOUND
+
+
+def test_mcp_notification_gets_no_reply():
+    """A JSON-RPC notification has no id and must not be answered."""
+    from app import mcp
+
+    assert mcp.handle({"jsonrpc": "2.0", "method": "notifications/initialized"},
+                      None) is None
+
+
+def test_mcp_initialize_reports_the_protocol_version():
+    from app import mcp
+
+    reply = mcp.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize"}, None)
+    assert reply["result"]["protocolVersion"] == mcp.PROTOCOL_VERSION
+    assert "tools" in reply["result"]["capabilities"]
+
+
+def test_mcp_tools_have_schemas():
+    """A client picks a tool from its schema; a missing one makes it unusable."""
+    from app import mcp
+
+    reply = mcp.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, None)
+    for tool in reply["result"]["tools"]:
+        assert tool["name"] and tool["description"]
+        assert tool["inputSchema"]["type"] == "object"
+
+
+def test_mcp_applies_the_same_git_url_rules_as_the_web_form():
+    """An assistant is not a more trusted caller than a person."""
+    from app import mcp
+
+    reply = mcp.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                        "params": {"name": "scan_git_repository",
+                                   "arguments": {"git_url": "file:///etc/passwd"}}},
+                       None)
+    assert reply["result"]["isError"] is True
+    assert "scheme" in reply["result"]["content"][0]["text"]
+
+
+def test_mcp_endpoint_requires_a_token_when_auth_is_on(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.config import config
+    from app.main import app
+
+    monkeypatch.setattr(config, "REQUIRE_AUTH", True)
+    with TestClient(app) as client:
+        res = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1,
+                                        "method": "tools/list"})
+    assert res.status_code == 401
+    # Tell the client how to authenticate rather than just refusing.
+    assert res.headers.get("www-authenticate") == "Bearer"
+    assert res.json()["error"]["code"] == -32001
+
+
+def test_mcp_rejects_a_foreign_origin(monkeypatch):
+    """The MCP spec requires this: it is what stops DNS rebinding."""
+    from fastapi.testclient import TestClient
+
+    from app.config import config
+    from app.main import app
+
+    monkeypatch.setattr(config, "REQUIRE_AUTH", False)
+    with TestClient(app) as client:
+        res = client.post("/mcp",
+                          json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                          headers={"Origin": "http://evil.example"})
+    assert res.status_code == 403
+
+
+def test_mcp_get_reports_no_server_stream(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.config import config
+    from app.main import app
+
+    monkeypatch.setattr(config, "REQUIRE_AUTH", False)
+    with TestClient(app) as client:
+        res = client.get("/mcp")
+    assert res.status_code == 405
+    assert res.headers.get("allow") == "POST"
+
+
+def test_mcp_findings_carry_the_code(accounts_env, monkeypatch, tmp_path):
+    """Without the code, an assistant cannot tell a real bug from a pattern."""
+    import time as _time
+
+    from app import mcp, orchestrator
+    from app.adapters.base import BaseAdapter
+    from app.models import ScanTarget
+
+    class Fake(BaseAdapter):
+        name = "semgrep"
+        kind = ToolKind.SAST
+        binary = "semgrep"
+
+        def probe(self):
+            return True, "1.0"
+
+        def applicability(self, target_dir):
+            return True, ""
+
+        def _execute(self, target_dir):
+            return [Finding(tool="semgrep", rule_id="dangerous-eval",
+                            severity=Severity.HIGH, title="eval on user input",
+                            file="a.py", start_line=12, cwe=["CWE-95"],
+                            extra={"snippet": "eval(request.args['q'])"})]
+
+    monkeypatch.setattr(orchestrator, "get_adapters", lambda names: [Fake()])
+    (tmp_path / "a.py").write_text("x = 1\n")
+    mgr = orchestrator.JobManager()
+    monkeypatch.setattr(mcp, "manager", mgr)
+    job = mgr.new_job(ScanTarget(kind="path", display=str(tmp_path)), ["semgrep"])
+    mgr._prepare_and_maybe_scan(job.id, {"kind": "path", "path": str(tmp_path)}, False)
+
+    out = json.loads(mcp._read_scan({"scan_id": job.id})["content"][0]["text"])
+    assert out["verdict"] == "blocked"
+    assert out["findings"][0]["code"] == "eval(request.args['q'])"
+    assert out["findings"][0]["cwe"] == ["CWE-95"]
+
+    # Severity filtering keeps a large scan readable for an assistant.
+    high_only = json.loads(
+        mcp._read_scan({"scan_id": job.id, "severity": "critical"})["content"][0]["text"])
+    assert high_only["findings"] == []

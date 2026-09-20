@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SAST Studio — 登入</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <div class="login-brand">
+      <span class="brand-mark" aria-hidden="true">🛡</span>
+      <h1>SAST Studio</h1>
+    </div>
+
+    <form id="login-form" autocomplete="on">
+      <label class="field">
+        <span data-i18n="login.user">使用者名稱</span>
+        <input id="login-user" name="username" autocomplete="username"
+               autocapitalize="off" autocorrect="off" required autofocus>
+      </label>
+      <label class="field">
+        <span data-i18n="login.pass">密碼</span>
+        <input id="login-pass" name="password" type="password"
+               autocomplete="current-password" required>
+      </label>
+      <button type="submit" class="primary" data-i18n="login.submit">登入</button>
+      <p id="login-error" class="error hidden" role="alert"></p>
+    </form>
+  </main>
+
+  <script src="/i18n.js"></script>
+  <script src="/login.js"></script>
+</body>
+</html>

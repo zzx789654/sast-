@@ -52,6 +52,24 @@ class Config:
         if s.strip()
     }
 
+    # Accounts and sessions. On the same volume as the rules, because both
+    # must outlive a restart; scan history deliberately does not.
+    ACCOUNTS_DB = Path(
+        os.environ.get("SAST_ACCOUNTS_DB", "/tmp/sast-studio-accounts.db")
+    )
+
+    # Origins allowed to call /mcp from a browser. The MCP spec requires
+    # checking this to stop a web page driving the endpoint via DNS
+    # rebinding. Same-host is always allowed; "*" disables the check.
+    MCP_ALLOWED_ORIGINS = [
+        o.strip() for o in os.environ.get("SAST_MCP_ORIGINS", "").split(",")
+        if o.strip()
+    ]
+
+    # Whether the UI and API require a login. Off by default so an existing
+    # deployment keeps working after an upgrade; the compose file turns it on.
+    REQUIRE_AUTH = _env_bool("SAST_REQUIRE_AUTH", False)
+
     # Where custom scanner rules are kept. On the Docker deployment this sits
     # on the same volume as the workspaces, so rules written in the browser
     # survive a restart and an image rebuild.
@@ -69,7 +87,9 @@ class Config:
     SEMGREP_RULES = os.environ.get("SAST_SEMGREP_RULES", "p/default")
     SEMGREP_RULESETS = [
         r.strip() for r in os.environ.get(
-            "SAST_SEMGREP_RULESETS", "p/default,p/owasp-top-ten").split(",")
+            "SAST_SEMGREP_RULESETS",
+            "p/default,p/owasp-top-ten,p/security-audit,p/python,"
+            "p/javascript,p/java,p/golang,p/secrets").split(",")
         if r.strip() and r.strip() != "auto"
     ]
 

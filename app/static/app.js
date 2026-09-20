@@ -51,6 +51,8 @@ async function init() {
   wireFilters();
   wireViewNav();
   wireRuleEditor();
+  wireSettings();
+  wireTokens();
 
   // These five do not depend on each other, so waiting for each in turn made
   // the page sit blank for as long as the slowest one -- /api/tools probes
@@ -58,6 +60,7 @@ async function init() {
   // of the page fill in as its own data lands.
   await Promise.all([
     loadTools(),
+    loadWhoami(),
     loadPolicies(),
     loadRules(),
     loadRulesets(),
@@ -66,6 +69,254 @@ async function init() {
     // One failing endpoint must not leave the rest of the page empty.
     console.error("startup load failed:", e);
   })));
+}
+
+// --------------------------------------------------------------- accounts
+// The Settings tab only appears when the deployment actually has accounts, so
+// a build running without auth does not show a tab that can do nothing.
+const AUTH = { required: false, user: null };
+
+async function loadWhoami() {
+  try {
+    const d = await (await fetch("/api/auth/whoami")).json();
+    AUTH.required = !!d.auth_required;
+    AUTH.user = d.user || null;
+  } catch (e) {
+    return;
+  }
+
+  const tab = $("#tab-settings");
+  if (tab) tab.classList.toggle("hidden", !AUTH.required);
+
+  const me = $("#me-label");
+  if (me && AUTH.user) {
+    me.textContent = AUTH.user.username
+      + (AUTH.user.is_admin ? " \u2014 " + t("settings.adminBadge") : "");
+  }
+  // Only an administrator can see or change other people's accounts.
+  const panel = $("#users-panel");
+  if (panel) {
+    panel.classList.toggle("hidden", !(AUTH.user && AUTH.user.is_admin));
+  }
+}
+
+// ------------------------------------------------------------- API tokens
+// A token lets a script or an MCP client call the API as you. It is shown
+// once, at creation: the server keeps only a hash, so there is nothing to
+// show later even if someone asks.
+async function loadTokens() {
+  const box = $("#tokens-list");
+  if (!box) return;
+  let tokens = [];
+  try {
+    tokens = (await (await fetch("/api/tokens")).json()).tokens || [];
+  } catch (e) {
+    return;
+  }
+  box.innerHTML = "";
+  if (!tokens.length) {
+    box.appendChild(el("div", "mon-subnote", t("tokens.none")));
+    return;
+  }
+  tokens.forEach((tk) => {
+    const row = el("div", "user-row");
+    row.appendChild(el("span", "u-name", tk.prefix + "\u2026"));
+    row.appendChild(el("span", "tk-name", tk.name));
+    if (AUTH.user && AUTH.user.is_admin && tk.username !== AUTH.user.username) {
+      row.appendChild(el("span", "u-tag", tk.username));
+    }
+    row.appendChild(el("span", "u-last",
+      tk.last_used ? t("tokens.lastUsed", { when: tk.last_used.slice(0, 16) })
+                   : t("tokens.neverUsed")));
+    const actions = el("div", "u-actions");
+    const revoke = el("button", "btn small ghost", t("tokens.revoke"));
+    revoke.addEventListener("click", async () => {
+      if (!confirm(t("tokens.confirmRevoke", { name: tk.name }))) return;
+      await fetch("/api/tokens/" + tk.id, { method: "DELETE" });
+      loadTokens();
+    });
+    actions.appendChild(revoke);
+    row.appendChild(actions);
+    box.appendChild(row);
+  });
+}
+
+function wireTokens() {
+  const form = $("#new-token-form");
+  if (form) {
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const body = new FormData();
+      body.append("name", $("#nt-name").value);
+      const res = await fetch("/api/tokens", { method: "POST", body });
+      const data = await res.json().catch(() => ({}));
+      const box = $("#token-secret");
+      if (!res.ok) {
+        box.textContent = data.detail || t("settings.failed");
+        box.className = "rule-result bad";
+      } else {
+        // The only time this value exists in a readable form.
+        box.textContent = t("tokens.created") + "\n\n" + data.token;
+        box.className = "rule-result ok";
+        form.reset();
+      }
+      box.classList.remove("hidden");
+      loadTokens();
+    });
+  }
+  const refresh = $("#tokens-refresh");
+  if (refresh) refresh.addEventListener("click", loadTokens);
+}
+
+async function renderSettings() {
+  await loadWhoami();
+  await loadTokens();
+  if (AUTH.user && AUTH.user.is_admin) await loadUsers();
+}
+
+async function loadUsers() {
+  const box = $("#users-list");
+  if (!box) return;
+  let users = [];
+  try {
+    users = (await (await fetch("/api/users")).json()).users || [];
+  } catch (e) {
+    return;
+  }
+  box.innerHTML = "";
+  users.forEach((u) => box.appendChild(renderUserRow(u)));
+}
+
+function renderUserRow(u) {
+  const row = el("div", "user-row" + (u.disabled ? " disabled" : ""));
+  row.appendChild(el("span", "u-name", u.username));
+  if (u.is_admin) row.appendChild(el("span", "u-tag admin", t("settings.adminBadge")));
+  if (u.disabled) row.appendChild(el("span", "u-tag off", t("settings.disabled")));
+  row.appendChild(el("span", "u-last",
+    u.last_login ? t("settings.lastLogin", { when: u.last_login.slice(0, 16) })
+                 : t("settings.neverLoggedIn")));
+
+  const actions = el("div", "u-actions");
+  const self = AUTH.user && AUTH.user.username === u.username;
+
+  const toggle = el("button", "btn small",
+                    u.disabled ? t("settings.enable") : t("settings.disable"));
+  toggle.addEventListener("click", () => setUserState(u.id, { disabled: !u.disabled }));
+  actions.appendChild(toggle);
+
+  const admin = el("button", "btn small",
+                   u.is_admin ? t("settings.dropAdmin") : t("settings.makeAdmin"));
+  admin.addEventListener("click", () => setUserState(u.id, { is_admin: !u.is_admin }));
+  actions.appendChild(admin);
+
+  const reset = el("button", "btn small", t("settings.resetPw"));
+  reset.addEventListener("click", () => resetUserPassword(u));
+  actions.appendChild(reset);
+
+  const del = el("button", "btn small ghost", t("settings.delete"));
+  del.disabled = self;      // deleting yourself mid-session is never intended
+  del.addEventListener("click", () => deleteUser(u));
+  actions.appendChild(del);
+
+  row.appendChild(actions);
+  return row;
+}
+
+async function setUserState(id, changes) {
+  const body = new FormData();
+  Object.keys(changes).forEach((k) => body.append(k, String(changes[k])));
+  await postUsers(`/api/users/${id}/state`, body);
+}
+
+async function resetUserPassword(u) {
+  const pw = prompt(t("settings.promptPw", { name: u.username }));
+  if (!pw) return;
+  const body = new FormData();
+  body.append("password", pw);
+  await postUsers(`/api/users/${u.id}/password`, body, t("settings.pwReset"));
+}
+
+async function deleteUser(u) {
+  if (!confirm(t("settings.confirmDelete", { name: u.username }))) return;
+  await postUsers(`/api/users/${u.id}`, null, t("settings.deleted"), "DELETE");
+}
+
+// One place to talk to the user API, so every failure surfaces the server's
+// reason -- "cannot remove the last administrator" is worth reading.
+async function postUsers(url, body, okMessage, method) {
+  const box = $("#users-result");
+  try {
+    const res = await fetch(url, { method: method || "POST", body: body || undefined });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showUsersResult(false, data.detail || t("settings.failed"));
+      return false;
+    }
+    if (okMessage) showUsersResult(true, okMessage);
+    else if (box) box.classList.add("hidden");
+    await loadUsers();
+    return true;
+  } catch (e) {
+    showUsersResult(false, e.message);
+    return false;
+  }
+}
+
+function showUsersResult(ok, message) {
+  const box = $("#users-result");
+  if (!box) return;
+  box.textContent = message;
+  box.className = "rule-result " + (ok ? "ok" : "bad");
+  box.classList.remove("hidden");
+}
+
+function wireSettings() {
+  const pwForm = $("#pw-form");
+  if (pwForm) {
+    pwForm.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const body = new FormData();
+      body.append("current", $("#pw-current").value);
+      body.append("new_password", $("#pw-new").value);
+      const res = await fetch("/api/auth/password", { method: "POST", body });
+      const data = await res.json().catch(() => ({}));
+      const box = $("#pw-result");
+      box.textContent = res.ok ? t("settings.pwChanged")
+                               : (data.detail || t("settings.failed"));
+      box.className = "rule-result " + (res.ok ? "ok" : "bad");
+      box.classList.remove("hidden");
+      if (res.ok) {
+        pwForm.reset();
+        // Changing a password ends every session, including this one.
+        setTimeout(() => window.location.replace("/login"), 1500);
+      }
+    });
+  }
+
+  const logout = $("#logout-btn");
+  if (logout) {
+    logout.addEventListener("click", async () => {
+      await fetch("/api/auth/logout", { method: "POST" });
+      window.location.replace("/login");
+    });
+  }
+
+  const refresh = $("#users-refresh");
+  if (refresh) refresh.addEventListener("click", loadUsers);
+
+  const newUser = $("#new-user-form");
+  if (newUser) {
+    newUser.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const body = new FormData();
+      body.append("username", $("#nu-name").value);
+      body.append("password", $("#nu-pass").value);
+      body.append("is_admin", $("#nu-admin").checked ? "true" : "false");
+      if (await postUsers("/api/users", body, t("settings.userAdded"))) {
+        newUser.reset();
+      }
+    });
+  }
 }
 
 // -------------------------------------------------------------- rulesets
@@ -373,6 +624,7 @@ function showView(view) {
   $("#view-report").classList.toggle("hidden", view !== "report");
   $("#view-monitor").classList.toggle("hidden", view !== "monitor");
   if (view === "monitor") { renderMonitor(); startMonitorPolling(); }
+  if (view === "settings") renderSettings();
   else stopMonitorPolling();
   if (view === "report") refreshScanList(state.selectedJob);
 }

@@ -308,6 +308,62 @@ network; point at a local ruleset for offline scanning). Do not set it to
 `auto` — semgrep rejects that config because scans always run with
 `--metrics=off`, so no code data leaves the host.
 
+## Accounts and the API
+
+The deployment requires a sign-in. On the first start it creates an
+administrator and prints the password to the log once -- `scripts/deploy.sh`
+surfaces it at the end of a first deploy. It is not stored in a readable form,
+so save it then and change it from **Settings**. Set `SAST_ADMIN_USER` and
+`SAST_ADMIN_PASSWORD` to choose them instead, or `SAST_REQUIRE_AUTH=false` to
+run without accounts at all.
+
+Passwords are hashed with scrypt from the standard library -- memory-hard, so
+a stolen database is expensive to attack -- and the parameters are stored with
+each hash, so the cost can be raised later without breaking existing accounts.
+
+Two roles only: administrator and user. An administrator manages accounts; the
+last one cannot be deleted, disabled or demoted, because that click would lock
+everybody out.
+
+### API tokens
+
+**Settings** issues tokens for calling the API from a script or an assistant.
+A token belongs to the person who created it, so whatever it does is their
+doing -- and disabling that account disables its tokens with it. The secret is
+shown once at creation; only a hash is kept.
+
+```bash
+curl -H "Authorization: Bearer sast_..." http://your-host:8080/api/tools
+```
+
+### MCP
+
+The same token gives an AI assistant three tools over
+[MCP](https://modelcontextprotocol.io): `scan_git_repository`,
+`get_scan_result` and `list_scanners`. The endpoint is `POST /mcp`, Streamable
+HTTP, JSON responses -- a scan is a request and an answer, so there is nothing
+for an event stream to carry.
+
+```json
+{
+  "mcpServers": {
+    "sast-studio": {
+      "url": "http://your-host:8080/mcp",
+      "headers": { "Authorization": "Bearer sast_..." }
+    }
+  }
+}
+```
+
+A scan started this way is attributed to the token's owner and appears in the
+Reports tab like any other. Findings carry the matched code, because a scanner
+reports a pattern and an assistant needs the same evidence a person does to
+judge whether it matters.
+
+The endpoint validates `Origin`, which is what stops a web page driving it from
+someone's browser (DNS rebinding). Same-host is allowed automatically; set
+`SAST_MCP_ORIGINS` for anything else.
+
 ## Keeping the scanners up to date
 
 - **Vulnerability data updates itself.** Trivy pulls its DB, OSV-Scanner queries

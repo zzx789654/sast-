@@ -23,6 +23,10 @@ services:
       # Custom rules written in the UI live on the volume below, so they
       # survive restarts and image rebuilds.
       SAST_RULES_DIR: "/data/rules"
+      # Accounts. On by default now: the maintenance actions and the API run
+      # commands on this host, and nothing else establishes who is asking.
+      SAST_REQUIRE_AUTH: "true"
+      SAST_ACCOUNTS_DB: "/data/accounts/accounts.db"
       SAST_ALLOW_LOCAL_PATH: "true"
       SAST_TOOL_TIMEOUT: "900"
       # Monitor tab — per-container CPU/memory. Reads the docker socket that is
@@ -34,6 +38,7 @@ services:
       # scan workspaces down with it, and vice versa.
       - sast-workspaces:/data/workspaces
       - sast-rules:/data/rules
+      - sast-accounts:/data/accounts
       # Scan code that already lives on the host by mounting it read-only and
       # using the "Local path" tab with e.g. /mounted/my-project.
       # - ./my-project:/mounted/my-project:ro
@@ -65,3 +70,4 @@ services:
 volumes:
   sast-workspaces:
   sast-rules:
+  sast-accounts:

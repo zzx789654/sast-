@@ -240,6 +240,54 @@ npm audit 與 OSV-Scanner 根本沒有規則語言——它們是拿套件版本
 本專案掃描一律加上 `--metrics=off`（不讓任何程式碼資料外流），
 semgrep 在關閉 metrics 時會拒絕建立 auto 設定。
 
+## 帳號與 API
+
+部署預設需要登入。第一次啟動會建立一個管理員並把密碼印在日誌裡一次，
+`scripts/deploy.sh` 會在首次部署結束時把它顯示出來。密碼不會以可讀形式保存，
+請當下記下來，登入後到**設定**分頁更改。也可以用 `SAST_ADMIN_USER`／
+`SAST_ADMIN_PASSWORD` 指定，或設 `SAST_REQUIRE_AUTH=false` 完全不啟用帳號。
+
+密碼以標準函式庫的 scrypt 雜湊（記憶體密集型，資料庫外洩時破解成本高），
+且雜湊參數與雜湊值一起保存，日後要提高成本不會讓既有帳號失效。
+
+只有兩種角色：管理員與一般使用者。管理員可管理帳號；**最後一位管理員無法被刪除、
+停用或降級**——那一下點擊會把所有人鎖在門外。
+
+### API 權杖
+
+在**設定**分頁建立權杖，讓腳本或 AI 助理呼叫 API。
+**權杖屬於建立它的人**，所以它做的事就是那個人做的；停用該帳號，權杖同時失效。
+密碼串只在建立當下顯示一次，系統只保存雜湊值。
+
+```bash
+curl -H "Authorization: Bearer sast_..." http://你的主機:8080/api/tools
+```
+
+### MCP
+
+同一個權杖可讓 AI 助理透過 [MCP](https://modelcontextprotocol.io) 使用三個工具：
+`scan_git_repository`、`get_scan_result`、`list_scanners`。
+端點是 `POST /mcp`，Streamable HTTP，回傳純 JSON——
+一次掃描就是一問一答，沒有需要串流的東西。
+
+```json
+{
+  "mcpServers": {
+    "sast-studio": {
+      "url": "http://你的主機:8080/mcp",
+      "headers": { "Authorization": "Bearer sast_..." }
+    }
+  }
+}
+```
+
+這樣發起的掃描會歸屬到權杖擁有者，並和其他掃描一樣出現在報告分頁。
+發現項目會附上比對到的程式碼——掃描器回報的是樣式，
+助理和人一樣需要證據才能判斷那是不是真的問題。
+
+端點會驗證 `Origin`，這是防止網頁從別人的瀏覽器操控它（DNS rebinding）的機制。
+同主機自動允許，其他來源用 `SAST_MCP_ORIGINS` 指定。
+
 ## 後續怎麼更新這些掃描工具
 
 - **弱點資料庫會自動更新**：Trivy 會拉自己的 DB、OSV-Scanner 查 OSV.dev、npm audit 查

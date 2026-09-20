@@ -6,13 +6,16 @@ from datetime import datetime, timezone
 import csv
 import io
 import json
+import os
+from contextlib import asynccontextmanager
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import (FileResponse, JSONResponse, RedirectResponse,
+                               Response)
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
@@ -23,7 +26,19 @@ from .models import ScanTarget
 from .orchestrator import manager
 from .source import SourceError, resolve_local_path, validate_git_url
 
-app = FastAPI(title="SAST Studio", version="1.0.0")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """Prepare the account store and make sure someone can sign in.
+
+    Only runs when auth is enabled, so an existing deployment that has not
+    turned it on keeps working exactly as before.
+    """
+    await _prepare_accounts()
+    yield
+
+
+
+app = FastAPI(title="SAST Studio", version="1.0.0", lifespan=_lifespan)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -77,13 +92,354 @@ async def admin_restart() -> JSONResponse:
 SEMGREP_RULESETS = [
     {"id": "p/default", "recommended": True},
     {"id": "p/owasp-top-ten", "recommended": True},
-    {"id": "p/security-audit", "recommended": False},
-    {"id": "p/python", "recommended": False},
-    {"id": "p/javascript", "recommended": False},
-    {"id": "p/java", "recommended": False},
-    {"id": "p/golang", "recommended": False},
-    {"id": "p/secrets", "recommended": False},
+    {"id": "p/security-audit", "recommended": True},
+    {"id": "p/python", "recommended": True},
+    {"id": "p/javascript", "recommended": True},
+    {"id": "p/java", "recommended": True},
+    {"id": "p/golang", "recommended": True},
+    {"id": "p/secrets", "recommended": True},
 ]
+
+
+SESSION_COOKIE = "sast_session"
+
+# Endpoints that must work before anyone is logged in, plus the static assets
+# needed to render the login form itself.
+_PUBLIC_PATHS = {"/api/health", "/api/auth/login", "/api/auth/whoami"}
+
+
+def current_user(request: Request):
+    """Whoever is making this request: a signed-in person or an API token.
+
+    Both resolve to a User, so everything downstream -- permissions, the name
+    attached to an action -- works the same whether it came from the browser
+    or from a script.
+    """
+    from . import accounts
+
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        user = accounts.token_user(auth[7:].strip())
+        if user is not None:
+            return user
+    return accounts.session_user(request.cookies.get(SESSION_COOKIE))
+
+
+def require_user(request: Request):
+    """The signed-in user, or 401. Used by every protected endpoint."""
+    if not config.REQUIRE_AUTH:
+        return None
+    user = current_user(request)
+    if user is None:
+        raise HTTPException(401, "sign in to continue")
+    return user
+
+
+def require_admin(request: Request):
+    """Administrators only. Managing accounts is not an ordinary action."""
+    from . import accounts
+
+    if not config.REQUIRE_AUTH:
+        return None
+    user = current_user(request)
+    if user is None:
+        raise HTTPException(401, "sign in to continue")
+    if not user.is_admin:
+        raise HTTPException(403, "administrator access required")
+    return user
+
+
+@app.middleware("http")
+async def _auth_gate(request: Request, call_next):
+    """Refuse unauthenticated requests when auth is on.
+
+    A gate here rather than a dependency on each route, because forgetting one
+    route is how these holes appear -- the default has to be "protected".
+    """
+    if not config.REQUIRE_AUTH:
+        return await call_next(request)
+
+    path = request.url.path
+    public = (path in _PUBLIC_PATHS
+              or path == "/mcp"          # answers 401 itself, in JSON-RPC
+              or path == "/login"
+              or path.startswith("/static/")
+              or path in {"/i18n.js", "/app.js", "/style.css", "/login.js"})
+    if public or current_user(request) is not None:
+        return await call_next(request)
+
+    if path.startswith("/api/"):
+        return JSONResponse({"detail": "sign in to continue"}, status_code=401)
+    return RedirectResponse("/login", status_code=302)
+
+
+@app.post("/api/auth/login")
+async def login(request: Request, response: Response,
+                username: str = Form(...), password: str = Form(...)) -> dict:
+    from . import accounts
+
+    user = accounts.authenticate(username, password)
+    if user is None:
+        # One message for every failure: saying which part was wrong tells an
+        # attacker which usernames exist.
+        raise HTTPException(401, "invalid username or password")
+    token = accounts.start_session(user.id)
+    response.set_cookie(
+        SESSION_COOKIE, token,
+        httponly=True,          # not readable from JavaScript, so an XSS bug
+                                # cannot walk off with the session
+        samesite="lax",         # blocks the cross-site form-post case
+        secure=request.url.scheme == "https",
+        max_age=accounts.SESSION_TTL,
+        path="/",
+    )
+    return {"username": user.username, "is_admin": user.is_admin}
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request, response: Response) -> dict:
+    from . import accounts
+    accounts.end_session(request.cookies.get(SESSION_COOKIE))
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return {"ok": True}
+
+
+@app.get("/api/auth/whoami")
+async def whoami(request: Request) -> dict:
+    """Who is signed in, and whether signing in is required at all.
+
+    The UI asks this first so it knows whether to show a login form, a user
+    menu, or neither.
+    """
+    user = current_user(request)
+    return {
+        "auth_required": config.REQUIRE_AUTH,
+        "user": None if user is None else
+                {"username": user.username, "is_admin": user.is_admin},
+    }
+
+
+@app.post("/api/auth/password")
+async def change_own_password(request: Request,
+                              current: str = Form(...),
+                              new_password: str = Form(...)) -> dict:
+    """Change your own password, proving you know the current one."""
+    from . import accounts
+
+    user = require_user(request)
+    if user is None:
+        raise HTTPException(400, "authentication is disabled")
+    if accounts.authenticate(user.username, current) is None:
+        raise HTTPException(403, "current password is incorrect")
+    try:
+        accounts.set_password(user.id, new_password)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "note": "all sessions for this account were ended"}
+
+
+# ------------------------------------------------------------ user admin
+@app.get("/api/users")
+async def list_users(request: Request) -> dict:
+    from . import accounts
+
+    require_admin(request)
+    return {"users": [
+        {"id": u.id, "username": u.username, "is_admin": u.is_admin,
+         "disabled": u.disabled, "created_at": u.created_at,
+         "last_login": u.last_login}
+        for u in accounts.list_users()
+    ]}
+
+
+@app.post("/api/users")
+async def add_user(request: Request, username: str = Form(...),
+                   password: str = Form(...),
+                   is_admin: Optional[str] = Form(None)) -> JSONResponse:
+    from . import accounts
+
+    require_admin(request)
+    try:
+        user = accounts.create_user(username, password,
+                                    is_admin=_parse_bool(is_admin, False))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return JSONResponse({"id": user.id, "username": user.username},
+                        status_code=201)
+
+
+@app.post("/api/users/{user_id}/password")
+async def reset_password(request: Request, user_id: int,
+                         password: str = Form(...)) -> dict:
+    from . import accounts
+
+    require_admin(request)
+    try:
+        accounts.set_password(user_id, password)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True}
+
+
+@app.post("/api/users/{user_id}/state")
+async def update_user_state(request: Request, user_id: int,
+                            disabled: Optional[str] = Form(None),
+                            is_admin: Optional[str] = Form(None)) -> dict:
+    from . import accounts
+
+    require_admin(request)
+    try:
+        if disabled is not None:
+            accounts.set_disabled(user_id, _parse_bool(disabled, False))
+        if is_admin is not None:
+            accounts.set_admin(user_id, _parse_bool(is_admin, False))
+    except ValueError as exc:
+        # Refusing to remove the last administrator lands here.
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True}
+
+
+@app.delete("/api/users/{user_id}")
+async def remove_user(request: Request, user_id: int) -> dict:
+    from . import accounts
+
+    admin = require_admin(request)
+    if admin is not None and admin.id == user_id:
+        raise HTTPException(400, "you cannot delete your own account")
+    try:
+        accounts.delete_user(user_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True}
+
+
+# ------------------------------------------------------------- API tokens
+@app.get("/api/tokens")
+async def list_api_tokens(request: Request) -> dict:
+    """Your own tokens. Administrators see everyone's, to audit them."""
+    from . import accounts
+
+    user = require_user(request)
+    if user is None:
+        raise HTTPException(400, "authentication is disabled")
+    scope = None if user.is_admin else user.id
+    return {"tokens": [
+        {"id": tk.id, "name": tk.name, "prefix": tk.prefix,
+         "username": tk.username, "created_at": tk.created_at,
+         "last_used": tk.last_used}
+        for tk in accounts.list_tokens(scope)
+    ]}
+
+
+@app.post("/api/tokens")
+async def create_api_token(request: Request, name: str = Form(...)) -> JSONResponse:
+    """Create a token for the caller. The secret is returned once, here."""
+    from . import accounts
+
+    user = require_user(request)
+    if user is None:
+        raise HTTPException(400, "authentication is disabled")
+    try:
+        token, secret = accounts.create_token(user.id, name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return JSONResponse({
+        "id": token.id, "name": token.name, "prefix": token.prefix,
+        # Shown once and never stored in a readable form. Saying so here is
+        # what stops someone assuming they can look it up again later.
+        "token": secret,
+        "note": "copy this now; it cannot be shown again",
+    }, status_code=201)
+
+
+@app.delete("/api/tokens/{token_id}")
+async def revoke_api_token(request: Request, token_id: int) -> dict:
+    from . import accounts
+
+    user = require_user(request)
+    if user is None:
+        raise HTTPException(400, "authentication is disabled")
+    # A non-admin may only revoke their own.
+    scope = None if user.is_admin else user.id
+    if not accounts.revoke_token(token_id, scope):
+        raise HTTPException(404, "token not found")
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------- MCP
+# One endpoint, Streamable HTTP. A token identifies the caller, so a scan an
+# assistant starts belongs to the person whose token it used.
+@app.post("/mcp")
+async def mcp_endpoint(request: Request) -> Response:
+    from . import mcp
+
+    # The spec requires validating Origin: without it a web page could drive
+    # this endpoint from a victim's browser (DNS rebinding). A browser always
+    # sends Origin on a cross-origin request; a CLI or an assistant sends none,
+    # which is why absent is allowed and mismatched is not.
+    origin = request.headers.get("origin")
+    if origin and not _origin_allowed(origin, request):
+        raise HTTPException(403, "origin not allowed")
+
+    user = current_user(request)
+    if config.REQUIRE_AUTH and user is None:
+        # 401 with the scheme, so a client knows what to send.
+        return JSONResponse(
+            {"jsonrpc": "2.0", "id": None,
+             "error": {"code": -32001, "message": "authentication required"}},
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        message = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(
+            {"jsonrpc": "2.0", "id": None,
+             "error": {"code": mcp.PARSE_ERROR, "message": "invalid JSON"}},
+            status_code=400)
+
+    # A batch is a list. Notifications inside it produce no reply, which is
+    # why the responses are filtered rather than mapped one-to-one.
+    if isinstance(message, list):
+        replies = [r for r in (await run_in_threadpool(mcp.handle, m, user)
+                               for m in message) if r is not None]
+        if not replies:
+            return Response(status_code=202)
+        return JSONResponse(replies)
+
+    if not isinstance(message, dict):
+        return JSONResponse(
+            {"jsonrpc": "2.0", "id": None,
+             "error": {"code": mcp.INVALID_REQUEST,
+                       "message": "expected a JSON-RPC object"}},
+            status_code=400)
+
+    reply = await run_in_threadpool(mcp.handle, message, user)
+    if reply is None:
+        # A notification: accepted, nothing to say back.
+        return Response(status_code=202)
+    return JSONResponse(reply)
+
+
+@app.get("/mcp")
+async def mcp_stream() -> Response:
+    """No server-initiated stream.
+
+    The spec lets a server answer GET with 405 when it never pushes messages
+    to the client, which is our case: every answer belongs to a request.
+    """
+    return Response(status_code=405, headers={"Allow": "POST"})
+
+
+def _origin_allowed(origin: str, request: Request) -> bool:
+    """Same host as this request, or explicitly configured."""
+    allowed = {o.strip().rstrip("/") for o in config.MCP_ALLOWED_ORIGINS if o.strip()}
+    if "*" in allowed:
+        return True
+    host = request.headers.get("host", "")
+    same_host = {f"http://{host}", f"https://{host}"}
+    return origin.rstrip("/") in (allowed | same_host)
 
 
 @app.get("/api/rulesets")
@@ -480,6 +836,29 @@ async def _save_upload(file: UploadFile, dest: Path) -> None:
 
 
 # ---- static single-page UI (mounted last so /api/* wins) ------------------
+async def _prepare_accounts() -> None:
+    if not config.REQUIRE_AUTH:
+        return
+    from . import accounts
+
+    password = await run_in_threadpool(accounts.ensure_first_admin)
+    if password:
+        # Printed once, to the log, because a fixed default would be a
+        # backdoor on every deployment that never changed it.
+        user = os.environ.get("SAST_ADMIN_USER", "admin")
+        print("=" * 68, flush=True)
+        print("  First run: created administrator account", flush=True)
+        print(f"    username: {user}", flush=True)
+        print(f"    password: {password}", flush=True)
+        print("  This is shown once. Sign in and change it.", flush=True)
+        print("=" * 68, flush=True)
+
+
+@app.get("/login")
+async def login_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "login.html")
+
+
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")

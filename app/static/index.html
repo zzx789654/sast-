@@ -25,6 +25,8 @@
     <button class="viewtab active" data-view="scan" data-i18n="nav.scan">掃描</button>
     <button class="viewtab" data-view="report" data-i18n="nav.report">報告</button>
     <button class="viewtab" data-view="monitor" data-i18n="nav.monitor">監控</button>
+    <button class="viewtab hidden" id="tab-settings" data-view="settings"
+            data-i18n="nav.settings">設定</button>
   </nav>
 
   <main id="view-scan" class="layout layout-scan">
@@ -173,6 +175,74 @@
   </section>
 
   <!-- ---- monitor view ------------------------------------------- -->
+  <!-- ---- settings view (accounts) ------------------------------- -->
+  <section id="view-settings" class="monitor-wrap hidden">
+    <div class="panel">
+      <div class="mon-head">
+        <h2 data-i18n="settings.account">我的帳號</h2>
+        <span id="me-label" class="admin-state"></span>
+      </div>
+      <form id="pw-form" class="pw-form">
+        <label class="field">
+          <span data-i18n="settings.currentPw">目前密碼</span>
+          <input id="pw-current" type="password" autocomplete="current-password" required>
+        </label>
+        <label class="field">
+          <span data-i18n="settings.newPw">新密碼</span>
+          <input id="pw-new" type="password" autocomplete="new-password" required>
+        </label>
+        <button type="submit" class="btn" data-i18n="settings.changePw">變更密碼</button>
+      </form>
+      <p id="pw-result" class="rule-result hidden"></p>
+      <div class="admin-actions">
+        <button id="logout-btn" class="btn ghost" data-i18n="settings.logout">登出</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="mon-head">
+        <h2 data-i18n="tokens.title">API 權杖</h2>
+        <button id="tokens-refresh" class="linkbtn" data-i18n="mon.refresh">重新整理</button>
+      </div>
+      <p class="mon-hint" data-i18n="tokens.hint"></p>
+      <div id="tokens-list" class="users-list"></div>
+      <form id="new-token-form" class="new-user-form">
+        <label class="field">
+          <span data-i18n="tokens.name">用途說明</span>
+          <input id="nt-name" placeholder="CI / MCP client" required>
+        </label>
+        <button type="submit" class="btn" data-i18n="tokens.create">建立權杖</button>
+      </form>
+      <pre id="token-secret" class="rule-result hidden"></pre>
+    </div>
+
+    <div class="panel hidden" id="users-panel">
+      <div class="mon-head">
+        <h2 data-i18n="settings.users">使用者管理</h2>
+        <button id="users-refresh" class="linkbtn" data-i18n="mon.refresh">重新整理</button>
+      </div>
+      <p class="mon-hint" data-i18n="settings.usersHint"></p>
+      <div id="users-list" class="users-list"></div>
+
+      <form id="new-user-form" class="new-user-form">
+        <label class="field">
+          <span data-i18n="settings.newUser">新增使用者</span>
+          <input id="nu-name" placeholder="username" autocapitalize="off" required>
+        </label>
+        <label class="field">
+          <span data-i18n="settings.newPw">新密碼</span>
+          <input id="nu-pass" type="password" autocomplete="new-password" required>
+        </label>
+        <label class="nu-admin">
+          <input id="nu-admin" type="checkbox">
+          <span data-i18n="settings.isAdmin">管理員</span>
+        </label>
+        <button type="submit" class="btn" data-i18n="settings.addUser">新增</button>
+      </form>
+      <p id="users-result" class="rule-result hidden"></p>
+    </div>
+  </section>
+
   <section id="view-monitor" class="monitor-wrap hidden">
     <div class="panel">
       <div class="mon-head">

@@ -125,5 +125,16 @@ code="$(curl -s -o /dev/null -w '%{http_code}' "${URL}/api/health" || echo 000)"
 tools_ok="$(curl -s "${URL}/api/tools" | grep -o '"available": *true' | wc -l | tr -d ' ')"
 echo "  health 200; ${tools_ok}/6 scanners available"
 
+# On a first run the application generates an administrator password and
+# prints it once. Surface it here rather than leaving it buried in the log:
+# it is not stored anywhere readable, so a missed line means resetting it.
+if compose logs sast-studio 2>/dev/null | grep -q "First run: created administrator"; then
+  step "First run: administrator account"
+  compose logs sast-studio 2>/dev/null \
+    | grep -A 4 "First run: created administrator" \
+    | sed 's/^[^|]*| *//'
+  echo "  Save these now; the password is not recoverable."
+fi
+
 printf '\nDeployed. %s\n' "$(git rev-parse --short HEAD 2>/dev/null || echo 'working tree')"
 echo "Open ${URL} -- roll back with ./scripts/deploy.sh --rollback"

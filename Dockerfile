@@ -107,7 +107,7 @@ RUN python -m pip install --no-cache-dir --prefer-binary \
 COPY app ./app
 
 RUN useradd -m appuser \
-    && mkdir -p /data/workspaces /data/rules \
+    && mkdir -p /data/workspaces /data/rules /data/accounts \
     && chown -R appuser /data
 USER appuser
 
