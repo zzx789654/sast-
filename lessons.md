@@ -1296,3 +1296,75 @@ triage 原本存在 localStorage，註解寫著：
 
 準則：**指令「卡住」時，先看它在等什麼**（這裡是 stdin），
 不要預設是網路慢或機器忙。
+
+## [2026-09-20] 第 32 輪 — 「只有兩套能更新」是真的，但畫面沒講完整
+
+使用者問：維護動作只更新 semgrep 和 trivy，其他四套有更新嗎？
+
+### 先驗證，不要只讀註解
+
+程式碼註解說「其他四套是釘死的 binary，要重建映像」。
+註解可能過期，所以到 VM 上實際量：
+
+```
+running as: uid=1000(appuser)
+/usr/local/bin        not writable          <- binary 是 root 所有
+npm install -g npm -> npm ERR!              <- 沒權限
+gitleaks --help | grep update -> (none)     <- 根本沒有自我更新指令
+osv-scanner --help | grep update -> (none)
+bearer --help | grep update -> (none)
+```
+
+**註解是對的。** 但驗證過才敢這樣回答，而且順手寫成測試，
+下次不用再查一次。
+
+### 真正的問題：畫面說了「需要重建」，卻沒說「現在需不需要」
+
+這才是使用者問題背後的東西。查了一下上游版本：
+
+| 工具 | 安裝 | 最新 |
+|---|---|---|
+| gitleaks | 8.30.1 | 8.30.1 |
+| bearer | 2.1.1 | 2.1.1 |
+| trivy | 0.74.0 | 0.74.0 |
+| **osv_scanner** | **1.9.2** | **2.6.0** |
+
+osv_scanner 落後一個大版本，而畫面上完全看不出來。
+
+準則：**「這個要手動處理」的訊息，要同時回答「現在該不該處理」。**
+只說前者等於把判斷丟回給使用者，而他沒有資料可以判斷。
+
+### 我自己寫的檢查功能，上線時是壞的
+
+加完版本檢查，在 VM 上驗證，結果 `installed` 全部是空的——
+`latest` 抓得到，`installed` 抓不到，所以永遠不會標示「過期」。
+
+原因：`probe()` 回傳的是 `(available, version)` **tuple**，
+我卻寫成 `adapter.probe().version`。而外面包了一層
+
+```python
+except Exception:  # a probe must not break the panel
+    return ""
+```
+
+**那個寬鬆的 except 把 AttributeError 吞掉了**，
+所以功能看起來正常運作，只是永遠回報「沒有版本」。
+
+準則：**寬鬆的 `except` 會讓「壞掉」長得跟「沒有資料」一模一樣。**
+這種防禦性寫法本身沒錯，但它要求你**用真實資料驗證過**，
+否則你只是把錯誤藏起來。
+
+如果我只跑單元測試（有 mock，不會踩到真實的 probe），
+這個 bug 會直接上線而且沒人發現。是在 VM 上看到
+「latest=2.6.0 installed=(空)」才抓到的。
+
+### 附帶：bearer 的版本字串帶逗號
+
+`bearer version 2.1.1, build 600e551c` —— 解析出來是 `2.1.1,`。
+小問題，但會讓版本比較失準。測試現在涵蓋四種真實工具的輸出格式。
+
+### CI 紅燈第二次不是程式問題
+
+`curl: (35) Recv failure: Connection reset by peer`——下載掃描器時的
+暫時性網路錯誤。重跑就過了。跟上一輪的 artifact 配額一樣：
+**CI 紅燈要先看失敗的是哪一步**，不要預設是自己剛推的程式碼。
