@@ -1805,3 +1805,40 @@ def test_mcp_findings_carry_the_code(accounts_env, monkeypatch, tmp_path):
     high_only = json.loads(
         mcp._read_scan({"scan_id": job.id, "severity": "critical"})["content"][0]["text"])
     assert high_only["findings"] == []
+
+
+def test_every_state_changing_route_is_behind_the_auth_gate(monkeypatch):
+    """Forgetting one route is how these holes appear.
+
+    Routes rely on the middleware rather than a per-route dependency, so this
+    walks the real route table instead of a hand-written list: a new endpoint
+    is covered the moment it is added, or this fails.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.config import config
+    from app.main import SESSION_COOKIE, app
+
+    monkeypatch.setattr(config, "REQUIRE_AUTH", True)
+
+    # These must work before anyone can sign in, or nobody ever could.
+    public = {"/api/health", "/api/auth/login", "/api/auth/whoami", "/mcp"}
+
+    reachable = []
+    with TestClient(app) as client:
+        client.cookies.delete(SESSION_COOKIE)
+        for route in app.routes:
+            path = getattr(route, "path", "")
+            methods = getattr(route, "methods", set()) or set()
+            if path in public or not path.startswith("/api/"):
+                continue
+            for method in methods & {"POST", "PUT", "PATCH", "DELETE"}:
+                # Fill path params with something harmless.
+                concrete = path.replace("{job_id}", "x").replace("{user_id}", "1")
+                concrete = concrete.replace("{token_id}", "1")
+                concrete = concrete.replace("{engine}", "semgrep").replace("{name}", "x")
+                res = client.request(method, concrete, follow_redirects=False)
+                if 200 <= res.status_code < 300:
+                    reachable.append(f"{method} {concrete}")
+
+    assert not reachable, f"reachable without signing in: {reachable}"
