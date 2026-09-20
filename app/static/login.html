@@ -26,6 +26,28 @@
       </label>
       <button type="submit" class="primary" data-i18n="login.submit">登入</button>
       <p id="login-error" class="error hidden" role="alert"></p>
+      <p id="login-note" class="login-note hidden" role="status"></p>
+    </form>
+
+    <!-- An expired password cannot be changed from the settings page,
+         because reaching that page is exactly what it is not allowed to do.
+         So the change happens here, still proving the current password. -->
+    <form id="expired-form" class="hidden">
+      <p class="login-note" data-i18n="login.expiredNote"></p>
+      <p id="expired-rules" class="login-rules"></p>
+      <label class="field">
+        <span data-i18n="settings.newPw">新密碼</span>
+        <input id="expired-new" type="password" autocomplete="new-password"
+               required>
+      </label>
+      <label class="field">
+        <span data-i18n="settings.confirmPw">再輸入一次</span>
+        <input id="expired-confirm" type="password"
+               autocomplete="new-password" required>
+      </label>
+      <button type="submit" class="primary"
+              data-i18n="settings.changePw">變更密碼</button>
+      <p id="expired-error" class="error hidden" role="alert"></p>
     </form>
   </main>
 

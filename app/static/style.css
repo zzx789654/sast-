@@ -713,3 +713,13 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 }
 .lic-tag.warn { color: var(--high); border-color: var(--high); }
 .lic-tag.unknown { color: var(--muted); font-style: italic; }
+
+/* Login page: why you are here, and the expired-password form. */
+.login-note {
+  margin: .6rem 0 0; padding: .5rem .7rem; border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid var(--accent); font-size: .84rem;
+}
+.login-rules {
+  margin: .2rem 0 .8rem; color: var(--muted); font-size: .8rem;
+}

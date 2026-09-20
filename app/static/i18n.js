@@ -96,6 +96,11 @@ const DICT = {
     "login.pass": "密碼",
     "login.submit": "登入",
     "login.failed": "登入失敗",
+    "login.afterChange": "密碼已變更，請使用新密碼重新登入。",
+    "login.expiredNote": "此帳號的密碼已到期，請先設定新密碼才能繼續。",
+    "settings.pwResetSelf": "密碼已重設。這也結束了你目前的登入階段，即將轉到登入畫面…",
+    "settings.sessionEnded": "登入階段已結束，無法讀取使用者清單。請重新登入。",
+
     "api.title": "API 與 MCP",
     "api.hint": "同一個權杖同時用於 REST API 與 MCP。下方的位址就是你現在連線的這台，可直接複製使用。",
     "api.rest": "REST API",
@@ -467,6 +472,11 @@ const DICT = {
     "login.pass": "Password",
     "login.submit": "Sign in",
     "login.failed": "Sign-in failed",
+    "login.afterChange": "Password changed. Sign in again with the new one.",
+    "login.expiredNote": "This password has expired. Set a new one to continue.",
+    "settings.pwResetSelf": "Password reset. That also ended your own session — taking you to the sign-in page…",
+    "settings.sessionEnded": "Your session ended, so the user list could not be read. Sign in again.",
+
     "api.title": "API and MCP",
     "api.hint": "One token works for both the REST API and MCP. The address below is the host you are on, so these can be copied as they are.",
     "api.rest": "REST API",

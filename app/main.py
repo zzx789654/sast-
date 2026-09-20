@@ -116,7 +116,10 @@ SESSION_COOKIE = "sast_session"
 
 # Endpoints that must work before anyone is logged in, plus the static assets
 # needed to render the login form itself.
-_PUBLIC_PATHS = {"/api/health", "/api/auth/login", "/api/auth/whoami"}
+#: Reachable without a session. change-expired is here because the account
+#: that needs it cannot sign in -- it still proves the current password.
+_PUBLIC_PATHS = {"/api/health", "/api/auth/login", "/api/auth/whoami",
+                 "/api/auth/policy", "/api/auth/change-expired"}
 
 
 def current_user(request: Request):
@@ -230,12 +233,85 @@ async def _auth_gate(request: Request, call_next):
         return JSONResponse({"detail": "cross-site request refused"},
                             status_code=403)
 
-    if public or current_user(request) is not None:
+    user = current_user(request)
+    if public or user is not None:
+        # An expired password was reported by whoami and enforced nowhere, so
+        # the setting did nothing at all: the account kept working, and its
+        # API tokens with it. Expiry has to bite here, for the same reason
+        # the gate exists -- one forgotten route is the whole hole.
+        if user is not None and not public and _expired_blocked(request, user):
+            return _expiry_response(path)
         return await call_next(request)
 
     if path.startswith("/api/"):
         return JSONResponse({"detail": "sign in to continue"}, status_code=401)
     return RedirectResponse("/login", status_code=302)
+
+
+#: The only things an account with an expired password may still reach:
+#: enough to see who it is, read the rules it has to satisfy, change the
+#: password, and sign out. Everything else waits until it is changed.
+_EXPIRED_ALLOWED = {
+    "/api/auth/whoami",
+    "/api/auth/password",
+    "/api/auth/policy",
+    "/api/auth/logout",
+    "/api/auth/login",
+}
+
+
+def _expired_blocked(request: Request, user) -> bool:
+    from . import accounts
+
+    if request.url.path in _EXPIRED_ALLOWED:
+        return False
+    try:
+        return accounts.password_expired(user)
+    except Exception:  # noqa: BLE001 - never lock everyone out over a read
+        return False
+
+
+def _expiry_response(path: str):
+    if path.startswith("/api/") or path == "/mcp":
+        # 403, not 401: the credentials are right, they are just too old.
+        # A distinct code so a client can tell "sign in" from "change it".
+        return JSONResponse(
+            {"detail": "password expired; change it to continue",
+             "reason": "password_expired"}, status_code=403)
+    return RedirectResponse("/login?expired=1", status_code=302)
+
+
+@app.post("/api/auth/change-expired")
+async def change_expired_password(request: Request,
+                                  username: str = Form(...),
+                                  current: str = Form(...),
+                                  new_password: str = Form(...)) -> dict:
+    """Change a password that has expired, from the login screen.
+
+    Without this an expired account is simply locked out: it cannot sign in
+    to reach the settings page, and the page is where the change lives. The
+    current password is still required, so this is not a way in -- it is the
+    same authentication, with the one action it is allowed to take.
+    """
+    from . import accounts
+
+    user = accounts.authenticate(username, password=current)
+    source = (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+              or (request.client.host if request.client else "unknown"))
+    if user is None:
+        accounts.record_login(username, False, source)
+        raise HTTPException(401, "invalid username or password")
+
+    if not accounts.password_expired(user):
+        # Not expired: the ordinary change-password endpoint applies, and it
+        # requires a session. Refusing here keeps one path for one job.
+        raise HTTPException(400, "this password has not expired")
+
+    try:
+        accounts.set_password(user.id, new_password)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True}
 
 
 @app.post("/api/auth/login")

@@ -2397,6 +2397,210 @@ def test_the_package_csv_is_not_readable_by_another_account(two_users):
     assert admin.get(f"/api/scans/{job.id}/packages.csv").status_code == 200
 
 
+# ------------------------------------------------------- password expiry
+@pytest.fixture()
+def expiring(tmp_path, monkeypatch):
+    """An account whose password expired 99 days ago, and a client for it."""
+    from fastapi.testclient import TestClient
+
+    from app import accounts
+    from app.config import config
+    from app.main import app
+
+    monkeypatch.setattr(config, "ACCOUNTS_DB", tmp_path / "accounts.db")
+    monkeypatch.setattr(config, "REQUIRE_AUTH", True)
+    accounts.init_db()
+    user = accounts.create_user("alice", "Alice-Password-123!")
+    accounts.create_user("admin", "Admin-Password-123!", is_admin=True)
+    accounts.set_policy({"max_age_days": 30})
+
+    def expire(username="alice", days=99):
+        from datetime import datetime, timedelta, timezone
+        stamp = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        target = accounts.get_user(username)
+        with accounts._connect() as conn:
+            conn.execute("UPDATE users SET password_changed_at = ? WHERE id = ?",
+                         (stamp, target.id))
+
+    client = TestClient(app)
+    client.post("/api/auth/login",
+                data={"username": "alice", "password": "Alice-Password-123!"},
+                headers={"Origin": "http://testserver"})
+    return {"client": client, "accounts": accounts, "expire": expire,
+            "user": user, "app": app}
+
+
+def test_an_expired_password_actually_stops_the_account(expiring):
+    """It did not. max_age_days was reported by whoami and enforced nowhere.
+
+    The setting was in the UI, an administrator could set it, and the account
+    carried on working as if it were never set -- which is worse than not
+    offering the setting at all.
+    """
+    c, expire = expiring["client"], expiring["expire"]
+    assert c.get("/api/scans").status_code == 200      # fine before expiry
+
+    expire()
+
+    res = c.get("/api/scans")
+    assert res.status_code == 403, "an expired password still had access"
+    body = res.json()
+    # A distinct reason, so a client can tell "sign in" from "change it".
+    assert body.get("reason") == "password_expired"
+
+
+def test_an_expired_password_blocks_an_api_token_too(expiring):
+    """A token speaks for the account, so it expires with the account.
+
+    Otherwise expiry is trivially bypassed by whoever already has a token,
+    which is the case it most needs to cover.
+    """
+    from fastapi.testclient import TestClient
+
+    accounts = expiring["accounts"]
+    token, secret = accounts.create_token(expiring["user"].id, "ci")
+    fresh = TestClient(expiring["app"])
+    auth = {"Authorization": f"Bearer {secret}"}
+
+    assert fresh.get("/api/tools", headers=auth).status_code == 200
+    expiring["expire"]()
+    assert fresh.get("/api/tools", headers=auth).status_code == 403
+
+
+def test_an_expired_account_can_still_reach_what_it_needs(expiring):
+    """Locking it out of everything would leave no way to fix it."""
+    c = expiring["client"]
+    expiring["expire"]()
+
+    # Enough to see who you are, read the rules, and sign out.
+    assert c.get("/api/auth/whoami").status_code == 200
+    assert c.get("/api/auth/policy").status_code == 200
+    assert c.get("/api/auth/whoami").json()["user"]["password_expired"] is True
+
+
+def test_an_expired_password_can_be_changed_from_the_login_screen(expiring):
+    """The settings page is exactly what an expired account cannot reach."""
+    from fastapi.testclient import TestClient
+
+    expiring["expire"]()
+    fresh = TestClient(expiring["app"])
+    headers = {"Origin": "http://testserver"}
+
+    res = fresh.post("/api/auth/change-expired",
+                     data={"username": "alice",
+                           "current": "Alice-Password-123!",
+                           "new_password": "Alice-Brand-New-456!"},
+                     headers=headers)
+    assert res.status_code == 200, res.text
+
+    after = TestClient(expiring["app"])
+    assert after.post("/api/auth/login",
+                      data={"username": "alice",
+                            "password": "Alice-Brand-New-456!"},
+                      headers=headers).status_code == 200
+    assert after.get("/api/scans").status_code == 200, "still blocked after the change"
+
+
+def test_changing_an_expired_password_is_not_a_way_in(expiring):
+    """It still proves the current password, and only for an expired one."""
+    from fastapi.testclient import TestClient
+
+    expiring["expire"]()
+    fresh = TestClient(expiring["app"])
+    headers = {"Origin": "http://testserver"}
+
+    res = fresh.post("/api/auth/change-expired",
+                     data={"username": "alice", "current": "not-the-password",
+                           "new_password": "Attacker-Chosen-1!"},
+                     headers=headers)
+    assert res.status_code == 401
+
+    # And it is not a general password-change endpoint for live accounts.
+    res = fresh.post("/api/auth/change-expired",
+                     data={"username": "admin",
+                           "current": "Admin-Password-123!",
+                           "new_password": "Attacker-Chosen-1!"},
+                     headers=headers)
+    assert res.status_code == 400
+    assert "not expired" in res.json()["detail"]
+
+    # The admin password is untouched.
+    ok = TestClient(expiring["app"])
+    assert ok.post("/api/auth/login",
+                   data={"username": "admin", "password": "Admin-Password-123!"},
+                   headers=headers).status_code == 200
+
+
+def test_the_new_password_must_still_satisfy_the_rules(expiring):
+    from fastapi.testclient import TestClient
+
+    expiring["expire"]()
+    fresh = TestClient(expiring["app"])
+    res = fresh.post("/api/auth/change-expired",
+                     data={"username": "alice",
+                           "current": "Alice-Password-123!",
+                           "new_password": "short"},
+                     headers={"Origin": "http://testserver"})
+    assert res.status_code == 400
+    assert "at least" in res.json()["detail"]
+
+
+def test_a_page_request_from_an_expired_account_goes_to_the_login_page(expiring):
+    """A JSON 403 in the address bar would be a dead end."""
+    c = expiring["client"]
+    expiring["expire"]()
+
+    res = c.get("/", follow_redirects=False)
+    assert res.status_code == 302
+    assert "/login" in res.headers["location"]
+    assert "expired=1" in res.headers["location"]
+
+
+def test_resetting_your_own_password_sends_you_to_the_login_page():
+    """It ends your own session, so staying on the page shows an empty list.
+
+    That is what it did: the reload after the reset came back 401 and the
+    user list rendered as nothing at all.
+    """
+    root = Path(__file__).resolve().parents[1] / "app/static"
+    js = (root / "app.js").read_text("utf-8")
+
+    fn = js[js.index("async function resetUserPassword"):]
+    fn = fn[:fn.index("\n}")]
+    assert "AUTH.user.username === u.username" in fn, "it does not notice it is you"
+    assert "signOutAfterPasswordChange" in fn
+
+    exit_fn = js[js.index("function signOutAfterPasswordChange"):]
+    exit_fn = exit_fn[:exit_fn.index("\n}\n")]
+    assert "/api/auth/logout" in exit_fn, "the cookie is not cleared on the way out"
+    assert "/login" in exit_fn
+
+
+def test_the_user_list_says_why_it_is_empty_rather_than_showing_nothing():
+    """An empty list reads as "there are no users", which is never true."""
+    root = Path(__file__).resolve().parents[1] / "app/static"
+    js = (root / "app.js").read_text("utf-8")
+
+    fn = js[js.index("async function loadUsers"):]
+    fn = fn[:fn.index("\n}\n")]
+    assert "res.status === 401" in fn
+    assert "settings.sessionEnded" in fn
+
+
+def test_the_login_page_offers_a_way_past_an_expired_password():
+    """Signing in succeeds even when expired; the gate refuses afterwards."""
+    root = Path(__file__).resolve().parents[1] / "app/static"
+    html = (root / "login.html").read_text("utf-8")
+    js = (root / "login.js").read_text("utf-8")
+
+    assert 'id="expired-form"' in html
+    form = html[html.index('id="expired-form"'):]
+    assert form.count('type="password"') == 2, "the new password is not masked"
+
+    assert "password_expired" in js, "the login page never checks for expiry"
+    assert "/api/auth/change-expired" in js
+
+
 # ------------------------------------------------------- password dialog
 def test_a_password_is_never_typed_into_a_visible_prompt():
     """window.prompt() cannot mask input.

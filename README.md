@@ -358,6 +358,23 @@ Without it, the host is taken from the request but only if it is in
 `SAST_ALLOWED_HOSTS` (comma separated); anything else falls back rather than
 being echoed into a file somebody will paste into a client.
 
+### When a password expires
+
+`SAST_...` nothing: expiry is a policy setting, in **Settings -> Account ->
+password rules**, off by default (`0` days). When it is on and a password
+passes that age, the account can still sign in but can do nothing else --
+every other endpoint answers `403` with `reason: password_expired`, and API
+tokens for that account stop working too, since a token speaks for the
+account.
+
+The way back is on the login page itself: signing in with the expired
+password offers a change-password form there, because the settings page is
+exactly what an expired account may not reach. The current password is still
+required, so this is not a way in.
+
+An administrator can also reset it from **Settings -> User management**, and
+`scripts/reset-password.sh` works regardless of expiry.
+
 ### Forgotten password
 
 There is no reset link on the login page: sending one needs mail this

@@ -486,9 +486,19 @@ async function renderSettings() {
 async function loadUsers() {
   const box = $("#users-list");
   if (!box) return;
-  let users = [];
+  let users;
   try {
-    users = (await (await fetch("/api/users")).json()).users || [];
+    const res = await fetch("/api/users");
+    if (!res.ok) {
+      // An empty list reads as "there are no users", which is never true and
+      // is what the screen showed after a self-reset ended the session.
+      if (res.status === 401 || res.status === 403) {
+        box.innerHTML = "";
+        box.appendChild(el("div", "mon-note", t("settings.sessionEnded")));
+      }
+      return;
+    }
+    users = (await res.json()).users || [];
   } catch (e) {
     return;
   }
@@ -545,7 +555,30 @@ async function resetUserPassword(u) {
   if (!pw) return;
   const body = new FormData();
   body.append("password", pw);
-  await postUsers(`/api/users/${u.id}/password`, body, t("settings.pwReset"));
+
+  // Changing a password ends every session for that account. When it is your
+  // own, this session is one of them: the reload that postUsers does next
+  // came back 401 and left an empty user list on screen. Say what happened
+  // and go to the login page rather than reloading into nothing.
+  const self = AUTH.user && AUTH.user.username === u.username;
+  const ok = await postUsers(`/api/users/${u.id}/password`, body,
+                             self ? t("settings.pwResetSelf") : t("settings.pwReset"),
+                             null, { skipReload: self });
+  if (ok && self) signOutAfterPasswordChange();
+}
+
+// A password change invalidates this session server-side. Clearing the
+// cookie explicitly keeps the browser from carrying a dead session to the
+// login page, and the short pause is so the message can be read.
+function signOutAfterPasswordChange() {
+  setTimeout(async () => {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } catch (e) {
+      // Already invalid server-side; the redirect is what matters.
+    }
+    window.location.replace("/login?changed=1");
+  }, 1200);
 }
 
 // Resolves to the password, or null when cancelled.
@@ -619,7 +652,7 @@ async function deleteUser(u) {
 
 // One place to talk to the user API, so every failure surfaces the server's
 // reason -- "cannot remove the last administrator" is worth reading.
-async function postUsers(url, body, okMessage, method) {
+async function postUsers(url, body, okMessage, method, opts) {
   const box = $("#users-result");
   try {
     const res = await fetch(url, { method: method || "POST", body: body || undefined });
@@ -630,7 +663,9 @@ async function postUsers(url, body, okMessage, method) {
     }
     if (okMessage) showUsersResult(true, okMessage);
     else if (box) box.classList.add("hidden");
-    await loadUsers();
+    // Skipped when the call just ended this session: the reload would be a
+    // 401 and would wipe the list the caller is still looking at.
+    if (!(opts && opts.skipReload)) await loadUsers();
     return true;
   } catch (e) {
     showUsersResult(false, e.message);
@@ -664,7 +699,7 @@ function wireSettings() {
       if (res.ok) {
         pwForm.reset();
         // Changing a password ends every session, including this one.
-        setTimeout(() => window.location.replace("/login"), 1500);
+        signOutAfterPasswordChange();
       }
     });
   }
