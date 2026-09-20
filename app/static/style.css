@@ -681,3 +681,35 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 .pw-dialog-actions {
   display: flex; justify-content: flex-end; gap: .5rem; margin-top: .9rem;
 }
+
+/* ------------------------------------------------- package inventory */
+/* Collapsed by default: on a real project this is hundreds of rows, and
+   the findings are what the page is for. */
+.sbom-box {
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: .6rem .8rem; margin: .8rem 0; background: var(--bg);
+}
+.sbom-box > summary {
+  cursor: pointer; font-weight: 600; display: flex;
+  align-items: center; gap: .5rem;
+}
+.sbom-counts { color: var(--muted); font-weight: 400; font-size: .82rem; }
+.sbom-actions {
+  display: flex; align-items: center; gap: .6rem;
+  flex-wrap: wrap; margin: .6rem 0;
+}
+.sbom-actions input[type=text] { flex: 1 1 14rem; }
+.sbom-only { display: flex; align-items: center; gap: .3rem;
+             font-size: .82rem; color: var(--muted); white-space: nowrap; }
+#sbom-table { width: 100%; }
+#sbom-table .c-name { font-family: ui-monospace, monospace; }
+/* A licence that carries obligations is worth seeing without reading the
+   whole table, but it is not an error -- so it is marked, not coloured red. */
+#sbom-table tr.sbom-attention .c-name { font-weight: 600; }
+.lic-tag {
+  display: inline-block; padding: .05rem .4rem; margin-right: .25rem;
+  border: 1px solid var(--line); border-radius: 999px;
+  font-size: .72rem; font-family: ui-monospace, monospace;
+}
+.lic-tag.warn { color: var(--high); border-color: var(--high); }
+.lic-tag.unknown { color: var(--muted); font-style: italic; }

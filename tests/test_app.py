@@ -2265,6 +2265,138 @@ def test_token_creation_says_which_account_it_will_belong_to(accounts_env):
     assert i18n.count('"tokens.createdAs"') == 2, "missing in one language"
 
 
+# --------------------------------------------------------- package inventory
+def _sbom_fixture():
+    path = Path(__file__).resolve().parent / "fixtures/trivy_sbom.json"
+    return json.loads(path.read_text("utf-8"))
+
+
+def test_the_package_list_comes_from_real_trivy_output():
+    """Parsed from output captured on the VM, not a hand-written shape.
+
+    Trivy reports licences in a result of their own, keyed by package name,
+    separate from the result that lists the packages. Joining those two is
+    the whole job, and a hand-made fixture would not have shown that.
+    """
+    from app.sbom import _parse
+
+    out = _parse(_sbom_fixture(), Path("/tmp/sb"))
+    assert out["available"] is True
+
+    names = {p["name"] for p in out["packages"]}
+    assert names, "no packages parsed"
+    # Both ecosystems survive the join.
+    ecosystems = {p["ecosystem"] for p in out["packages"]}
+    assert "npm" in ecosystems and "pip" in ecosystems
+
+    # The npm packages were installed, so their licences resolved; the pip
+    # ones came from a lockfile alone, so they did not.
+    licensed = [p for p in out["packages"] if p["licenses"]]
+    assert licensed, "the licence rows were not joined onto any package"
+
+
+def test_a_lockfile_alone_reports_the_licence_as_unknown():
+    """The limitation, stated as a test so it cannot be quietly "fixed".
+
+    A requirements.txt records names and versions. Guessing a licence from a
+    package name would be worse than saying so.
+    """
+    from app.sbom import _parse
+
+    data = {"Results": [{"Target": "/tmp/x/requirements.txt", "Type": "pip",
+                         "Packages": [{"Name": "requests", "Version": "2.31.0"}]}]}
+    out = _parse(data, Path("/tmp/x"))
+    pkg = out["packages"][0]
+    assert pkg["licenses"] == []
+    assert pkg["category"] == "unknown"
+    assert out["summary"]["unknown"] == 1
+
+
+def test_copyleft_packages_are_surfaced_first():
+    """One GPL dependency among a hundred MIT ones is the fact that matters."""
+    from app.sbom import _parse
+
+    data = {"Results": [
+        {"Target": "/tmp/x/requirements.txt", "Type": "pip", "Packages": [
+            {"Name": "mit-lib", "Version": "1.0"},
+            {"Name": "agpl-lib", "Version": "3.0"},
+            {"Name": "nolicence", "Version": "4.0"}]},
+        {"Target": "/tmp/x/requirements.txt", "Licenses": [
+            {"PkgName": "mit-lib", "Name": "MIT", "Category": "notice"},
+            {"PkgName": "agpl-lib", "Name": "AGPL-3.0", "Category": "restricted"}]},
+    ]}
+    out = _parse(data, Path("/tmp/x"))
+
+    assert out["packages"][0]["name"] == "agpl-lib", "copyleft is not listed first"
+    assert out["packages"][0]["attention"] is True
+    assert out["summary"]["attention"] == 1
+    # A permissive licence is not flagged; the flag has to stay meaningful.
+    mit = next(p for p in out["packages"] if p["name"] == "mit-lib")
+    assert mit["attention"] is False
+
+
+def test_the_strictest_licence_wins_for_a_dual_licensed_package():
+    from app.sbom import _parse
+
+    data = {"Results": [
+        {"Target": "/tmp/x/go.mod", "Type": "gomod",
+         "Packages": [{"Name": "dual", "Version": "1.0"}]},
+        {"Target": "/tmp/x/go.mod", "Licenses": [
+            {"PkgName": "dual", "Name": "MIT", "Category": "notice"},
+            {"PkgName": "dual", "Name": "GPL-3.0", "Category": "restricted"}]},
+    ]}
+    out = _parse(data, Path("/tmp/x"))
+    assert out["packages"][0]["category"] == "restricted"
+
+
+def test_collecting_packages_never_fails_a_scan(monkeypatch):
+    """An inventory is a report. It must not turn a good scan into an error."""
+    from app import sbom
+
+    def boom(*a, **k):
+        raise RuntimeError("trivy exploded")
+
+    monkeypatch.setattr(sbom, "_collect", boom)
+    out = sbom.collect(Path("/tmp/whatever"))
+    assert out["available"] is False
+    assert "trivy exploded" in out["reason"]
+    assert out["packages"] == []
+
+
+def test_the_package_csv_is_safe_to_open_in_a_spreadsheet(client, monkeypatch):
+    """Package names come from a scanned project, so they are untrusted.
+
+    A name starting with = is a formula when the CSV is opened.
+    """
+    from app.main import manager
+    from app.models import ScanTarget
+
+    job = manager.new_job(ScanTarget(kind="path", display="demo"), [])
+    job.sbom = {"available": True, "packages": [
+        {"name": "=cmd|'/c calc'!A1", "version": "1.0", "ecosystem": "npm",
+         "licenses": ["MIT"], "category": "notice", "attention": False,
+         "source": "package-lock.json"}], "summary": {}}
+
+    res = client.get(f"/api/scans/{job.id}/packages.csv")
+    assert res.status_code == 200
+    assert "'=cmd" in res.text, "a formula was written unescaped"
+    assert "MIT" in res.text
+
+
+def test_the_package_csv_is_not_readable_by_another_account(two_users):
+    """Same rule as the findings export: a scan belongs to who ran it."""
+    admin, bob = two_users
+    from app.main import manager
+    from app.models import ScanTarget
+
+    job = manager.new_job(ScanTarget(kind="path", display="secret"), [],
+                          owner="admin")
+    job.sbom = {"available": True, "packages": [], "summary": {}}
+
+    assert bob.get(f"/api/scans/{job.id}/packages.csv").status_code == 404
+    assert admin.get(f"/api/scans/{job.id}/packages.csv").status_code == 200
+
+
 # ------------------------------------------------------- password dialog
 def test_a_password_is_never_typed_into_a_visible_prompt():
     """window.prompt() cannot mask input.

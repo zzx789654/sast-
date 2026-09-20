@@ -15,6 +15,7 @@ from pathlib import Path
 from .adapters import get_adapters
 from .config import config
 from .inventory import inventory
+from . import sbom
 from .models import (
     Job, JobStatus, ScanTarget, ToolPhase, ToolResult, ToolStatus,
 )
@@ -162,6 +163,13 @@ class JobManager:
         try:
             job.stage = "scanning"
             self._run_adapters(job, Path(scan_root))
+
+            # After the tools, before cleanup removes the workspace. Its own
+            # step because it answers a different question from the scanners:
+            # what is in here, rather than what is wrong with it.
+            job.stage = "listing packages"
+            job.sbom = sbom.collect(Path(scan_root))
+
             job.compute_summary().compute_progress()
             job.policy_evaluation = evaluate_policy(job)
             decision = job.policy_evaluation["decision"]

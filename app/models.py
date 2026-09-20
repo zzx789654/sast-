@@ -152,6 +152,9 @@ class Job(BaseModel):
     summary: dict[str, int] = Field(default_factory=dict)
     progress: dict[str, int] = Field(default_factory=dict)
     inventory: dict = Field(default_factory=dict)   # file count / size / languages
+    # Third-party packages and their licences. Separate from findings: a
+    # dependency is not a problem, it is a fact about the project.
+    sbom: dict = Field(default_factory=dict)
     applicability: list[dict] = Field(default_factory=list)  # per-tool, set at pause
     stage: str = ""            # human-readable current step (e.g. "cloning repo")
     error: str = ""

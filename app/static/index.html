@@ -166,6 +166,31 @@
       <div id="summary" class="summary"></div>
       <div id="tool-results" class="tool-results"></div>
 
+      <!-- The package inventory. Collapsed by default: it answers a
+           different question from the findings, and on a real project it is
+           long enough to bury them. -->
+      <details id="sbom-box" class="sbom-box hidden">
+        <summary>
+          <span data-i18n="sbom.title">使用的套件與授權</span>
+          <span id="sbom-counts" class="sbom-counts"></span>
+        </summary>
+        <p class="mon-hint" id="sbom-note"></p>
+        <div class="sbom-actions">
+          <input type="text" id="sbom-filter" data-i18n-ph="sbom.filter"
+                 placeholder="依套件名稱篩選…">
+          <label class="sbom-only">
+            <input type="checkbox" id="sbom-attention-only">
+            <span data-i18n="sbom.attentionOnly">只看需要注意的</span>
+          </label>
+          <button id="export-packages" class="linkbtn"
+                  data-i18n="sbom.export">匯出套件清單 CSV</button>
+        </div>
+        <div class="matrix-wrap">
+          <table id="sbom-table" class="mon-table"></table>
+        </div>
+        <p id="sbom-more" class="mon-subnote"></p>
+      </details>
+
       <div class="filters">
         <select id="filter-severity"></select>
         <select id="filter-tool"></select>

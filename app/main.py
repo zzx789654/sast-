@@ -1066,6 +1066,47 @@ async def export_scan_csv(request: Request, job_id: str) -> Response:
     )
 
 
+@app.get("/api/scans/{job_id}/packages.csv")
+async def export_packages_csv(request: Request, job_id: str) -> Response:
+    """The package list with licences, for whoever has to review them.
+
+    A separate file from the findings export: this is an inventory, and the
+    person who needs it is usually not the person reading the findings.
+    """
+    job = manager.get(job_id)
+    if job is None or not _may_see_scan(request, job):
+        raise HTTPException(404, "scan not found")
+
+    columns = ["scan_id", "scanned_at", "target", "package", "version",
+               "ecosystem", "licenses", "category", "needs_attention",
+               "declared_in"]
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=columns, extrasaction="ignore")
+    writer.writeheader()
+    for pkg in (job.sbom or {}).get("packages", []):
+        writer.writerow({k: _csv_safe(v) for k, v in {
+            "scan_id": job.id,
+            "scanned_at": job.finished_at or job.created_at,
+            "target": job.target.display,
+            "package": pkg.get("name", ""),
+            "version": pkg.get("version", ""),
+            "ecosystem": pkg.get("ecosystem", ""),
+            # Several licences is normal ("MIT OR Apache-2.0"); keep them all.
+            "licenses": "; ".join(pkg.get("licenses") or []) or "unknown",
+            "category": pkg.get("category", ""),
+            "needs_attention": "yes" if pkg.get("attention") else "",
+            "declared_in": pkg.get("source", ""),
+        }.items()})
+
+    body = "\ufeff" + buf.getvalue()
+    return Response(
+        content=body,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition":
+                 f'attachment; filename="sast-packages-{job.id}.csv"'},
+    )
+
+
 @app.get("/api/scans/{job_id}")
 async def get_scan(request: Request, job_id: str) -> dict:
     job = manager.get(job_id)

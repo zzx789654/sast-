@@ -1,0 +1,305 @@
+{
+ "SchemaVersion": 2,
+ "Results": [
+  {
+   "Target": "package-lock.json",
+   "Class": "lang-pkgs",
+   "Type": "npm",
+   "Packages": [
+    {
+     "ID": "express@4.18.2",
+     "Name": "express",
+     "Identifier": {
+      "PURL": "pkg:npm/express@4.18.2",
+      "UID": "13e8eefc4d1c310b"
+     },
+     "Version": "4.18.2",
+     "Licenses": [
+      "MIT"
+     ],
+     "Relationship": "direct",
+     "DependsOn": [
+      "accepts@1.3.8",
+      "array-flatten@1.1.1",
+      "body-parser@1.20.1",
+      "content-disposition@0.5.4",
+      "content-type@1.0.5",
+      "cookie-signature@1.0.6",
+      "cookie@0.5.0",
+      "debug@2.6.9",
+      "depd@2.0.0",
+      "encodeurl@1.0.2",
+      "escape-html@1.0.3",
+      "etag@1.8.1",
+      "finalhandler@1.2.0",
+      "fresh@0.5.2",
+      "http-errors@2.0.0",
+      "merge-descriptors@1.0.1",
+      "methods@1.1.2",
+      "on-finished@2.4.1",
+      "parseurl@1.3.3",
+      "path-to-regexp@0.1.7",
+      "proxy-addr@2.0.8",
+      "qs@6.11.0",
+      "range-parser@1.2.1",
+      "safe-buffer@5.2.1",
+      "send@0.18.0",
+      "serve-static@1.15.0",
+      "setprototypeof@1.2.0",
+      "statuses@2.0.1",
+      "type-is@1.6.18",
+      "utils-merge@1.0.1",
+      "vary@1.1.2"
+     ],
+     "Locations": [
+      {
+       "StartLine": 213,
+       "EndLine": 253
+      }
+     ],
+     "AnalyzedBy": "npm"
+    },
+    {
+     "ID": "lodash@4.17.21",
+     "Name": "lodash",
+     "Identifier": {
+      "PURL": "pkg:npm/lodash@4.17.21",
+      "UID": "a432184106ddadde"
+     },
+     "Version": "4.17.21",
+     "Licenses": [
+      "MIT"
+     ],
+     "Relationship": "direct",
+     "Locations": [
+      {
+       "StartLine": 402,
+       "EndLine": 406
+      }
+     ],
+     "AnalyzedBy": "npm"
+    },
+    {
+     "ID": "accepts@1.3.8",
+     "Name": "accepts",
+     "Identifier": {
+      "PURL": "pkg:npm/accepts@1.3.8",
+      "UID": "69e0bfb0f20a7be5"
+     },
+     "Version": "1.3.8",
+     "Licenses": [
+      "MIT"
+     ],
+     "Indirect": true,
+     "Relationship": "indirect",
+     "DependsOn": [
+      "mime-types@2.1.35",
+      "negotiator@0.6.3"
+     ],
+     "Locations": [
+      {
+       "StartLine": 15,
+       "EndLine": 26
+      }
+     ],
+     "AnalyzedBy": "npm"
+    },
+    {
+     "ID": "array-flatten@1.1.1",
+     "Name": "array-flatten",
+     "Identifier": {
+      "PURL": "pkg:npm/array-flatten@1.1.1",
+      "UID": "a09278eb14740b41"
+     },
+     "Version": "1.1.1",
+     "Licenses": [
+      "MIT"
+     ],
+     "Indirect": true,
+     "Relationship": "indirect",
+     "Locations": [
+      {
+       "StartLine": 27,
+       "EndLine": 31
+      }
+     ],
+     "AnalyzedBy": "npm"
+    },
+    {
+     "ID": "body-parser@1.20.1",
+     "Name": "body-parser",
+     "Identifier": {
+      "PURL": "pkg:npm/body-parser@1.20.1",
+      "UID": "bf4de8948bbd0ca3"
+     },
+     "Version": "1.20.1",
+     "Licenses": [
+      "MIT"
+     ],
+     "Indirect": true,
+     "Relationship": "indirect",
+     "DependsOn": [
+      "bytes@3.1.2",
+      "content-type@1.0.5",
+      "debug@2.6.9",
+      "depd@2.0.0",
+      "destroy@1.2.0",
+      "http-errors@2.0.0",
+      "iconv-lite@0.4.24",
+      "on-finished@2.4.1",
+      "qs@6.11.0",
+      "raw-body@2.5.1",
+      "type-is@1.6.18",
+      "unpipe@1.0.0"
+     ],
+     "Locations": [
+      {
+       "StartLine": 32,
+       "EndLine": 54
+      }
+     ],
+     "AnalyzedBy": "npm"
+    },
+    {
+     "ID": "bytes@3.1.2",
+     "Name": "bytes",
+     "Identifier": {
+      "PURL": "pkg:npm/bytes@3.1.2",
+      "UID": "8ef3498401fe1c88"
+     },
+     "Version": "3.1.2",
+     "Licenses": [
+      "MIT"
+     ],
+     "Indirect": true,
+     "Relationship": "indirect",
+     "Locations": [
+      {
+       "StartLine": 55,
+       "EndLine": 62
+      }
+     ],
+     "AnalyzedBy": "npm"
+    }
+   ]
+  },
+  {
+   "Target": "requirements.txt",
+   "Class": "lang-pkgs",
+   "Type": "pip",
+   "Packages": [
+    {
+     "Name": "PyYAML",
+     "Identifier": {
+      "PURL": "pkg:pypi/pyyaml@6.0.1",
+      "UID": "67d9b05be925a974"
+     },
+     "Version": "6.0.1",
+     "Locations": [
+      {
+       "StartLine": 3,
+       "EndLine": 3
+      }
+     ],
+     "AnalyzedBy": "pip"
+    },
+    {
+     "Name": "flask",
+     "Identifier": {
+      "PURL": "pkg:pypi/flask@3.0.0",
+      "UID": "da308c7b07fbe05d"
+     },
+     "Version": "3.0.0",
+     "Locations": [
+      {
+       "StartLine": 2,
+       "EndLine": 2
+      }
+     ],
+     "AnalyzedBy": "pip"
+    },
+    {
+     "Name": "requests",
+     "Identifier": {
+      "PURL": "pkg:pypi/requests@2.31.0",
+      "UID": "f46dffeabf6b8285"
+     },
+     "Version": "2.31.0",
+     "Locations": [
+      {
+       "StartLine": 1,
+       "EndLine": 1
+      }
+     ],
+     "AnalyzedBy": "pip"
+    }
+   ]
+  },
+  {
+   "Target": "package-lock.json",
+   "Class": "license",
+   "Licenses": [
+    {
+     "Severity": "LOW",
+     "Category": "notice",
+     "PkgName": "express",
+     "FilePath": "package-lock.json",
+     "Name": "MIT",
+     "Text": "",
+     "Confidence": 1,
+     "Link": ""
+    },
+    {
+     "Severity": "LOW",
+     "Category": "notice",
+     "PkgName": "lodash",
+     "FilePath": "package-lock.json",
+     "Name": "MIT",
+     "Text": "",
+     "Confidence": 1,
+     "Link": ""
+    },
+    {
+     "Severity": "LOW",
+     "Category": "notice",
+     "PkgName": "accepts",
+     "FilePath": "package-lock.json",
+     "Name": "MIT",
+     "Text": "",
+     "Confidence": 1,
+     "Link": ""
+    },
+    {
+     "Severity": "LOW",
+     "Category": "notice",
+     "PkgName": "array-flatten",
+     "FilePath": "package-lock.json",
+     "Name": "MIT",
+     "Text": "",
+     "Confidence": 1,
+     "Link": ""
+    },
+    {
+     "Severity": "LOW",
+     "Category": "notice",
+     "PkgName": "body-parser",
+     "FilePath": "package-lock.json",
+     "Name": "MIT",
+     "Text": "",
+     "Confidence": 1,
+     "Link": ""
+    },
+    {
+     "Severity": "LOW",
+     "Category": "notice",
+     "PkgName": "bytes",
+     "FilePath": "package-lock.json",
+     "Name": "MIT",
+     "Text": "",
+     "Confidence": 1,
+     "Link": ""
+    }
+   ]
+  }
+ ]
+}

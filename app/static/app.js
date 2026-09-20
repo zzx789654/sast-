@@ -11,6 +11,7 @@ const state = {
   currentJob: null,   // full job object
   pollTimer: null,
   inspect: null,      // {inventory, tools:[{name, applicable, reason}]} for a path
+  sbom: null,         // package inventory for the shown report
   view: "scan",       // "scan" | "report" | "monitor"
   monTimer: null,
   jobs: [],           // scan history, for the report list
@@ -982,6 +983,17 @@ function wireViewNav() {
   $("#admin-restart").addEventListener("click", runRestart);
   $("#report-refresh").addEventListener("click", () => refreshScanList(state.selectedJob));
   $("#export-csv").addEventListener("click", exportCsv);
+  const pkgBtn = $("#export-packages");
+  if (pkgBtn) {
+    pkgBtn.addEventListener("click", () => {
+      if (!state.selectedJob) return;
+      window.location.href = `/api/scans/${state.selectedJob}/packages.csv`;
+    });
+  }
+  const sbomFilter = $("#sbom-filter");
+  if (sbomFilter) sbomFilter.addEventListener("input", renderSbomRows);
+  const sbomOnly = $("#sbom-attention-only");
+  if (sbomOnly) sbomOnly.addEventListener("change", renderSbomRows);
   $("#export-pdf").addEventListener("click", () => {
     // Render every finding before printing: the list is paged for speed, and
     // a PDF that silently stopped at the first hundred would be worse than
@@ -1667,8 +1679,91 @@ function renderJob(job) {
   renderConfirmBox(job);
   renderSummary(job.summary || {});
   renderToolRows(job.results || {});
+  renderSbom(job.sbom || {});
   populateToolFilter(job.results || {});
   renderFindings();
+}
+
+// ---------------------------------------------------------- package list
+// What the project pulls in, and under which licence. Separate from the
+// findings because a dependency is not a problem -- it is a fact about the
+// project that somebody may still have to approve.
+const SBOM_PAGE = 200;
+
+function renderSbom(sbom) {
+  const box = $("#sbom-box");
+  if (!box) return;
+  state.sbom = sbom;
+
+  const packages = sbom.packages || [];
+  if (!sbom.available && !packages.length) {
+    // Nothing to show, and the reason is usually "no lockfile in here",
+    // which the tool rows already say.
+    box.classList.add("hidden");
+    return;
+  }
+  box.classList.remove("hidden");
+
+  const s = sbom.summary || {};
+  $("#sbom-counts").textContent =
+    t("sbom.counts", { n: s.total || 0, unknown: s.unknown || 0 });
+
+  // The honest caveat, stated where it matters: a lockfile has no licence
+  // in it, so "unknown" usually means "not installed", not "no licence".
+  const note = $("#sbom-note");
+  if (note) {
+    note.textContent = (s.unknown ? t("sbom.unknownNote") + " " : "")
+                       + t("sbom.attentionNote");
+  }
+
+  renderSbomRows();
+}
+
+function renderSbomRows() {
+  const table = $("#sbom-table");
+  if (!table) return;
+  const packages = ((state.sbom || {}).packages) || [];
+
+  const needle = ($("#sbom-filter") || {}).value || "";
+  const onlyAttention = (($("#sbom-attention-only") || {}).checked) || false;
+  const shown = packages.filter((p) => {
+    if (onlyAttention && !p.attention) return false;
+    if (!needle) return true;
+    const hay = (p.name + " " + (p.licenses || []).join(" ")).toLowerCase();
+    return hay.includes(needle.toLowerCase());
+  });
+
+  table.innerHTML = "";
+  const head = el("tr");
+  ["sbom.package", "sbom.version", "sbom.ecosystem", "sbom.license",
+   "sbom.category"].forEach((k) => head.appendChild(el("th", null, t(k))));
+  table.appendChild(head);
+
+  shown.slice(0, SBOM_PAGE).forEach((p) => {
+    const row = el("tr", p.attention ? "sbom-attention" : null);
+    row.appendChild(el("td", "c-name", p.name));
+    row.appendChild(el("td", null, p.version || ""));
+    row.appendChild(el("td", null, p.ecosystem || ""));
+
+    const lic = el("td");
+    if ((p.licenses || []).length) {
+      p.licenses.forEach((name) => {
+        lic.appendChild(el("span", "lic-tag" + (p.attention ? " warn" : ""), name));
+      });
+    } else {
+      lic.appendChild(el("span", "lic-tag unknown", t("sbom.unknown")));
+    }
+    row.appendChild(lic);
+    row.appendChild(el("td", "matrix-desc", t("sbom.cat." + p.category)));
+    table.appendChild(row);
+  });
+
+  const more = $("#sbom-more");
+  if (more) {
+    more.textContent = shown.length > SBOM_PAGE
+      ? t("sbom.truncated", { shown: SBOM_PAGE, total: shown.length })
+      : t("sbom.showing", { n: shown.length, total: packages.length });
+  }
 }
 
 function renderConfirmBox(job) {
@@ -2082,6 +2177,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (state.inspect) renderInspectPanel(state.inspect);
     renderReportList();                     // relabel status/verdict chips
     if (state.currentJob) renderJob(state.currentJob);
+    else if (state.sbom) renderSbom(state.sbom);
     if (state.view === "monitor") { renderMonitorTools(); loadMonitorDocker(); }
   };
   $("#lang-toggle").addEventListener("click",

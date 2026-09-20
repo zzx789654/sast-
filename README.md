@@ -325,6 +325,25 @@ Two roles only: administrator and user. An administrator manages accounts; the
 last one cannot be deleted, disabled or demoted, because that click would lock
 everybody out.
 
+### Packages and licences
+
+Every scan also lists what the project pulls in and, where it can, under
+which licence. It is collapsed under the findings, and exports separately:
+
+```
+GET /api/scans/<id>/packages.csv
+```
+
+The honest limitation: a lockfile records names and versions, not licences.
+The licence is read from the package's own files, so it is known only when
+the packages are actually installed (`node_modules`, `site-packages`). On a
+plain repository checkout the normal result is a complete package list with
+the licences unknown -- which is reported as "unknown" rather than guessed
+from the package name.
+
+Packages under copyleft or commercial-use terms are listed first and marked.
+That is a prompt to look, not a verdict, and it is not legal advice.
+
 ### Telling the deployment its own address
 
 The MCP client entry and the `.env` template both say where a tool should
