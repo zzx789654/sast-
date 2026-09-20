@@ -71,7 +71,57 @@ def _collect(scan_root: Path) -> dict:
                 "packages": [], "summary": {}}
 
     data = json.loads(res.stdout or "{}")
-    return _parse(data, scan_root)
+    out = _parse(data, scan_root)
+    if not out["packages"]:
+        out["reason"] = _why_empty(scan_root)
+    return out
+
+
+#: Files that declare dependencies, and whether a version can be read from
+#: them without resolving anything.
+_MANIFESTS = {
+    "requirements.txt": "unpinned", "requirements-dev.txt": "unpinned",
+    "pyproject.toml": "unpinned", "setup.py": "unpinned",
+    "package.json": "unpinned", "Gemfile": "unpinned", "build.gradle": "unpinned",
+    "package-lock.json": "locked", "yarn.lock": "locked",
+    "pnpm-lock.yaml": "locked", "poetry.lock": "locked",
+    "Pipfile.lock": "locked", "go.sum": "locked", "Cargo.lock": "locked",
+    "Gemfile.lock": "locked", "composer.lock": "locked", "go.mod": "locked",
+}
+
+
+def _why_empty(scan_root: Path) -> str:
+    """Nothing listed. Say whether that means "no dependencies" or "we could
+    not read the versions", which are very different answers.
+
+    The common case is a requirements.txt of `package>=1.2` ranges: trivy
+    reads pinned versions only, because `>=1.2` does not name a release to
+    look up. The project does have dependencies; nothing could be said about
+    which ones.
+    """
+    found: dict[str, str] = {}
+    try:
+        for path in scan_root.rglob("*"):
+            kind = _MANIFESTS.get(path.name)
+            if kind and not _vendored(path, scan_root):
+                # A lockfile anywhere beats a bare manifest.
+                if found.get(path.name) != "locked":
+                    found[path.name] = kind
+    except OSError:
+        return ""
+
+    if not found:
+        return "no-manifest"
+    if any(kind == "locked" for kind in found.values()):
+        # There was something precise to read and still nothing came out.
+        return "unreadable:" + ",".join(sorted(found))
+    return "unpinned:" + ",".join(sorted(found))
+
+
+def _vendored(path: Path, root: Path) -> bool:
+    parts = set(path.relative_to(root).parts[:-1])
+    return bool(parts & {"node_modules", "vendor", ".git", "site-packages",
+                         ".venv", "venv", "dist", "build"})
 
 
 def _parse(data: dict, scan_root: Path) -> dict:

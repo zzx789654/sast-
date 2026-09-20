@@ -2265,6 +2265,64 @@ def test_token_creation_says_which_account_it_will_belong_to(accounts_env):
     assert i18n.count('"tokens.createdAs"') == 2, "missing in one language"
 
 
+def test_an_empty_package_list_says_why(tmp_path):
+    """"0 packages" on a project with dependencies reads as a broken feature.
+
+    This project's own requirements.txt is `fastapi>=0.111` and so on, and
+    trivy reads pinned versions only -- a range does not name a release to
+    look up. So the scan of this very repo reported nothing, with no hint
+    that the dependencies exist and simply could not be pinned down.
+    """
+    from app.sbom import _why_empty
+
+    # Ranges, like this repo's own.
+    ranged = tmp_path / "ranged"
+    ranged.mkdir()
+    (ranged / "requirements.txt").write_text("fastapi>=0.111\nhttpx>=0.27\n")
+    assert _why_empty(ranged) == "unpinned:requirements.txt"
+
+    # Nothing that declares a dependency at all.
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    (bare / "main.py").write_text("print(1)\n")
+    assert _why_empty(bare) == "no-manifest"
+
+    # Something precise was there and still nothing came out.
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "package-lock.json").write_text("{}")
+    assert _why_empty(locked).startswith("unreadable:")
+
+
+def test_vendored_manifests_do_not_count(tmp_path):
+    """A requirements.txt inside node_modules is not this project's."""
+    from app.sbom import _why_empty
+
+    root = tmp_path / "proj"
+    (root / "node_modules" / "dep").mkdir(parents=True)
+    (root / "node_modules" / "dep" / "package.json").write_text("{}")
+    (root / "main.py").write_text("print(1)\n")
+    assert _why_empty(root) == "no-manifest"
+
+
+def test_the_reason_reaches_the_ui():
+    """The panel has to render it, or the explanation is only in the JSON."""
+    js = (Path(__file__).resolve().parents[1]
+          / "app/static/app.js").read_text("utf-8")
+
+    fn = js[js.index("function emptySbomReason"):]
+    fn = fn[:fn.index("\n}")]
+    for key in ["sbom.empty.unpinned", "sbom.empty.unreadable",
+                "sbom.empty.none"]:
+        assert key in fn, f"{key} is never shown"
+
+    i18n = (Path(__file__).resolve().parents[1]
+            / "app/static/i18n.js").read_text("utf-8")
+    for key in ["sbom.empty.unpinned", "sbom.empty.unreadable",
+                "sbom.empty.none"]:
+        assert i18n.count(f'"{key}"') == 2, f"{key} is missing in one language"
+
+
 # --------------------------------------------------------- package inventory
 def _sbom_fixture():
     path = Path(__file__).resolve().parent / "fixtures/trivy_sbom.json"

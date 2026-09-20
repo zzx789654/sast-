@@ -1743,15 +1743,45 @@ function renderSbom(sbom) {
   $("#sbom-counts").textContent =
     t("sbom.counts", { n: s.total || 0, unknown: s.unknown || 0 });
 
-  // The honest caveat, stated where it matters: a lockfile has no licence
-  // in it, so "unknown" usually means "not installed", not "no licence".
   const note = $("#sbom-note");
-  if (note) {
+  const empty = !packages.length;
+
+  // "0 packages" on a project that plainly has dependencies reads as a
+  // broken feature. Say which it is: nothing declared, or versions that
+  // could not be read.
+  if (empty && note) {
+    note.textContent = emptySbomReason(sbom.reason || "");
+  } else if (note) {
+    // The honest caveat, stated where it matters: a lockfile has no licence
+    // in it, so "unknown" usually means "not installed", not "no licence".
     note.textContent = (s.unknown ? t("sbom.unknownNote") + " " : "")
                        + t("sbom.attentionNote");
   }
 
+  // Controls that do nothing on an empty list.
+  ["sbom-filter", "sbom-attention-only", "export-packages"].forEach((id) => {
+    const node = $("#" + id);
+    if (node) node.disabled = empty;
+  });
+
   renderSbomRows();
+}
+
+// The backend says why in a machine-readable form: "no-manifest",
+// "unpinned:<files>" or "unreadable:<files>".
+function emptySbomReason(reason) {
+  const [kind, files] = String(reason).split(":");
+  const list = (files || "").split(",").filter(Boolean).join(", ");
+  if (kind === "unpinned") {
+    return t("sbom.empty.unpinned", { files: list });
+  }
+  if (kind === "unreadable") {
+    return t("sbom.empty.unreadable", { files: list });
+  }
+  if (kind === "no-manifest") {
+    return t("sbom.empty.none");
+  }
+  return reason || t("sbom.empty.none");
 }
 
 function renderSbomRows() {
