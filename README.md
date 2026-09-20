@@ -325,6 +325,31 @@ Two roles only: administrator and user. An administrator manages accounts; the
 last one cannot be deleted, disabled or demoted, because that click would lock
 everybody out.
 
+### Forgotten password
+
+There is no reset link on the login page: sending one needs mail this
+deployment does not have, and a self-service reset is a second way in to
+every account. Recovery runs from the host instead, where shell access is
+already more than the login grants.
+
+```bash
+./scripts/reset-password.sh                  # reset admin, prompted twice
+./scripts/reset-password.sh alice            # reset a named account
+./scripts/reset-password.sh admin --generate # make one up and print it once
+./scripts/reset-password.sh --list           # which accounts exist
+```
+
+It finds the running container by itself, or falls back to a local checkout.
+The password is typed at a prompt or generated -- never passed as an
+argument, which would put it in `ps` output and shell history.
+
+The password rules still apply, with one exception: the "do not reuse an old
+password" rule is relaxed, because refusing every password the account
+remembers can leave a locked-out administrator with no way back in. A reset
+also revokes that account's sessions and API tokens, on the assumption that a
+password being reset may be a password that leaked, and re-enables the
+account if it was disabled.
+
 ### API tokens
 
 **Settings** issues tokens for calling the API from a script or an assistant.

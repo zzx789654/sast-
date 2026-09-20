@@ -5,6 +5,7 @@ pure normalization/parsing functions are tested directly.
 """
 from __future__ import annotations
 
+import io
 import json
 import shutil
 import zipfile
@@ -2200,6 +2201,109 @@ def test_the_scanner_matrix_states_network_behaviour():
     # silently downgraded to "fetches rules" in a later edit.
     gitleaks_row = table[table.index('["gitleaks"'):]
     assert '"none"' in gitleaks_row[:gitleaks_row.index("]")]
+
+
+# -------------------------------------------------- forgotten-password reset
+def _reset_helper(monkeypatch, tmp_path, username, password, list_mode="0"):
+    """Run scripts/_reset_password.py the way the shell wrapper does."""
+    import runpy
+
+    monkeypatch.setenv("RESET_USER", username)
+    monkeypatch.setenv("RESET_LIST", list_mode)
+    monkeypatch.setattr("sys.stdin", io.StringIO(password))
+
+    script = Path(__file__).resolve().parents[1] / "scripts/_reset_password.py"
+    try:
+        runpy.run_path(str(script), run_name="__main__")
+    except SystemExit as exc:
+        return exc.code
+    return 0
+
+
+def test_a_forgotten_password_can_be_reset_from_the_host(accounts_env,
+                                                         monkeypatch, tmp_path,
+                                                         capsys):
+    """There is no reset link on the login page; shell access is the path."""
+    user = accounts_env.create_user("admin", "Original-Password-1!",
+                                    is_admin=True)
+    accounts_env.create_token(user.id, "ci")
+    accounts_env.start_session(user.id)
+
+    rc = _reset_helper(monkeypatch, tmp_path, "admin", "Brand-New-Passw0rd!")
+    assert rc == 0, capsys.readouterr().err
+
+    assert accounts_env.authenticate("admin", "Brand-New-Passw0rd!")
+    assert not accounts_env.authenticate("admin", "Original-Password-1!")
+    # A reset is what you do when a password may have leaked, so anything
+    # else that still speaks for the account has to stop working too.
+    assert not [t for t in accounts_env.list_tokens() if not t.revoked]
+
+
+def test_the_reset_still_obeys_the_password_policy(accounts_env, monkeypatch,
+                                                   tmp_path, capsys):
+    """Recovery is not a reason to accept a password the rules refuse."""
+    accounts_env.create_user("admin", "Original-Password-1!", is_admin=True)
+
+    rc = _reset_helper(monkeypatch, tmp_path, "admin", "short")
+    assert rc == 1
+    assert "at least" in capsys.readouterr().err
+    assert accounts_env.authenticate("admin", "Original-Password-1!")
+
+
+def test_recovery_is_not_blocked_by_the_reuse_rule(accounts_env, monkeypatch,
+                                                   tmp_path):
+    """Refusing every remembered password can leave an admin with no way in.
+
+    Every other rule still applies; only the history check is relaxed, and
+    the outgoing hash is still recorded so the rule keeps working afterwards.
+    """
+    user = accounts_env.create_user("admin", "Original-Password-1!",
+                                    is_admin=True)
+    accounts_env.set_password(user.id, "Second-Password-22!")
+
+    rc = _reset_helper(monkeypatch, tmp_path, "admin", "Original-Password-1!")
+    assert rc == 0
+    assert accounts_env.authenticate("admin", "Original-Password-1!")
+
+    # The history is still being kept: an ordinary change back to the
+    # password we just replaced is still refused.
+    fresh = accounts_env.get_user("admin")
+    with pytest.raises(ValueError):
+        accounts_env.set_password(fresh.id, "Second-Password-22!")
+
+
+def test_resetting_re_enables_a_disabled_account(accounts_env, monkeypatch,
+                                                 tmp_path):
+    """A locked-out admin is often disabled as well as forgotten."""
+    user = accounts_env.create_user("admin", "Original-Password-1!",
+                                    is_admin=True)
+    accounts_env.create_user("spare", "Spare-Password-123!", is_admin=True)
+    accounts_env.set_disabled(user.id, True)
+
+    rc = _reset_helper(monkeypatch, tmp_path, "admin", "Brand-New-Passw0rd!")
+    assert rc == 0
+    assert not accounts_env.get_user("admin").disabled
+
+
+def test_resetting_an_unknown_account_is_refused(accounts_env, monkeypatch,
+                                                 tmp_path, capsys):
+    accounts_env.create_user("admin", "Original-Password-1!", is_admin=True)
+
+    rc = _reset_helper(monkeypatch, tmp_path, "nobody", "Brand-New-Passw0rd!")
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "no such account" in err
+    assert "admin" in err, "the message should name the accounts that exist"
+
+
+def test_the_reset_script_never_takes_the_password_as_an_argument():
+    """Arguments show up in ps output and in shell history."""
+    sh = (Path(__file__).resolve().parents[1]
+          / "scripts/reset-password.sh").read_text("utf-8")
+
+    assert "read -rs PASSWORD" in sh, "the password must be prompted for"
+    # It is piped in, never interpolated into the command line.
+    assert 'printf \'%s\' "${PASSWORD}" | run_py' in sh
 
 
 # ------------------------------------------------------------ settings tab
