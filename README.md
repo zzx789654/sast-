@@ -52,6 +52,32 @@ Browser ──► nginx (reverse proxy) ──► FastAPI ──► Orchestrator
 
 ## Quick start
 
+### Which command do I run?
+
+| Situation | Command |
+|---|---|
+| **First time**, Docker not installed yet | `./setup.sh --docker` |
+| **First time**, Docker already installed | `./scripts/deploy.sh` |
+| **Updating** the scanners (and the app) | `./setup.sh --update` |
+| Deploying a code change, scanners unchanged | `./scripts/deploy.sh` |
+| Running without Docker, on the host | `./setup.sh` then `./setup.sh --run` |
+
+The two you will use after the first day:
+
+```bash
+./setup.sh --update      # update everything: cache downloads, rebuild, switch over
+./scripts/deploy.sh      # deploy a code change: build and switch over
+```
+
+Both are safe to re-run, both keep the old image so you can roll back, and
+**neither touches your accounts or custom rules** — those live on named
+Docker volumes that survive a rebuild. You never need to reset a password
+to update. (Scan history is the exception: it is held in memory and is
+cleared when the container restarts.)
+
+The rest of this section explains each route. If you just want it running on
+a fresh Ubuntu server: `./setup.sh --docker`.
+
 ### Option A — one command (recommended)
 
 `setup.sh` installs everything (system prerequisites, a Python virtualenv with
@@ -472,21 +498,75 @@ someone's browser (DNS rebinding). Same-host is allowed automatically; set
 
 ## Keeping the scanners up to date
 
-Two commands, one job each:
+### The two commands
 
 ```bash
-./setup.sh --update      # update: cache the downloads, rebuild, switch over
-./scripts/deploy.sh      # deploy: build and switch over (no scanner refresh)
+./setup.sh --update      # update the scanners, then rebuild and switch over
+./scripts/deploy.sh      # deploy the current source: build and switch over
 ```
 
-On a Docker deployment `--update` does the whole thing -- it downloads into
-`./vendor` (reusing what is already there), rebuilds the image and switches
-the container. It skips installing onto the host, because those copies are
-not what runs. `SKIP_DEPLOY=1` stops before the rebuild; `SKIP_VENDOR=1`
-skips the caching step.
+They overlap deliberately — `--update` calls `deploy.sh` to finish the job —
+but they answer different questions:
 
-Accounts, scan rules and workspaces live on named volumes, so an update
-never touches them: **you do not need to reset any password to update.**
+| | `./setup.sh --update` | `./scripts/deploy.sh` |
+|---|---|---|
+| Installs Docker if missing | no | no (use `./setup.sh --docker`) |
+| Refreshes scanner binaries | **yes** | no, uses whatever the image pins |
+| Downloads into `./vendor` first | yes | yes |
+| Pulls the latest source | yes (via deploy.sh) | yes |
+| Rebuilds the image | yes | yes |
+| Switches the container | yes | yes |
+| Keeps a rollback image | yes | yes |
+| Waits for a healthy check | yes | yes |
+
+So: **`--update` when you want newer scanners, `deploy.sh` when you have
+changed code.** If you are not sure, `--update` is the safe choice; it does
+strictly more.
+
+### What `--update` does, step by step
+
+On a deployment where Docker is serving the app:
+
+1. **Cache the downloads** into `./vendor` (`scripts/fetch-vendor.sh`).
+   Resumable, checksum-verified, and it skips anything already there — so a
+   second run costs no network at all.
+2. **Skip the host install.** The scanners that run are the ones inside the
+   image, so installing copies onto the host would be several minutes spent
+   on binaries nothing executes.
+3. **Rebuild and switch** (`scripts/deploy.sh`): pull the source, build the
+   new image while the old container keeps serving, switch over, wait for
+   the health check, and keep the previous image tagged for rollback.
+
+On a host install (no container running) it installs the scanners onto the
+host instead and stops there, because there is nothing to rebuild.
+
+Two escape hatches, for when you want only part of it:
+
+```bash
+SKIP_DEPLOY=1 ./setup.sh --update    # refresh the downloads, do not rebuild
+SKIP_VENDOR=1 ./setup.sh --update    # rebuild, do not touch the cache
+```
+
+### What an update does not touch
+
+Accounts, custom rules and workspaces are on named Docker volumes
+(`sast-accounts`, `sast-rules`, `sast-workspaces`), which a rebuild does not
+recreate. **Updating never costs you a password, a rule or a login.** Scan
+history is deliberately different: it is held in memory and does not survive
+a restart.
+
+### If something goes wrong
+
+The old image is tagged before every deploy, so going back is one command:
+
+```bash
+./scripts/deploy.sh --rollback
+```
+
+The build runs while the old container keeps serving, so a failed build
+changes nothing — the failure message says so rather than leaving you to
+guess. A deploy that fails the health check tells you to roll back rather
+than leaving a broken container in place.
 
 
 

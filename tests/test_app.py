@@ -2830,6 +2830,40 @@ def test_the_osv_download_is_checksummed():
     assert "exit 1" in block, "a mismatch does not stop the build"
 
 
+def test_both_readmes_say_which_command_to_run():
+    """The question people arrive with. The answer used to be spread across
+    three option headings and a section 400 lines further down, so the
+    obvious guess -- keep running --update -- was the wrong one.
+    """
+    root = Path(__file__).resolve().parents[1]
+
+    for name in ["README.md", "README.zh.md"]:
+        text = (root / name).read_text("utf-8")
+        assert "./setup.sh --docker" in text, f"{name}: first-run command missing"
+        assert "./setup.sh --update" in text, f"{name}: update command missing"
+        assert "./scripts/deploy.sh" in text, f"{name}: deploy command missing"
+        assert "SKIP_DEPLOY" in text, f"{name}: the escape hatch is undocumented"
+        assert "--rollback" in text, f"{name}: no way back is documented"
+
+
+def test_the_readme_does_not_promise_scan_history_survives():
+    """It does not: jobs are held in memory, so a container swap clears them.
+    Accounts and rules are on volumes and do survive -- the two must not be
+    described together.
+    """
+    root = Path(__file__).resolve().parents[1]
+
+    orchestrator = (root / "app/orchestrator.py").read_text("utf-8")
+    assert "_jobs: dict" in orchestrator, (
+        "scan history may no longer be in memory; recheck what the README says"
+    )
+
+    for name, phrase in [("README.md", "Scan history is the exception"),
+                         ("README.zh.md", "掃描記錄例外")]:
+        text = (root / name).read_text("utf-8")
+        assert phrase in text, f"{name} does not flag that scan history is lost"
+
+
 # ---------------------------------------------- one command does the update
 def _update_block():
     setup = (Path(__file__).resolve().parents[1] / "setup.sh").read_text("utf-8")
