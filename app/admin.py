@@ -438,9 +438,29 @@ def restart_app(delay: float = 0.5) -> dict:
     return {"restarting": True, "delay_seconds": delay}
 
 
+def in_container() -> bool:
+    """Whether this process runs inside the Docker image.
+
+    It decides which advice is true. `setup.sh --update` installs onto the
+    host; when the app is served from a container, the host's copy is not
+    the one doing the scanning, so telling a container user to run --update
+    sends them round a loop that cannot change what they are looking at.
+    """
+    if os.path.exists("/.dockerenv"):
+        return True
+    try:
+        with open("/proc/1/cgroup", encoding="utf-8") as handle:
+            return any(marker in handle.read()
+                       for marker in ("docker", "containerd", "kubepods"))
+    except OSError:
+        return False
+
+
 def status(check_upstream: bool = False) -> dict:
     """Everything the Monitor tab needs to render the operator panel."""
     snap = state.snapshot()
     snap["tools_available"] = updatable_tools(check_upstream)
+    # So the panel can name the command that actually works here.
+    snap["containerised"] = in_container()
     snap["restart_note"] = "restarting clears scan history (jobs are kept in memory)"
     return snap

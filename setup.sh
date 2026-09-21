@@ -178,8 +178,28 @@ if [ "$MODE" = "update" ]; then
 
   FORCE=1 BIN_DIR="$BIN_DIR" PIP_CMD="${PIP_CMD:-pip3}" bash scripts/install-tools.sh \
     || warn "some tools failed to update"
-  say "Update done. Check versions in the Monitor tab or: curl -s localhost:8000/api/tools"
-  echo "Tip: bump the pinned versions in scripts/install-tools.sh / Dockerfile to control what --update installs."
+  say "Update done (host install) / 主機端工具已更新"
+
+  # The version the Monitor tab shows is whichever copy serves the app. When
+  # that is a container, this update did not touch it -- and the tab tells
+  # people to run exactly this command, so without saying so here they run
+  # it again and again and nothing changes.
+  if command -v docker >/dev/null 2>&1 \
+     && docker compose ps --status running 2>/dev/null | grep -q sast-studio; then
+    echo
+    echo "  NOTE: SAST Studio is running in Docker."
+    echo "  The scanners inside that container are pinned in the image, so this"
+    echo "  update did not change what the Monitor tab reports. To change those:"
+    echo
+    echo "      1. edit the ARG *_VERSION pins at the top of Dockerfile"
+    echo "      2. ./scripts/deploy.sh          # rebuilds and switches over"
+    echo
+    echo "  注意：本次更新只裝到主機。網頁上顯示的是容器內的版本，"
+    echo "  要換版本請改 Dockerfile 的版本釘選再跑 ./scripts/deploy.sh。"
+  else
+    echo "Check versions in the Monitor tab or: curl -s localhost:8000/api/tools"
+    echo "Tip: bump the pinned versions in scripts/install-tools.sh to control what --update installs."
+  fi
   exit 0
 fi
 

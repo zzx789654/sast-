@@ -2830,6 +2830,69 @@ def test_the_osv_download_is_checksummed():
     assert "exit 1" in block, "a mismatch does not stop the build"
 
 
+# ------------------------------------------- advice that matches the install
+def test_the_monitor_hint_does_not_send_container_users_in_a_loop():
+    """The tab showed container versions and told people to run
+    `./setup.sh --update`, which installs onto the host. Nothing they did
+    could change the numbers in front of them, so the obvious response was
+    to run it again.
+    """
+    root = Path(__file__).resolve().parents[1] / "app/static"
+    i18n = (root / "i18n.js").read_text("utf-8")
+    js = (root / "app.js").read_text("utf-8")
+
+    # The unconditional advice is gone from the shared line...
+    shared = [l for l in i18n.splitlines() if '"mon.updateHint"' in l]
+    assert shared, "the hint disappeared entirely"
+    for line in shared:
+        assert "--update" not in line, (
+            "the hint still recommends --update regardless of deployment"
+        )
+
+    # ...and both variants exist, in both languages.
+    for key in ["mon.updateHintHost", "mon.updateHintDocker"]:
+        assert i18n.count(f'"{key}"') == 2, f"{key} missing in one language"
+
+    # The page picks one based on what the server reports.
+    assert "d.containerised" in js, "the page never asks how it is deployed"
+
+
+def test_the_server_reports_whether_it_runs_in_a_container():
+    from app import admin
+
+    snap = admin.status()
+    assert "containerised" in snap
+    assert isinstance(snap["containerised"], bool)
+
+
+def test_container_detection_survives_a_missing_cgroup_file(monkeypatch):
+    """A read that throws must answer "not a container" rather than blow up
+    the whole operator panel."""
+    from app import admin
+
+    monkeypatch.setattr(admin.os.path, "exists", lambda p: False)
+
+    def boom(*a, **k):
+        raise OSError("no /proc here")
+
+    monkeypatch.setattr("builtins.open", boom)
+    assert admin.in_container() is False
+
+
+def test_update_says_when_it_did_not_touch_the_container():
+    """Same trap one level down: --update prints "done" and points at the
+    Monitor tab, which is exactly where the unchanged numbers are."""
+    setup = (Path(__file__).resolve().parents[1] / "setup.sh").read_text("utf-8")
+
+    update = setup[setup.index('if [ "$MODE" = "update" ]'):]
+    update = update[:update.index("\n  exit 0")]
+
+    assert "docker compose ps" in update, (
+        "--update never checks whether a container is serving the app"
+    )
+    assert "deploy.sh" in update, "it does not name the command that would work"
+
+
 # ------------------------------------------------------ the vendor cache
 def _shell_defs(path, last_func):
     """The script up to the end of `last_func`, so its helpers can be sourced

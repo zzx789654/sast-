@@ -1130,6 +1130,15 @@ async function loadAdminStatus(checkUpstream) {
 
   // Say which tools this can actually update, so a pinned binary that needs an
   // image rebuild does not look like a button that silently did nothing.
+  // Which advice is true here depends on how this is deployed: --update
+  // installs onto the host, so in a container it cannot change the versions
+  // shown above, and repeating it is the obvious thing to try.
+  const hint = $("#mon-update-hint");
+  if (hint) {
+    hint.textContent = t("mon.updateHint") + " "
+      + t(d.containerised ? "mon.updateHintDocker" : "mon.updateHintHost");
+  }
+
   const note = $("#admin-updatable");
   if (note) {
     const list = (d.tools_available || []);
