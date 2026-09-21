@@ -68,12 +68,26 @@ step "Detecting the docker group id for the Monitor tab"
 if [ -S /var/run/docker.sock ]; then
   DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
   echo "  docker.sock is group ${DOCKER_GID}"
+  # A .env this user cannot write stops the deploy dead, and under set -e
+  # the only clue is one "Permission denied" line among the build output.
+  # It happens for a mundane reason: one deploy run with sudo leaves the
+  # file owned by root, and every later run as a normal user fails.
+  if [ -e .env ] && [ ! -w .env ]; then
+    echo "  ! cannot write .env -- it belongs to $(stat -c '%U' .env), you are $(id -un)" >&2
+    echo "  !   sudo chown $(id -un):$(id -gn) $(pwd)/.env" >&2
+    echo "  ! (a previous deploy run with sudo is the usual cause)" >&2
+    die "fix the ownership of .env and run this again"
+  fi
+
   if [ -f .env ] && grep -q '^DOCKER_GID=' .env; then
     # Portable in-place edit: BSD and GNU sed disagree about -i.
     tmp="$(mktemp)"
-    sed "s/^DOCKER_GID=.*/DOCKER_GID=${DOCKER_GID}/" .env > "${tmp}" && mv "${tmp}" .env
+    sed "s/^DOCKER_GID=.*/DOCKER_GID=${DOCKER_GID}/" .env > "${tmp}" \
+      && mv "${tmp}" .env \
+      || die "could not update DOCKER_GID in .env"
   else
-    echo "DOCKER_GID=${DOCKER_GID}" >> .env
+    echo "DOCKER_GID=${DOCKER_GID}" >> .env \
+      || die "could not write DOCKER_GID to .env"
   fi
   echo "  wrote DOCKER_GID=${DOCKER_GID} to .env"
 else
