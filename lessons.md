@@ -1503,3 +1503,26 @@ osv_scanner 就是這樣卡了好幾輪。
 
 準則二：**用 sudo 跑一次部署，會在檔案系統留下之後每一次都失敗的地雷。**
 腳本現在會偵測這種情況並直接給出 `chown` 指令。
+
+### 補充：部署失敗訊息與實際結果不一致
+
+`.env` 修好之後重跑部署，映像建置成功，但切換容器時報：
+
+```
+Error response from daemon: Conflict. The container name
+"/f6ff9d466e1e_sast--sast-studio-1" is already in use
+FAILED: could not start the new image; ./scripts/deploy.sh --rollback
+```
+
+腳本判定失敗並叫人 rollback。但**實際查證後發現部署是成功的**：
+compose 自己重試並建立了新容器，健康檢查通過、網站回 200、
+容器內確實是新版的 osv-scanner 2.6.0。
+
+那個衝突來自前幾次被中斷的部署留下的舊容器記錄。
+
+準則：**部署腳本回報失敗時，仍要查證實際狀態再決定要不要 rollback。**
+照著錯誤訊息去 rollback，會把一個其實成功的部署退回去。
+
+（本輪沒有改 deploy.sh 的這段邏輯——中斷留下的孤兒容器是特例，
+ 而且 compose 已經自行恢復。若之後重複發生，再考慮在切換前
+ 主動清理同名的停止容器。）
