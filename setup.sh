@@ -12,9 +12,13 @@
 #   ./setup.sh                 # full local setup (venv + deps + tools + verify)
 #   ./setup.sh --run           # ...then start the server on http://localhost:8000
 #   ./setup.sh --docker        # build & start via Docker Compose instead (http://localhost:8080)
-#   ./setup.sh --update        # update the scanners to their pinned/latest versions
-#                              #   (downloads into ./vendor first, and reuses
-#                              #    what is already there; SKIP_VENDOR=1 opts out)
+#   ./setup.sh --update        # update everything, end to end. Downloads into
+#                              #   ./vendor first (reusing what is there), then:
+#                              #     - Docker deployment -> rebuilds the image
+#                              #       and switches over, via scripts/deploy.sh
+#                              #     - host install      -> installs onto the host
+#                              #   SKIP_VENDOR=1 skips the cache step.
+#                              #   SKIP_DEPLOY=1 stops before rebuilding.
 #   ./setup.sh --no-tools      # skip installing the scanners (Python app only)
 #   ./setup.sh --no-venv       # install Python deps into the current environment
 #   ./setup.sh --help
@@ -162,6 +166,15 @@ if [ "$MODE" = "update" ]; then
   else
     warn "pip is unavailable; semgrep was not updated"
   fi
+  # Decide once what this deployment is, because it changes which steps are
+  # worth doing: installing binaries onto the host is wasted work when the
+  # scanners that run are the ones inside the image.
+  DOCKERISED=0
+  if command -v docker >/dev/null 2>&1 \
+     && docker compose ps --status running 2>/dev/null | grep -q sast-studio; then
+    DOCKERISED=1
+  fi
+
   if [ -w /usr/local/bin ]; then BIN_DIR=/usr/local/bin;
   else BIN_DIR="$HOME/.local/bin"; mkdir -p "$BIN_DIR"; fi
 
@@ -176,26 +189,37 @@ if [ "$MODE" = "update" ]; then
       || warn "vendor cache incomplete; the update will fetch what is missing"
   fi
 
-  FORCE=1 BIN_DIR="$BIN_DIR" PIP_CMD="${PIP_CMD:-pip3}" bash scripts/install-tools.sh \
-    || warn "some tools failed to update"
-  say "Update done (host install) / 主機端工具已更新"
+  # The cached downloads above are what the image build will use. Installing
+  # them onto the host as well only matters when the host is what serves the
+  # app -- otherwise it is several minutes spent on copies nothing runs.
+  if [ "$DOCKERISED" = "1" ] && [ "${SKIP_DEPLOY:-0}" != "1" ]; then
+    echo "  (skipping the host install: the container is what serves this)"
+  else
+    FORCE=1 BIN_DIR="$BIN_DIR" PIP_CMD="${PIP_CMD:-pip3}" bash scripts/install-tools.sh \
+      || warn "some tools failed to update"
+  fi
+  # Where the app is actually served from decides what "update" has to mean.
+  # Installing onto the host does nothing for a container deployment, and
+  # leaving the person to notice that and run a second command is how
+  # osv-scanner sat at an old version through several attempts.
+  if [ "$DOCKERISED" = "1" ] && [ "${SKIP_DEPLOY:-0}" != "1" ]; then
+    say "Rebuilding the image and switching over / 重建映像並切換"
+    echo "  (SAST Studio is running in Docker, so the container is what matters)"
+    if ! bash scripts/deploy.sh; then
+      warn "deploy failed -- the previous version is still serving"
+      warn "roll back fully with: ./scripts/deploy.sh --rollback"
+      exit 1
+    fi
+    say "Update complete / 更新完成"
+    echo "  The Monitor tab now shows the versions from the new image."
+    echo "  Accounts and scan rules are on their own volumes and were not touched."
+    exit 0
+  fi
 
-  # The version the Monitor tab shows is whichever copy serves the app. When
-  # that is a container, this update did not touch it -- and the tab tells
-  # people to run exactly this command, so without saying so here they run
-  # it again and again and nothing changes.
-  if command -v docker >/dev/null 2>&1 \
-     && docker compose ps --status running 2>/dev/null | grep -q sast-studio; then
-    echo
-    echo "  NOTE: SAST Studio is running in Docker."
-    echo "  The scanners inside that container are pinned in the image, so this"
-    echo "  update did not change what the Monitor tab reports. To change those:"
-    echo
-    echo "      1. edit the ARG *_VERSION pins at the top of Dockerfile"
-    echo "      2. ./scripts/deploy.sh          # rebuilds and switches over"
-    echo
-    echo "  注意：本次更新只裝到主機。網頁上顯示的是容器內的版本，"
-    echo "  要換版本請改 Dockerfile 的版本釘選再跑 ./scripts/deploy.sh。"
+  say "Update done (host install) / 主機端工具已更新"
+  if [ "${SKIP_DEPLOY:-0}" = "1" ]; then
+    echo "  SKIP_DEPLOY=1 was set, so nothing was rebuilt."
+    echo "  Run ./scripts/deploy.sh when you want the container to pick this up."
   else
     echo "Check versions in the Monitor tab or: curl -s localhost:8000/api/tools"
     echo "Tip: bump the pinned versions in scripts/install-tools.sh to control what --update installs."

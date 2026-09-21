@@ -2830,6 +2830,63 @@ def test_the_osv_download_is_checksummed():
     assert "exit 1" in block, "a mismatch does not stop the build"
 
 
+# ---------------------------------------------- one command does the update
+def _update_block():
+    setup = (Path(__file__).resolve().parents[1] / "setup.sh").read_text("utf-8")
+    block = setup[setup.index('if [ "$MODE" = "update" ]'):]
+    return block[:block.index("\n  exit 0\nfi")]
+
+
+def test_update_rebuilds_and_switches_when_docker_serves_the_app():
+    """One command, end to end. Splitting it left people running --update,
+    seeing nothing change, and running it again."""
+    block = _update_block()
+
+    assert "bash scripts/fetch-vendor.sh" in block, "no download-to-local step"
+    assert "bash scripts/deploy.sh" in block, "--update never rebuilds"
+    assert block.index("fetch-vendor.sh") < block.index("deploy.sh"), (
+        "the cache is filled after the build that was meant to use it"
+    )
+
+
+def test_update_skips_a_host_install_nothing_would_run():
+    """Installing onto the host takes minutes and changes nothing when the
+    scanners that run live inside the image."""
+    block = _update_block()
+
+    assert "DOCKERISED" in block, "the deployment kind is never determined"
+    skip = block[block.index("skipping the host install"):]
+    assert "install-tools.sh" in skip, (
+        "the host install is not actually inside the else branch"
+    )
+
+
+def test_a_failed_rebuild_does_not_claim_the_update_worked():
+    block = _update_block()
+    fail = block[block.index("if ! bash scripts/deploy.sh"):]
+    fail = fail[:fail.index("fi")]
+    assert "exit 1" in fail, "a failed deploy still exits successfully"
+    assert "rollback" in fail, "it does not say how to undo a bad deploy"
+
+
+def test_updating_does_not_disturb_accounts_or_rules():
+    """The worry this answers: "do I have to reset the admin password every
+    time?" No -- both live on named volumes, which a rebuild does not touch.
+    """
+    compose = (Path(__file__).resolve().parents[1]
+               / "docker-compose.yml").read_text("utf-8")
+
+    for volume in ["sast-accounts", "sast-rules"]:
+        assert f"{volume}:/data/" in compose, (
+            f"{volume} is not a named volume, so a rebuild would lose it"
+        )
+
+    # And nothing in the update path resets a password.
+    block = _update_block()
+    assert "reset-password" not in block
+    assert "SAST_ADMIN_PASSWORD" not in block
+
+
 # ------------------------------------------- advice that matches the install
 def test_the_monitor_hint_does_not_send_container_users_in_a_loop():
     """The tab showed container versions and told people to run

@@ -472,6 +472,24 @@ someone's browser (DNS rebinding). Same-host is allowed automatically; set
 
 ## Keeping the scanners up to date
 
+Two commands, one job each:
+
+```bash
+./setup.sh --update      # update: cache the downloads, rebuild, switch over
+./scripts/deploy.sh      # deploy: build and switch over (no scanner refresh)
+```
+
+On a Docker deployment `--update` does the whole thing -- it downloads into
+`./vendor` (reusing what is already there), rebuilds the image and switches
+the container. It skips installing onto the host, because those copies are
+not what runs. `SKIP_DEPLOY=1` stops before the rebuild; `SKIP_VENDOR=1`
+skips the caching step.
+
+Accounts, scan rules and workspaces live on named volumes, so an update
+never touches them: **you do not need to reset any password to update.**
+
+
+
 Only two of the six can be updated from the Monitor tab, and the reason is
 how they are installed rather than a shortcut:
 
