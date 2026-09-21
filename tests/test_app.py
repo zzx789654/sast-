@@ -3004,6 +3004,43 @@ def test_the_expected_hashes_have_exactly_one_home():
         )
 
 
+def test_a_failed_download_is_reported_as_a_failure(tmp_path):
+    """A download that fails must not look like one that worked.
+
+    The caching block was appended after `curl ... && mv ...`, which had been
+    the last statement and so the function's exit status. With a block after
+    it, whether the caller sees success depends on that block -- and a caller
+    that trusts it goes on to untar a file that is not there. The status is
+    now returned explicitly rather than inherited from whatever ends up last.
+    """
+    import shutil
+    import subprocess
+
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is not available")
+
+    root = Path(__file__).resolve().parents[1]
+    lib = tmp_path / "lib.sh"
+    lib.write_text(_shell_defs(root / "scripts/install-tools.sh", "download"))
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    dest = tmp_path / "out"
+
+    out = subprocess.run(
+        [bash, "-c",
+         f"source '{lib.as_posix()}'\n"
+         "OSV_A=amd64; GL_A=x64; TRIVY_A=64bit; BEARER_A=amd64\n"
+         "GITLEAKS_VERSION=8.30.1; TRIVY_VERSION=0.74.0\n"
+         "download 'https://github.com/gitleaks/gitleaks/releases/download/"
+         f"v0.0.0-does-not-exist/gitleaks_8.30.1_linux_x64.tar.gz' '{dest.as_posix()}'"],
+        capture_output=True, text=True, timeout=120,
+        env={"VENDOR": vendor.as_posix(), "PATH": "/usr/bin:/bin"})
+
+    assert out.returncode != 0, "a failed download reported success"
+    assert not dest.exists(), "a failed download left a file the caller would use"
+
+
 def test_update_fills_the_cache_before_installing():
     """Ordering is the whole point: install-tools.sh can only use a cached
     file that fetch-vendor.sh has already put there."""

@@ -87,8 +87,12 @@ download() {
     fi
   fi
 
-  curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 --speed-limit 1024 --speed-time 120 -C - \
-    -o "$dest.tmp" "$url" && mv -f "$dest.tmp" "$dest" || return 1
+  if ! curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 \
+       --speed-limit 1024 --speed-time 120 -C - -o "$dest.tmp" "$url"; then
+    rm -f "$dest.tmp"
+    return 1
+  fi
+  mv -f "$dest.tmp" "$dest" || return 1
 
   # Keep what we just paid for, so the next --update (or a docker build) does
   # not download it again -- but only once it has been checked. Storing an
@@ -102,6 +106,11 @@ download() {
       echo "   not cached: could not verify ${name}" >&2
     fi
   fi
+
+  # Say the download succeeded explicitly. It used to be the exit status of
+  # the curl line simply because that line was last; with the caching block
+  # after it, the caller would otherwise be told whether *caching* worked.
+  return 0
 }
 
 if ! have curl; then
