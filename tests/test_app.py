@@ -2830,6 +2830,196 @@ def test_the_osv_download_is_checksummed():
     assert "exit 1" in block, "a mismatch does not stop the build"
 
 
+# ------------------------------------------------------ the vendor cache
+def _shell_defs(path, last_func):
+    """The script up to the end of `last_func`, so its helpers can be sourced
+    without running the installs that follow."""
+    out = []
+    started = False
+    for line in path.read_text("utf-8").splitlines():
+        out.append(line)
+        if line.startswith(last_func + "() {"):
+            started = True
+        elif started and line == "}":
+            break
+    return "\n".join(out)
+
+
+def test_update_installs_from_the_local_cache_instead_of_downloading(tmp_path):
+    """`setup.sh --update` re-downloaded every binary each time.
+
+    ~90 MB of scanners over a slow link, on every update, when
+    fetch-vendor.sh had already downloaded and checksum-verified them into
+    ./vendor. The two scripts simply were not connected.
+    """
+    import shutil
+    import subprocess
+
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is not available")
+
+    root = Path(__file__).resolve().parents[1]
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    (vendor / "osv-scanner_linux_amd64").write_text("PRETEND-BINARY")
+
+    lib = tmp_path / "lib.sh"
+    lib.write_text(_shell_defs(root / "scripts/install-tools.sh", "download"))
+
+    dest = tmp_path / "got"
+    script = f"""
+      source '{lib.as_posix()}'
+      OSV_SCANNER_VERSION=2.6.0; GITLEAKS_VERSION=8.30.1; TRIVY_VERSION=0.74.0
+      OSV_A=amd64; GL_A=x64; TRIVY_A=64bit; BEARER_A=amd64
+      download 'https://github.com/google/osv-scanner/releases/download/v2.6.0/osv-scanner_linux_amd64' '{dest.as_posix()}'
+    """
+    out = subprocess.run([bash, "-c", script], capture_output=True, text=True,
+                         env={"VENDOR": vendor.as_posix(), "PATH": "/usr/bin:/bin"},
+                         timeout=60)
+
+    assert "using local copy" in out.stdout, out.stdout + out.stderr
+    assert dest.read_text() == "PRETEND-BINARY", "the cached bytes were not used"
+
+
+def test_the_two_scripts_agree_on_the_cache_filenames():
+    """A mismatch here is silent: the cache is simply never hit, and the
+    only symptom is that updates stay slow."""
+    import re
+    import shutil
+    import subprocess
+
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is not available")
+
+    root = Path(__file__).resolve().parents[1]
+    fetch = (root / "scripts/fetch-vendor.sh").read_text("utf-8")
+
+    # The names fetch-vendor.sh stores under.
+    written = {}
+    for key in ["OSV_NAME", "GL_NAME", "TV_NAME"]:
+        match = re.search(rf'{key}="([^"]+)"', fetch)
+        assert match, f"{key} not found in fetch-vendor.sh"
+        written[key] = match.group(1)
+
+    lib = root / "scripts/install-tools.sh"
+    defs = _shell_defs(lib, "cached_name_for")
+    script = defs + """
+      OSV_SCANNER_VERSION=2.6.0; GITLEAKS_VERSION=8.30.1; TRIVY_VERSION=0.74.0
+      ARCH_GO=amd64; ARCH_GL=x64; ARCH_TV=64bit
+      OSV_A=amd64; GL_A=x64; TRIVY_A=64bit; BEARER_A=amd64
+      cached_name_for "https://x/osv-scanner_linux_amd64"; echo
+      cached_name_for "https://x/gitleaks_8.30.1_linux_x64.tar.gz"; echo
+      cached_name_for "https://x/trivy_0.74.0_Linux-64bit.tar.gz"; echo
+    """
+    out = subprocess.run([bash, "-c", script], capture_output=True, text=True,
+                         timeout=60)
+    looked_for = [l for l in out.stdout.splitlines() if l.strip()]
+
+    expected = [
+        written["OSV_NAME"].replace("${ARCH_GO}", "amd64"),
+        written["GL_NAME"].replace("${GITLEAKS_VERSION}", "8.30.1")
+                          .replace("${ARCH_GL}", "x64"),
+        written["TV_NAME"].replace("${TRIVY_VERSION}", "0.74.0")
+                          .replace("${ARCH_TV}", "64bit"),
+    ]
+    assert looked_for == expected, (
+        f"install-tools.sh looks for {looked_for}, "
+        f"fetch-vendor.sh writes {expected}"
+    )
+
+
+def test_an_unrecognised_download_still_goes_to_the_network():
+    """Returning a name for everything would make an unknown URL look like a
+    cache miss on a file that can never exist."""
+    import shutil
+    import subprocess
+
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is not available")
+
+    root = Path(__file__).resolve().parents[1]
+    defs = _shell_defs(root / "scripts/install-tools.sh", "cached_name_for")
+    out = subprocess.run(
+        [bash, "-c", defs + "\nOSV_A=amd64; GL_A=x64; TRIVY_A=64bit; "
+                            "BEARER_A=amd64; GITLEAKS_VERSION=1; TRIVY_VERSION=1\n"
+                            'cached_name_for "https://example.com/other.zip"'],
+        capture_output=True, text=True, timeout=60)
+    assert out.stdout.strip() == "", "an unknown URL was given a cache name"
+
+
+def test_a_corrupt_download_is_not_promoted_into_the_cache(tmp_path):
+    """FIND-001, found reviewing this change before shipping it.
+
+    Caching a freshly downloaded file without checking it would turn the
+    cache into a way to launder a bad download: every later run, and the
+    docker build, treat whatever is in vendor/ as already verified.
+    """
+    import shutil
+    import subprocess
+
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is not available")
+
+    root = Path(__file__).resolve().parents[1]
+    lib = tmp_path / "lib.sh"
+    lib.write_text(_shell_defs(root / "scripts/install-tools.sh", "download"))
+
+    bad = tmp_path / "bad"
+    bad.write_text("CORRUPTED-NOT-THE-REAL-BINARY")
+
+    out = subprocess.run(
+        [bash, "-c",
+         f"source '{lib.as_posix()}'\n"
+         "OSV_A=amd64; GL_A=x64; TRIVY_A=64bit; BEARER_A=amd64\n"
+         "GITLEAKS_VERSION=8.30.1; TRIVY_VERSION=0.74.0\n"
+         f"cache_is_trustworthy osv-scanner_linux_amd64 '{bad.as_posix()}'"],
+        capture_output=True, text=True, cwd=root, timeout=60)
+
+    assert out.returncode != 0, "a corrupt file was judged trustworthy"
+
+
+def test_the_expected_hashes_have_exactly_one_home():
+    """install-tools.sh asks fetch-vendor.sh for a hash rather than keeping
+    its own copy, which would drift the next time a version is bumped."""
+    root = Path(__file__).resolve().parents[1]
+    install = (root / "scripts/install-tools.sh").read_text("utf-8")
+
+    assert "--expected-for" in install, "it does not ask for the recorded hash"
+
+    # For the three tools fetch-vendor.sh caches, its hashes are the only
+    # copy. (bearer keeps its own: it is not cached there, so there is
+    # nothing for it to drift away from.)
+    fetch = (root / "scripts/fetch-vendor.sh").read_text("utf-8")
+    import re
+    for name in ["SHA_OSV", "SHA_GITLEAKS", "SHA_TRIVY"]:
+        value = re.search(rf'{name}="([0-9a-f]{{64}})"', fetch)
+        assert value, f"{name} not found in fetch-vendor.sh"
+        assert value.group(1) not in install, (
+            f"{name} is duplicated in install-tools.sh; bumping a version "
+            "would leave the two copies disagreeing"
+        )
+
+
+def test_update_fills_the_cache_before_installing():
+    """Ordering is the whole point: install-tools.sh can only use a cached
+    file that fetch-vendor.sh has already put there."""
+    setup = (Path(__file__).resolve().parents[1] / "setup.sh").read_text("utf-8")
+
+    update = setup[setup.index('if [ "$MODE" = "update" ]'):]
+    update = update[:update.index("exit 0")]
+
+    # Compare the actual invocations, not mentions in comments.
+    fetch_at = update.index("bash scripts/fetch-vendor.sh")
+    install_at = update.index("bash scripts/install-tools.sh")
+    assert fetch_at < install_at, (
+        "the cache is filled after the install that was supposed to use it"
+    )
+
+
 # ------------------------------------------------ what can actually update
 def test_only_the_tools_that_can_update_in_place_are_offered():
     """Four of the six are pinned binaries in the image.

@@ -13,6 +13,8 @@
 #   ./setup.sh --run           # ...then start the server on http://localhost:8000
 #   ./setup.sh --docker        # build & start via Docker Compose instead (http://localhost:8080)
 #   ./setup.sh --update        # update the scanners to their pinned/latest versions
+#                              #   (downloads into ./vendor first, and reuses
+#                              #    what is already there; SKIP_VENDOR=1 opts out)
 #   ./setup.sh --no-tools      # skip installing the scanners (Python app only)
 #   ./setup.sh --no-venv       # install Python deps into the current environment
 #   ./setup.sh --help
@@ -162,6 +164,18 @@ if [ "$MODE" = "update" ]; then
   fi
   if [ -w /usr/local/bin ]; then BIN_DIR=/usr/local/bin;
   else BIN_DIR="$HOME/.local/bin"; mkdir -p "$BIN_DIR"; fi
+
+  # Download to ./vendor first, then install from there. Same reason the
+  # deploy script does it: a resumable download that verifies a checksum and
+  # keeps what it fetched beats re-downloading ~90 MB on every update over a
+  # slow link. Best-effort -- if this fails, install-tools.sh still fetches
+  # whatever is missing itself.
+  if [ "${SKIP_VENDOR:-0}" != "1" ] && [ -f scripts/fetch-vendor.sh ]; then
+    say "Caching scanner downloads in ./vendor / 先下載到本機 vendor 目錄"
+    bash scripts/fetch-vendor.sh \
+      || warn "vendor cache incomplete; the update will fetch what is missing"
+  fi
+
   FORCE=1 BIN_DIR="$BIN_DIR" PIP_CMD="${PIP_CMD:-pip3}" bash scripts/install-tools.sh \
     || warn "some tools failed to update"
   say "Update done. Check versions in the Monitor tab or: curl -s localhost:8000/api/tools"

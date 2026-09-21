@@ -36,11 +36,72 @@ run_install() {
   fi
 }
 
+# Where fetch-vendor.sh keeps the binaries it has already downloaded and
+# checksum-verified. Re-downloading them on every --update was the slow part:
+# on a link of a few hundred KB/s, trivy alone is 50 MB.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VENDOR="${VENDOR:-${ROOT}/vendor}"
+
+# The name fetch-vendor.sh stores each download under. Keeping the two in
+# step matters: a mismatch here means the cache is silently never hit.
+cached_name_for() {
+  case "$1" in
+    */osv-scanner_linux_*)  printf 'osv-scanner_linux_%s' "${OSV_A}" ;;
+    */gitleaks_*)           printf 'gitleaks_%s_linux_%s.tar.gz' "${GITLEAKS_VERSION}" "${GL_A}" ;;
+    */trivy_*)              printf 'trivy_%s_Linux-%s.tar.gz' "${TRIVY_VERSION}" "${TRIVY_A}" ;;
+    */bearer_*)             printf 'bearer_%s_linux_%s.tar.gz' "${BEARER_VERSION}" "${BEARER_A}" ;;
+    *)                      printf '' ;;
+  esac
+}
+
+# True when this file matches the checksum fetch-vendor.sh records for it.
+# Unknown file or no sha256sum -> not trustworthy, so it is not cached; the
+# download still installs, it just does not get promoted to the cache.
+cache_is_trustworthy() {
+  local name="$1" file="$2" want got
+  have sha256sum || return 1
+  [ -f "${ROOT}/scripts/fetch-vendor.sh" ] || return 1
+
+  want="$(bash "${ROOT}/scripts/fetch-vendor.sh" --expected-for "$name" 2>/dev/null)"
+  [ -n "$want" ] || return 1
+
+  got="$(sha256sum "$file" | cut -d" " -f1)"
+  [ "$want" = "$got" ]
+}
+
 download() {
   local url="$1"
   local dest="$2"
+  local name cached
+
+  # Use the local copy when there is one. fetch-vendor.sh verified its
+  # checksum before storing it, so this is not a shortcut past that check --
+  # it is the reason the check was done up front.
+  name="$(cached_name_for "$url")"
+  if [ -n "$name" ]; then
+    cached="${VENDOR}/${name}"
+    if [ -s "$cached" ]; then
+      echo "   using local copy: vendor/${name}"
+      cp "$cached" "$dest"
+      return 0
+    fi
+  fi
+
   curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 --speed-limit 1024 --speed-time 120 -C - \
-    -o "$dest.tmp" "$url" && mv -f "$dest.tmp" "$dest"
+    -o "$dest.tmp" "$url" && mv -f "$dest.tmp" "$dest" || return 1
+
+  # Keep what we just paid for, so the next --update (or a docker build) does
+  # not download it again -- but only once it has been checked. Storing an
+  # unverified file would make the cache a way to launder a bad download:
+  # every later run treats what is in vendor/ as already verified.
+  if [ -n "$name" ] && [ -d "$VENDOR" ] && [ -w "$VENDOR" ]; then
+    if cache_is_trustworthy "$name" "$dest"; then
+      cp "$dest" "${VENDOR}/${name}" 2>/dev/null \
+        && echo "   cached to vendor/${name}"
+    else
+      echo "   not cached: could not verify ${name}" >&2
+    fi
+  fi
 }
 
 if ! have curl; then

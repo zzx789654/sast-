@@ -57,6 +57,14 @@ expected_for() {
   esac
 }
 
+# The hashes live here and nowhere else. install-tools.sh asks for one before
+# it promotes a download into the cache, rather than keeping a second copy
+# that could drift out of step with these.
+if [ "${1:-}" = "--expected-for" ]; then
+  expected_for "${2:-}"
+  exit 0
+fi
+
 # Verify a file when a hash is recorded for it.
 # 0 = matches or unrecorded, 1 = mismatch.
 verify() {
