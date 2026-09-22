@@ -9,6 +9,8 @@ const DICT = {
 
     "sec.newScan": "新增掃描",
     "sec.tools": "工具",
+    "opt.inventory": "完整套件清單與授權",
+    "opt.inventoryWhy": "列出所有套件（含間接相依）與它們的授權。需要向 deps.dev 查詢才能解析版本範圍，因此**相依清單會離開本機**（約 88 KB）。掃描別人的私有程式碼時請先考量。",
     "sec.results": "結果",
 
     "tab.upload": "上傳 zip",
@@ -407,6 +409,8 @@ const DICT = {
 
     "sec.newScan": "New scan",
     "sec.tools": "Tools",
+    "opt.inventory": "Full package list with licences",
+    "opt.inventoryWhy": "Lists every package (including transitive ones) and its licence. Resolving version ranges means querying deps.dev, so **your dependency list leaves this host** (~88 KB). Think twice when scanning someone else's private code.",
     "sec.results": "Results",
 
     "tab.upload": "Upload zip",

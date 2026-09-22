@@ -71,6 +71,17 @@
         <button type="button" id="select-all" class="linkbtn" data-i18n="btn.selectAll">全選可用工具</button>
       </fieldset>
 
+      <!-- A per-scan choice, not a setting: it sends the dependency list to
+           deps.dev, which is fine for your own code and a decision worth
+           making again for someone else's. -->
+      <label class="scan-option">
+        <input type="checkbox" id="opt-full-inventory">
+        <span>
+          <strong data-i18n="opt.inventory">完整套件清單與授權</strong>
+          <em data-i18n="opt.inventoryWhy"></em>
+        </span>
+      </label>
+
       <div id="tool-warnings" class="tool-warnings hidden"></div>
 
       <!-- The judgement rule is fixed, so it is stated rather than offered

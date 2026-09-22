@@ -1030,9 +1030,15 @@ async def create_scan(
     confirm: Optional[str] = Form(None),
     custom_rules: Optional[str] = Form(None),
     rulesets: Optional[str] = Form(None),
+    full_inventory: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
 ) -> JSONResponse:
     requested = [t.strip() for t in tools.split(",") if t.strip()]
+    # The deployment-wide setting is the default; a scan may turn it on for
+    # itself. It cannot be turned off below the deployment's own choice,
+    # because that choice is the operator's.
+    want_inventory = (config.OSV_FULL_INVENTORY
+                      or _parse_bool(full_inventory, False))
     # {engine: [rule name, ...]}; names are re-checked when they are read, so
     # a bad one here cannot reach the filesystem.
     try:
@@ -1070,6 +1076,7 @@ async def create_scan(
         target = ScanTarget(kind="git", display=git_url)
         job = manager.new_job(target, requested, chosen_rules, chosen_sets,
                               owner=_owner_name(request))
+        job.full_inventory = want_inventory
         manager.start(job.id, {"kind": "git", "url": git_url}, confirm=want_confirm)
 
     elif source_kind == "path":
@@ -1080,6 +1087,7 @@ async def create_scan(
         target = ScanTarget(kind="path", display=local_path)
         job = manager.new_job(target, requested, chosen_rules, chosen_sets,
                               owner=_owner_name(request))
+        job.full_inventory = want_inventory
         manager.start(job.id, {"kind": "path", "path": local_path}, confirm=False)
 
     elif source_kind == "upload":
@@ -1088,6 +1096,7 @@ async def create_scan(
         target = ScanTarget(kind="upload", display=file.filename or "upload.zip")
         job = manager.new_job(target, requested, chosen_rules, chosen_sets,
                               owner=_owner_name(request))
+        job.full_inventory = want_inventory
         zip_path = manager.job_dir(job.id) / "upload.zip"
         try:
             await _save_upload(file, zip_path)

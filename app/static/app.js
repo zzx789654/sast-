@@ -1578,6 +1578,9 @@ async function startScan() {
   const fd = new FormData();
   fd.append("source_kind", state.sourceKind);
   fd.append("tools", tools.join(","));
+  if ($("#opt-full-inventory") && $("#opt-full-inventory").checked) {
+    fd.append("full_inventory", "true");
+  }
   // Only the rules ticked in the editor panel; an empty object means the
   // scanners run with their default rulesets alone.
   const chosen = selectedRules();

@@ -142,6 +142,11 @@ class Job(BaseModel):
     owner: Optional[str] = None
     # Custom rules the user ticked, as {engine: [name, ...]}.
     custom_rules: dict[str, list[str]] = Field(default_factory=dict)
+    # Ask osv-scanner for every package and its licence. It resolves version
+    # ranges by querying deps.dev, so the dependency list leaves the host --
+    # which is a per-scan decision, not a deployment-wide one: your own code
+    # and a client's are different answers.
+    full_inventory: bool = False
     # Published rulesets per tool, as {tool: [ruleset, ...]}; empty uses the
     # configured default.
     rulesets: dict[str, list[str]] = Field(default_factory=dict)

@@ -783,3 +783,17 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
   border-radius: 999px; padding: 0 .4rem;
 }
 .av-row .av-ok { color: var(--ok); }
+
+/* A scan option that costs something: it sends the dependency list out, so
+   it reads as a decision rather than a tick-box among the tools. */
+.scan-option {
+  display: flex; gap: .55rem; align-items: flex-start;
+  margin: .8rem 0; padding: .6rem .7rem;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
+}
+.scan-option input { margin-top: .2rem; flex: none; }
+.scan-option strong { display: block; font-size: .86rem; font-weight: 600; }
+.scan-option em {
+  display: block; margin-top: .2rem; font-style: normal;
+  font-size: .78rem; color: var(--muted); line-height: 1.45;
+}

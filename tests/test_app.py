@@ -2323,6 +2323,90 @@ def test_the_reason_reaches_the_ui():
         assert i18n.count(f'"{key}"') == 2, f"{key} is missing in one language"
 
 
+# ------------------------------------- the inventory option on the form
+def test_the_inventory_option_is_offered_on_the_scan_form():
+    """It shipped as an environment variable, which meant editing .env and
+    redeploying -- not an option anyone would find, let alone use per scan.
+    """
+    root = Path(__file__).resolve().parents[1] / "app/static"
+    html = (root / "index.html").read_text("utf-8")
+    js = (root / "app.js").read_text("utf-8")
+    i18n = (root / "i18n.js").read_text("utf-8")
+
+    assert 'id="opt-full-inventory"' in html, "no control on the form"
+    assert 'fd.append("full_inventory"' in js, "the choice is never submitted"
+
+    # The cost has to be stated where the choice is made.
+    for key in ["opt.inventory", "opt.inventoryWhy"]:
+        assert i18n.count('"' + key + '"') == 2, key + " missing in one language"
+    assert "deps.dev" in i18n, "the page does not say where the data goes"
+
+
+def test_a_scan_carries_its_own_inventory_choice(client, tmp_path):
+    """Per scan, not per deployment: your own code and a client's are
+    different answers to the same question."""
+    from app.main import manager
+
+    (tmp_path / "requirements.txt").write_text("fastapi>=0.111\n",
+                                               encoding="utf-8")
+    body = {"source_kind": "path", "local_path": str(tmp_path),
+            "tools": "gitleaks"}
+
+    res = client.post("/api/scans", data=body,
+                      headers={"Origin": "http://testserver"})
+    assert manager.get(res.json()["id"]).full_inventory is False
+
+    res = client.post("/api/scans", data=dict(body, full_inventory="true"),
+                      headers={"Origin": "http://testserver"})
+    assert manager.get(res.json()["id"]).full_inventory is True
+
+
+def test_the_deployment_setting_still_applies_when_the_box_is_unticked(
+        client, tmp_path, monkeypatch):
+    """An operator who turned it on for the whole deployment meant it."""
+    from app.config import config
+    from app.main import manager
+
+    monkeypatch.setattr(config, "OSV_FULL_INVENTORY", True)
+    (tmp_path / "requirements.txt").write_text("fastapi>=0.111\n",
+                                               encoding="utf-8")
+
+    res = client.post("/api/scans",
+                      data={"source_kind": "path", "local_path": str(tmp_path),
+                            "tools": "gitleaks"},
+                      headers={"Origin": "http://testserver"})
+    assert manager.get(res.json()["id"]).full_inventory is True
+
+
+def test_the_choice_reaches_the_inventory_collector(tmp_path, monkeypatch):
+    """Carrying the flag on the job is no use if collect() ignores it."""
+    from app import sbom
+    from app.adapters.base import CommandResult
+    from app.config import config
+
+    monkeypatch.setattr(config, "OSV_FULL_INVENTORY", False)
+    seen = []
+
+    def fake_run(args, **kwargs):
+        seen.append(list(args))
+        if args[0] == "trivy":
+            return CommandResult(0, '{"Results": []}', "")
+        return CommandResult(0, '{"results": []}', "")
+
+    monkeypatch.setattr(sbom, "run_command", fake_run)
+
+    sbom.collect(tmp_path, full_inventory=False)
+    assert not any("--all-packages" in a for a in seen), (
+        "it queried deps.dev for a scan that did not ask"
+    )
+
+    seen.clear()
+    sbom.collect(tmp_path, full_inventory=True)
+    assert any("--all-packages" in a for a in seen), (
+        "the scan asked for the inventory and did not get it"
+    )
+
+
 # ----------------------------------------- osv-scanner "nothing to scan"
 @pytest.mark.parametrize("files,expect", [
     ({"requirements.txt": ""}, "empty"),

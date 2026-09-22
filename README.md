@@ -358,10 +358,14 @@ with an advisory -- including transitive dependencies, and from a
 `requirements.txt` of version ranges that trivy reads nothing from. On this
 project that is 18 packages with licences against trivy's 0.
 
-It is off by default:
+It is off by default, and it is a **per-scan tick box** on the scan form --
+"Full package list with licences" -- because the answer differs between
+your own code and a client's.
+
+To turn it on for every scan on a deployment:
 
 ```bash
-SAST_OSV_FULL_INVENTORY=true    # in .env, then ./scripts/deploy.sh
+SAST_OSV_FULL_INVENTORY=true    # in .env, then ./setup.sh --update
 ```
 
 The reason it is opt-in: resolving `>=0.111` to a real release means asking

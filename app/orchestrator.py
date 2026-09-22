@@ -168,7 +168,8 @@ class JobManager:
             # step because it answers a different question from the scanners:
             # what is in here, rather than what is wrong with it.
             job.stage = "listing packages"
-            job.sbom = sbom.collect(Path(scan_root))
+            job.sbom = sbom.collect(Path(scan_root),
+                                    full_inventory=job.full_inventory)
 
             job.compute_summary().compute_progress()
             job.policy_evaluation = evaluate_policy(job, _triage_marks())

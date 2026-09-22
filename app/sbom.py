@@ -47,10 +47,16 @@ ATTENTION = {
 }
 
 
-def collect(scan_root: Path) -> dict:
-    """Build the package inventory. Never raises: this is a report, not a gate."""
+def collect(scan_root: Path, full_inventory: bool | None = None) -> dict:
+    """Build the package inventory. Never raises: this is a report, not a gate.
+
+    `full_inventory` is the per-scan choice; None falls back to the
+    deployment setting.
+    """
+    if full_inventory is None:
+        full_inventory = config.OSV_FULL_INVENTORY
     try:
-        return _collect(scan_root)
+        return _collect(scan_root, full_inventory)
     except Exception as exc:  # noqa: BLE001 - an SBOM must not fail a scan
         return {"available": False, "reason": f"{type(exc).__name__}: {exc}",
                 "packages": [], "summary": {}}
@@ -113,7 +119,7 @@ def _from_osv(scan_root: Path) -> list[dict]:
                   key=lambda p: (not p["attention"], p["name"].lower()))
 
 
-def _collect(scan_root: Path) -> dict:
+def _collect(scan_root: Path, full_inventory: bool = False) -> dict:
     # --list-all-pkgs is the difference between "packages with a known CVE"
     # and "every package", which is what an inventory has to mean.
     res = run_command(
@@ -132,7 +138,7 @@ def _collect(scan_root: Path) -> dict:
 
     # osv sees more than trivy when it is allowed to resolve ranges, so it
     # wins when the operator has turned that on.
-    if config.OSV_FULL_INVENTORY:
+    if full_inventory:
         richer = _from_osv(scan_root)
         if len(richer) > len(out["packages"]):
             out["packages"] = richer
