@@ -41,6 +41,13 @@
 
 ## 快速開始
 
+先把程式碼拿下來：
+
+```bash
+git clone https://github.com/zzx789654/sast-.git
+cd sast-
+```
+
 ### 我該用哪一個指令？
 
 | 情境 | 指令 |

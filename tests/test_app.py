@@ -3200,6 +3200,38 @@ def test_the_osv_download_is_checksummed():
     assert "exit 1" in block, "a mismatch does not stop the build"
 
 
+def test_both_readmes_say_how_to_get_the_code():
+    """Found testing a deployment from nothing: the instructions began at
+    ./setup.sh, which you cannot run until you have the repository. Obvious
+    to anyone who already has it, a dead end for anyone who does not.
+    """
+    root = Path(__file__).resolve().parents[1]
+    for name in ["README.md", "README.zh.md"]:
+        text = (root / name).read_text("utf-8")
+        assert "git clone" in text, f"{name} never says how to get the code"
+        # And before the command that needs it.
+        assert text.index("git clone") < text.index("./setup.sh --docker"), (
+            f"{name} tells you to run setup.sh before cloning"
+        )
+
+
+def test_the_scripts_ship_executable():
+    """A fresh clone gets whatever mode git recorded. deploy.sh was 644, so
+    the command the README gives failed with permission denied."""
+    import subprocess
+
+    root = Path(__file__).resolve().parents[1]
+    out = subprocess.run(["git", "ls-files", "-s", "setup.sh", "scripts/"],
+                         cwd=root, capture_output=True, text=True, timeout=60)
+    if out.returncode != 0:
+        pytest.skip("not a git checkout")
+
+    for line in out.stdout.splitlines():
+        mode, _, _, path = line.split(maxsplit=3)
+        if path.endswith(".sh"):
+            assert mode == "100755", f"{path} is {mode}; a clone cannot run it"
+
+
 def test_both_readmes_say_which_command_to_run():
     """The question people arrive with. The answer used to be spread across
     three option headings and a section 400 lines further down, so the

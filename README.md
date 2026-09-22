@@ -52,6 +52,13 @@ Browser ──► nginx (reverse proxy) ──► FastAPI ──► Orchestrator
 
 ## Quick start
 
+Start by getting the code:
+
+```bash
+git clone https://github.com/zzx789654/sast-.git
+cd sast-
+```
+
 ### Which command do I run?
 
 | Situation | Command |
