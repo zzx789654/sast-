@@ -2323,6 +2323,137 @@ def test_the_reason_reaches_the_ui():
         assert i18n.count(f'"{key}"') == 2, f"{key} is missing in one language"
 
 
+# ----------------------------------------- osv-scanner "nothing to scan"
+@pytest.mark.parametrize("files,expect", [
+    ({"requirements.txt": ""}, "empty"),
+    ({"requirements.txt": "# just a note\n"}, "only comments"),
+    ({"package-lock.json": "{not json"}, "not valid JSON"),
+])
+def test_an_unreadable_manifest_says_what_is_wrong(tmp_path, files, expect):
+    """osv-scanner exits 128 for all of these, with one generic message.
+
+    Reported as an error it looks like the scanner broke. Each needs a
+    different fix, so the reason has to name the file and the problem.
+    """
+    from app.adapters.osv_scanner import _no_sources_hint
+
+    for name, content in files.items():
+        (tmp_path / name).write_text(content, encoding="utf-8")
+
+    hint = _no_sources_hint(tmp_path)
+    assert expect in hint, hint
+    assert list(files)[0] in hint, "the hint does not name the file"
+
+
+def test_a_byte_order_mark_is_called_out_by_name(tmp_path):
+    """The least obvious of them: invisible in an editor, and osv-scanner
+    will not read past it. The same file without a BOM scans fine."""
+    from app.adapters.osv_scanner import _no_sources_hint
+
+    (tmp_path / "requirements.txt").write_bytes(
+        b"\xef\xbb\xbfrequests==2.32.3\n")
+
+    hint = _no_sources_hint(tmp_path)
+    assert "byte-order mark" in hint, hint
+    assert "UTF-8 without" in hint, "it does not say how to fix it"
+
+
+def test_nothing_to_scan_is_not_reported_as_an_error(tmp_path, monkeypatch):
+    """It is the same outcome as applicability() returning False, just
+    discovered after the tool started."""
+    from app.adapters import osv_scanner as mod
+    from app.adapters.base import CommandResult
+    from app.models import ToolStatus
+
+    (tmp_path / "requirements.txt").write_text("", encoding="utf-8")
+
+    def fake_run(args, **kwargs):
+        if "--version" in args:
+            return CommandResult(0, "osv-scanner version: 2.6.0", "")
+        return CommandResult(128, "", "No package sources found")
+
+    import app.adapters.base as base_mod
+    monkeypatch.setattr(mod, "run_command", fake_run)
+    # probe() lives in the base class and calls its own copies of both.
+    monkeypatch.setattr(base_mod, "run_command", fake_run)
+    monkeypatch.setattr(base_mod.shutil, "which",
+                        lambda name: "/usr/bin/" + name)
+
+    result = mod.OsvScannerAdapter().scan(tmp_path)
+    assert result.status == ToolStatus.NOT_APPLICABLE, result.status
+    assert not result.error, "it was still reported as an error"
+    assert "empty" in result.message, result.message
+
+
+def test_a_real_failure_is_still_an_error(tmp_path, monkeypatch):
+    """Only 128 means "nothing to scan". Anything else is a failure and
+    must not be quietly downgraded."""
+    from app.adapters import osv_scanner as mod
+    from app.adapters.base import CommandResult
+    from app.models import ToolStatus
+
+    (tmp_path / "requirements.txt").write_text("requests==2.32.3\n",
+                                               encoding="utf-8")
+
+    def fake_run(args, **kwargs):
+        if "--version" in args:
+            return CommandResult(0, "osv-scanner version: 2.6.0", "")
+        return CommandResult(2, "", "something genuinely broke")
+
+    import app.adapters.base as base_mod
+    monkeypatch.setattr(mod, "run_command", fake_run)
+    # probe() lives in the base class and calls its own copies of both.
+    monkeypatch.setattr(base_mod, "run_command", fake_run)
+    monkeypatch.setattr(base_mod.shutil, "which",
+                        lambda name: "/usr/bin/" + name)
+
+    result = mod.OsvScannerAdapter().scan(tmp_path)
+    assert result.status == ToolStatus.ERROR
+    assert "something genuinely broke" in result.error
+
+
+# ------------------------------------------- the full-inventory option
+def test_the_full_inventory_is_off_by_default():
+    """Resolving version ranges means querying deps.dev, which discloses
+    the dependency list. A scan of private code should not do that unless
+    it was asked to."""
+    from app.config import config
+
+    assert config.OSV_FULL_INVENTORY is False
+
+
+def test_the_option_adds_the_flags_that_fetch_licences(tmp_path, monkeypatch):
+    from app.adapters import osv_scanner as mod
+    from app.adapters.base import CommandResult
+    from app.config import config
+
+    (tmp_path / "requirements.txt").write_text("requests==2.32.3\n",
+                                               encoding="utf-8")
+    seen = []
+
+    def fake_run(args, **kwargs):
+        if "--version" in args:
+            return CommandResult(0, "osv-scanner version: 2.6.0", "")
+        seen.append(list(args))
+        return CommandResult(0, '{"results": []}', "")
+
+    import app.adapters.base as base_mod
+    monkeypatch.setattr(mod, "run_command", fake_run)
+    # probe() lives in the base class and calls its own copies of both.
+    monkeypatch.setattr(base_mod, "run_command", fake_run)
+    monkeypatch.setattr(base_mod.shutil, "which",
+                        lambda name: "/usr/bin/" + name)
+
+    monkeypatch.setattr(config, "OSV_FULL_INVENTORY", False)
+    mod.OsvScannerAdapter().scan(tmp_path)
+    assert "--all-packages" not in seen[-1], "it queried deps.dev uninvited"
+
+    monkeypatch.setattr(config, "OSV_FULL_INVENTORY", True)
+    mod.OsvScannerAdapter().scan(tmp_path)
+    assert "--all-packages" in seen[-1]
+    assert "--licenses" in seen[-1]
+
+
 # ------------------------------------------------- declared dependencies
 def test_declared_dependencies_are_listed_when_trivy_finds_nothing(tmp_path):
     """Trivy reports nothing for `fastapi>=0.111` -- not even the name.

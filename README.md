@@ -351,6 +351,24 @@ Two roles only: administrator and user. An administrator manages accounts; the
 last one cannot be deleted, disabled or demoted, because that click would lock
 everybody out.
 
+### A fuller package list, with licences
+
+`osv-scanner` can report every package and its licence, not just the ones
+with an advisory -- including transitive dependencies, and from a
+`requirements.txt` of version ranges that trivy reads nothing from. On this
+project that is 18 packages with licences against trivy's 0.
+
+It is off by default:
+
+```bash
+SAST_OSV_FULL_INVENTORY=true    # in .env, then ./scripts/deploy.sh
+```
+
+The reason it is opt-in: resolving `>=0.111` to a real release means asking
+deps.dev, which is ~88 KB per scan and discloses your dependency list. That
+is fine for your own code and not obviously fine for a client's, so the scan
+does not do it unless asked.
+
 ### Packages and licences
 
 Every scan also lists what the project pulls in and, where it can, under

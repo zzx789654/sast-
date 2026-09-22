@@ -64,6 +64,12 @@ class Config:
         os.environ.get("SAST_ACCOUNTS_DB", "/tmp/sast-studio-accounts.db")
     )
 
+    # Ask osv-scanner for every package and its licence, not just the ones
+    # with an advisory. It resolves version ranges by querying deps.dev, so
+    # the dependency list leaves the host -- off by default for that reason,
+    # and worth turning on for projects where that is not a concern.
+    OSV_FULL_INVENTORY = _env_bool("SAST_OSV_FULL_INVENTORY", False)
+
     # Origins allowed to call /mcp from a browser. The MCP spec requires
     # checking this to stop a web page driving the endpoint via DNS
     # rebinding. Same-host is always allowed; "*" disables the check.

@@ -17,6 +17,15 @@ from ..config import config
 from ..models import Finding, Severity, ToolKind, ToolResult, ToolStatus
 
 
+class NotApplicableError(Exception):
+    """The tool ran but had nothing to work on.
+
+    Distinct from an error: "your requirements.txt is empty" is a fact about
+    the project, not a failure of the scanner, and showing it in red next to
+    a stack-trace-shaped message sends people looking for a broken tool.
+    """
+
+
 @dataclass
 class CommandResult:
     returncode: int
@@ -156,6 +165,11 @@ class BaseAdapter:
         self.report_stage(self.first_stage)
         try:
             result.findings = self._execute(target_dir)
+        except NotApplicableError as exc:
+            # Nothing to scan is not a failure; it is the same outcome as
+            # applicability() returning False, just discovered later.
+            result.status = ToolStatus.NOT_APPLICABLE
+            result.message = str(exc)
         except TimeoutError as exc:
             result.status = ToolStatus.TIMEOUT
             result.error = str(exc) or "tool timed out"
