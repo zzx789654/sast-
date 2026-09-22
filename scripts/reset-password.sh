@@ -16,8 +16,10 @@
 # arguments are visible in `ps` and land in .bash_history.
 set -euo pipefail
 
+# Everything below runs from the project root, so this works whether it is
+# invoked as ./scripts/reset-password.sh or from inside scripts/.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "${ROOT}"
+cd "${ROOT}" || { echo "cannot enter ${ROOT}" >&2; exit 1; }
 
 USERNAME=""
 GENERATE=0
@@ -61,9 +63,21 @@ run_py() {   # stdin is the password; $1 is the username, $2 the mode flag
     compose exec -T -e "RESET_USER=$1" -e "RESET_LIST=${2:-0}" sast-studio \
       python -c "$(cat "${ROOT}/scripts/_reset_password.py")"
   else
-    [ -d .venv ] || die "no running container and no .venv here.
-Start the service first (docker compose up -d), or run this from a checkout
-with dependencies installed."
+    if [ ! -d .venv ]; then
+      echo "  No sast-studio container is running, and there is no .venv here," >&2
+      echo "  so there is nothing to read the account database from." >&2
+      echo >&2
+      echo "  What is running right now:" >&2
+      compose ps 2>&1 | sed 's/^/    /' >&2
+      echo >&2
+      echo "  If a deploy or ./setup.sh --update is in progress, the container" >&2
+      echo "  is briefly down -- wait for it to come back and run this again:" >&2
+      echo "      docker compose ps           # until sast-studio is healthy" >&2
+      echo >&2
+      echo "  If it is not meant to be down, start it:" >&2
+      echo "      cd $(pwd) && docker compose up -d" >&2
+      die "no running container"
+    fi
     RESET_USER="$1" RESET_LIST="${2:-0}" ./.venv/bin/python \
       scripts/_reset_password.py
   fi
@@ -77,8 +91,24 @@ fi
 
 if [ "${RUNNING}" = "1" ]; then
   echo "Resetting '${USERNAME}' in the running container."
-else
+elif [ -d .venv ]; then
   echo "No running container found; using the local checkout."
+else
+  # Fail before asking for a password we have nowhere to store. Discovering
+  # this after typing it twice is the version of this that annoyed someone.
+  echo "  No sast-studio container is running, and there is no .venv here," >&2
+  echo "  so there is nowhere to store a new password." >&2
+  echo >&2
+  echo "  What is running right now:" >&2
+  compose ps 2>&1 | sed 's/^/    /' >&2
+  echo >&2
+  echo "  A deploy or ./setup.sh --update takes the container down briefly." >&2
+  echo "  Wait for it to report healthy, then run this again:" >&2
+  echo "      docker compose ps" >&2
+  echo >&2
+  echo "  If it should be running and is not:" >&2
+  echo "      cd $(pwd) && docker compose up -d" >&2
+  die "no running container"
 fi
 
 if [ "${GENERATE}" = "1" ]; then
