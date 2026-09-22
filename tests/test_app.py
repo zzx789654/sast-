@@ -2423,36 +2423,67 @@ def test_the_full_inventory_is_off_by_default():
 
 
 def test_the_option_adds_the_flags_that_fetch_licences(tmp_path, monkeypatch):
-    from app.adapters import osv_scanner as mod
+    """The inventory question is answered in sbom.py, not by the adapter.
+
+    A package with no advisory never becomes a finding, so asking osv for
+    every package only helps if the answer reaches the panel that lists
+    packages.
+    """
+    from app import sbom
     from app.adapters.base import CommandResult
     from app.config import config
 
-    (tmp_path / "requirements.txt").write_text("requests==2.32.3\n",
-                                               encoding="utf-8")
     seen = []
 
     def fake_run(args, **kwargs):
-        if "--version" in args:
-            return CommandResult(0, "osv-scanner version: 2.6.0", "")
         seen.append(list(args))
+        if args[0] == "trivy":
+            return CommandResult(0, '{"Results": []}', "")
         return CommandResult(0, '{"results": []}', "")
 
-    import app.adapters.base as base_mod
-    monkeypatch.setattr(mod, "run_command", fake_run)
-    # probe() lives in the base class and calls its own copies of both.
-    monkeypatch.setattr(base_mod, "run_command", fake_run)
-    monkeypatch.setattr(base_mod.shutil, "which",
-                        lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(sbom, "run_command", fake_run)
 
     monkeypatch.setattr(config, "OSV_FULL_INVENTORY", False)
-    mod.OsvScannerAdapter().scan(tmp_path)
-    assert "--all-packages" not in seen[-1], "it queried deps.dev uninvited"
+    sbom.collect(tmp_path)
+    assert not any("--all-packages" in a for a in seen), (
+        "it queried deps.dev without being asked"
+    )
 
+    seen.clear()
     monkeypatch.setattr(config, "OSV_FULL_INVENTORY", True)
-    mod.OsvScannerAdapter().scan(tmp_path)
-    assert "--all-packages" in seen[-1]
-    assert "--licenses" in seen[-1]
+    sbom.collect(tmp_path)
+    osv_call = next((a for a in seen if a and a[0] == "osv-scanner"), None)
+    assert osv_call, "osv-scanner was never asked for the inventory"
+    assert "--all-packages" in osv_call
+    assert "--licenses" in osv_call
 
+
+def test_the_richer_inventory_wins_only_when_it_is_richer(tmp_path, monkeypatch):
+    """osv resolves ranges, so it usually sees more -- but if it somehow
+    sees less, replacing a good list with a worse one helps nobody."""
+    from app import sbom
+    from app.adapters.base import CommandResult
+    from app.config import config
+
+    trivy_json = (
+        '{"Results":[{"Target":"/x/requirements.txt","Type":"pip",'
+        '"Packages":[{"Name":"a","Version":"1"},{"Name":"b","Version":"2"}]}]}'
+    )
+
+    def fake_run(args, **kwargs):
+        if args[0] == "trivy":
+            return CommandResult(0, trivy_json, "")
+        # osv sees only one package here -- fewer than trivy.
+        return CommandResult(0,
+            '{"results":[{"source":{"path":"/x/requirements.txt"},'
+            '"packages":[{"package":{"name":"a","version":"1",'
+            '"ecosystem":"PyPI"},"licenses":["MIT"]}]}]}', "")
+
+    monkeypatch.setattr(sbom, "run_command", fake_run)
+    monkeypatch.setattr(config, "OSV_FULL_INVENTORY", True)
+
+    out = sbom.collect(tmp_path)
+    assert out["summary"]["total"] == 2, "the shorter list replaced the longer one"
 
 # ------------------------------------------------- declared dependencies
 def test_declared_dependencies_are_listed_when_trivy_finds_nothing(tmp_path):

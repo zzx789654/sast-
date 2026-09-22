@@ -56,6 +56,63 @@ def collect(scan_root: Path) -> dict:
                 "packages": [], "summary": {}}
 
 
+def _from_osv(scan_root: Path) -> list[dict]:
+    """Every package osv-scanner can see, with its licence.
+
+    Better than trivy's view in two ways that matter: it resolves version
+    ranges, where trivy needs a pinned version before it reports anything at
+    all, and it carries a licence without the package being installed.
+
+    The cost is that resolving a range means querying deps.dev, so the
+    dependency list leaves the host -- which is why the caller checks the
+    setting before asking for this.
+    """
+    res = run_command(
+        ["osv-scanner", "--format", "json", "--all-packages", "--licenses",
+         "-r", str(scan_root)],
+        timeout=config.TOOL_TIMEOUT,
+    )
+    if not res.stdout.strip():
+        return []
+    try:
+        data = json.loads(res.stdout)
+    except ValueError:
+        return []
+
+    root = str(scan_root)
+    packages: dict[tuple, dict] = {}
+    for result in data.get("results") or []:
+        target = (result.get("source") or {}).get("path") or ""
+        if target.startswith(root):
+            target = target[len(root):].lstrip("/\\") or "."
+        for pkg in result.get("packages") or []:
+            info = pkg.get("package") or {}
+            name = info.get("name") or ""
+            if not name:
+                continue
+            version = info.get("version") or ""
+            ecosystem = (info.get("ecosystem") or "").lower()
+            key = (name.lower(), version, ecosystem)
+            if key in packages:
+                continue
+
+            names = [l for l in (pkg.get("licenses") or []) if l and l != "UNKNOWN"]
+            packages[key] = {
+                "name": name,
+                "version": version,
+                "ecosystem": ecosystem,
+                "source": target,
+                "licenses": names,
+                "category": "restricted" if any(_needs_attention(n) for n in names)
+                            else ("notice" if names else "unknown"),
+                "direct": False,
+                "attention": any(_needs_attention(n) for n in names),
+            }
+
+    return sorted(packages.values(),
+                  key=lambda p: (not p["attention"], p["name"].lower()))
+
+
 def _collect(scan_root: Path) -> dict:
     # --list-all-pkgs is the difference between "packages with a known CVE"
     # and "every package", which is what an inventory has to mean.
@@ -72,6 +129,18 @@ def _collect(scan_root: Path) -> dict:
 
     data = json.loads(res.stdout or "{}")
     out = _parse(data, scan_root)
+
+    # osv sees more than trivy when it is allowed to resolve ranges, so it
+    # wins when the operator has turned that on.
+    if config.OSV_FULL_INVENTORY:
+        richer = _from_osv(scan_root)
+        if len(richer) > len(out["packages"]):
+            out["packages"] = richer
+            out["reason"] = ""
+            out["declared_only"] = False
+            out["summary"] = _summarise(richer)
+            return out
+
     if not out["packages"]:
         out["reason"] = _why_empty(scan_root)
         # Trivy needs a pinned version before it will report a package at

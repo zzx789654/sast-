@@ -51,16 +51,14 @@ class OsvScannerAdapter(BaseAdapter):
     _NO_SOURCES = 128
 
     def _execute(self, target_dir: Path) -> list[Finding]:
-        args = [self.binary, "--format", "json"]
-        if config.OSV_FULL_INVENTORY:
-            # --all-packages lists every package rather than only the ones
-            # with an advisory; --licenses adds the licence. Both resolve
-            # version ranges by asking deps.dev, which discloses the
-            # dependency list -- so this is opt-in, not the default.
-            args += ["--all-packages", "--licenses"]
-        args += ["-r", str(target_dir)]
-
-        res = run_command(args, timeout=config.TOOL_TIMEOUT)
+        # The findings here are vulnerabilities; a package with no advisory
+        # never becomes one. The full inventory with licences is a different
+        # question, answered in app/sbom.py, so the extra flags belong there
+        # rather than making every scan pay for them.
+        res = run_command(
+            [self.binary, "--format", "json", "-r", str(target_dir)],
+            timeout=config.TOOL_TIMEOUT,
+        )
         if res.timed_out:
             raise TimeoutError("osv-scanner timed out")
 
