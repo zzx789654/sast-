@@ -2323,6 +2323,38 @@ def test_the_reason_reaches_the_ui():
         assert i18n.count(f'"{key}"') == 2, f"{key} is missing in one language"
 
 
+# --------------------------------------- security floors in requirements
+def test_the_advisory_floors_are_still_there():
+    """These lines are the fix for three advisories, and they look like
+    ordinary dependency noise, so they are easy to tidy away.
+
+    anyio  < 4.14.2  GHSA-82r6-8w77-94w6, GHSA-5p39-cfhj-2xmp
+    idna   < 3.15    GHSA-65pc-fj4g-8rjx / CVE-2026-45409
+    """
+    import re
+
+    text = (Path(__file__).resolve().parents[1]
+            / "requirements.txt").read_text("utf-8")
+
+    for name, minimum in [("anyio", (4, 14, 2)), ("idna", (3, 15))]:
+        match = re.search(rf"^{name}>=([0-9.]+)", text, re.MULTILINE)
+        assert match, f"{name} floor is gone; a resolver may pick a vulnerable one"
+        got = tuple(int(p) for p in match.group(1).split("."))
+        assert got >= minimum, (
+            f"{name}>={match.group(1)} is below the patched {minimum}"
+        )
+
+
+def test_the_floors_say_why_they_exist():
+    """A bare version with no reason gets raised or dropped by whoever
+    tidies the file next."""
+    text = (Path(__file__).resolve().parents[1]
+            / "requirements.txt").read_text("utf-8")
+
+    assert "GHSA-82r6-8w77-94w6" in text, "the anyio advisory is not cited"
+    assert "GHSA-65pc-fj4g-8rjx" in text, "the idna advisory is not cited"
+
+
 # ------------------------------------- the inventory option on the form
 def test_the_inventory_option_is_offered_on_the_scan_form():
     """It shipped as an environment variable, which meant editing .env and
