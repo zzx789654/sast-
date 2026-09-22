@@ -2323,6 +2323,98 @@ def test_the_reason_reaches_the_ui():
         assert i18n.count(f'"{key}"') == 2, f"{key} is missing in one language"
 
 
+# ------------------------------------------------- declared dependencies
+def test_declared_dependencies_are_listed_when_trivy_finds_nothing(tmp_path):
+    """Trivy reports nothing for `fastapi>=0.111` -- not even the name.
+
+    "Which libraries does this pull in" is answerable from the manifest even
+    when "which exact release" is not, and the names were sitting in the
+    file the whole time.
+    """
+    from app.sbom import read_declared
+
+    (tmp_path / "requirements.txt").write_text(
+        "fastapi>=0.111\n# a comment\nrequests==2.31.0\n"
+        "uvicorn[standard]>=0.30\n", encoding="utf-8")
+
+    found = {p["name"]: p for p in read_declared(tmp_path)}
+    assert set(found) == {"fastapi", "requests", "uvicorn"}
+    # The constraint, not a version: claiming "0.111" would say we know what
+    # is installed, and we do not.
+    assert found["fastapi"]["version"] == ">=0.111"
+    assert found["uvicorn"]["ecosystem"] == "pip"
+
+
+@pytest.mark.parametrize("filename,content,expected", [
+    ("package.json",
+     '{"dependencies":{"lodash":"^4.17.21"},"devDependencies":{"jest":"~29"}}',
+     {"lodash", "jest"}),
+    ("pyproject.toml",
+     '[project]\nname="x"\ndependencies = ["click>=8", "rich[jupyter]>=13"]\n',
+     {"click", "rich"}),
+    ("pyproject.toml",
+     '[tool.poetry.dependencies]\npython = "^3.11"\nflask = "^3.0"\n',
+     {"flask"}),                       # python itself is not a dependency
+    ("go.mod",
+     'module x\n\nrequire (\n\tgithub.com/a/b v1.2.3\n)\n',
+     {"github.com/a/b"}),
+])
+def test_each_manifest_format_is_read(tmp_path, filename, content, expected):
+    from app.sbom import read_declared
+
+    (tmp_path / filename).write_text(content, encoding="utf-8")
+    assert {p["name"] for p in read_declared(tmp_path)} == expected
+
+
+def test_a_declared_list_is_not_presented_as_a_complete_one():
+    """It excludes transitive dependencies and cannot confirm a version. A
+    short list that looks authoritative is worse than no list."""
+    root = Path(__file__).resolve().parents[1] / "app/static"
+    js = (root / "app.js").read_text("utf-8")
+    i18n = (root / "i18n.js").read_text("utf-8")
+
+    assert "declared_only" in js, "the page never checks which kind it has"
+    assert 't("sbom.countsDeclared"' in js, "the header does not distinguish them"
+    assert 't("sbom.declaredNote")' in js, "nothing explains the difference"
+
+    for key in ["sbom.countsDeclared", "sbom.declaredNote"]:
+        assert i18n.count('"' + key + '"') == 2, key + " missing in one language"
+
+
+def test_a_malformed_manifest_contributes_nothing_rather_than_failing(tmp_path):
+    """These files come from a scanned project, so they are untrusted."""
+    from app.sbom import read_declared
+
+    (tmp_path / "package.json").write_text("{not json", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[[[broken", encoding="utf-8")
+    assert read_declared(tmp_path) == []
+
+
+def test_vendored_manifests_are_not_read_as_the_projects_own(tmp_path):
+    """A package.json inside node_modules belongs to a dependency."""
+    from app.sbom import read_declared
+
+    nested = tmp_path / "node_modules" / "dep"
+    nested.mkdir(parents=True)
+    (nested / "package.json").write_text(
+        '{"dependencies":{"should-not-appear":"1"}}', encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("realdep>=1\n", encoding="utf-8")
+
+    assert [p["name"] for p in read_declared(tmp_path)] == ["realdep"]
+
+
+def test_a_hostile_manifest_line_does_not_get_through(tmp_path):
+    """Names reach a CSV and the page, so they are bounded and shaped."""
+    from app.sbom import read_declared
+
+    (tmp_path / "requirements.txt").write_text(
+        "=cmd|calc\n" + "a" * 300 + ">=1\nnormal-pkg>=2\n", encoding="utf-8")
+
+    names = [p["name"] for p in read_declared(tmp_path)]
+    assert names == ["normal-pkg"], names
+    assert all(len(n) <= 214 for n in names)
+
+
 # --------------------------------------------------------- package inventory
 def _sbom_fixture():
     path = Path(__file__).resolve().parent / "fixtures/trivy_sbom.json"

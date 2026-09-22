@@ -74,7 +74,166 @@ def _collect(scan_root: Path) -> dict:
     out = _parse(data, scan_root)
     if not out["packages"]:
         out["reason"] = _why_empty(scan_root)
+        # Trivy needs a pinned version before it will report a package at
+        # all, so a requirements.txt of `fastapi>=0.111` yields nothing --
+        # not even the names, which are sitting right there in the file.
+        # Reading them is worth doing: "which libraries does this pull in"
+        # is answerable even when "which exact release" is not.
+        declared = read_declared(scan_root)
+        if declared:
+            out["packages"] = declared
+            out["declared_only"] = True
+            out["summary"] = _summarise(declared)
     return out
+
+
+def read_declared(scan_root: Path) -> list[dict]:
+    """Package names as the project declares them, with no resolution.
+
+    A deliberately shallow read of the manifests: no transitive
+    dependencies, no version resolution, no network. What it produces is
+    "the libraries this project asks for", which is a different and smaller
+    claim than the inventory trivy builds -- and the UI says so, because a
+    list that looks complete but is not is worse than no list.
+    """
+    seen: dict[tuple, dict] = {}
+    try:
+        candidates = [p for p in scan_root.rglob("*")
+                      if p.name in _DECLARED_READERS and not _vendored(p, scan_root)]
+    except OSError:
+        return []
+
+    for path in sorted(candidates)[:50]:      # a bound, not a judgement
+        try:
+            text = path.read_text("utf-8", errors="replace")
+        except OSError:
+            continue
+        source = str(path.relative_to(scan_root)).replace("\\", "/")
+        for name, spec, ecosystem in _DECLARED_READERS[path.name](text):
+            name = name.strip()
+            if not name or len(name) > 214:   # npm's own limit; a sanity bound
+                continue
+            key = (name.lower(), ecosystem)
+            if key not in seen:
+                seen[key] = {
+                    "name": name,
+                    # The constraint, not a version: ">=0.111" is honest,
+                    # "0.111" would claim we know what is installed.
+                    "version": spec.strip(),
+                    "ecosystem": ecosystem,
+                    "source": source,
+                    "licenses": [],
+                    "category": "unknown",
+                    "direct": True,           # everything here is declared
+                    "attention": False,
+                }
+    return sorted(seen.values(), key=lambda p: p["name"].lower())
+
+
+def _read_requirements(text: str):
+    """pip requirements: one per line, with an optional constraint."""
+    import re
+
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line or line.startswith("-"):     # -r, -e, --index-url
+            continue
+        # name[extras]constraint  ->  name, constraint
+        match = re.match(r"^([A-Za-z0-9._-]+)\s*(\[[^\]]*\])?\s*(.*)$", line)
+        if not match:
+            continue
+        name, _extras, spec = match.groups()
+        # A URL or a local path is not a named release.
+        if "://" in line or line.startswith("."):
+            continue
+        yield name, (spec or "").strip(), "pip"
+
+
+def _read_package_json(text: str):
+    """npm manifest: the dependency maps, not the lockfile."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return
+    if not isinstance(data, dict):
+        return
+    for field in ("dependencies", "devDependencies", "peerDependencies",
+                  "optionalDependencies"):
+        block = data.get(field)
+        if isinstance(block, dict):
+            for name, spec in block.items():
+                if isinstance(name, str) and isinstance(spec, str):
+                    yield name, spec, "npm"
+
+
+def _read_pyproject(text: str):
+    """PEP 621 and poetry, without adding a TOML dependency.
+
+    Python 3.11 has tomllib; if the parse fails the file simply contributes
+    nothing rather than breaking the scan.
+    """
+    try:
+        import tomllib
+    except ImportError:
+        return
+    try:
+        data = tomllib.loads(text)
+    except Exception:  # noqa: BLE001 - a malformed file is not our problem
+        return
+
+    import re
+
+    for entry in (data.get("project", {}) or {}).get("dependencies", []) or []:
+        if isinstance(entry, str):
+            match = re.match(r"^([A-Za-z0-9._-]+)\s*(\[[^\]]*\])?\s*(.*)$", entry)
+            if match:
+                yield match.group(1), (match.group(3) or "").strip(), "pip"
+
+    poetry = (((data.get("tool", {}) or {}).get("poetry", {}) or {})
+              .get("dependencies", {}) or {})
+    for name, spec in poetry.items():
+        if name.lower() == "python":
+            continue
+        if isinstance(spec, str):
+            yield name, spec, "pip"
+        elif isinstance(spec, dict) and isinstance(spec.get("version"), str):
+            yield name, spec["version"], "pip"
+
+
+def _read_gomod(text: str):
+    """go.mod: the require block, or single require lines."""
+    import re
+
+    in_block = False
+    for raw in text.splitlines():
+        line = raw.split("//", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("require ("):
+            in_block = True
+            continue
+        if in_block and line == ")":
+            in_block = False
+            continue
+        if in_block:
+            parts = line.split()
+        elif line.startswith("require "):
+            parts = line[len("require "):].split()
+        else:
+            continue
+        if len(parts) >= 2:
+            yield parts[0], parts[1], "gomod"
+
+
+#: Manifests we can read names out of directly. Lockfiles are absent on
+#: purpose: when one exists, trivy has already produced a better answer.
+_DECLARED_READERS = {
+    "requirements.txt": _read_requirements,
+    "requirements-dev.txt": _read_requirements,
+    "package.json": _read_package_json,
+    "pyproject.toml": _read_pyproject,
+    "go.mod": _read_gomod,
+}
 
 
 #: Files that declare dependencies, and whether a version can be read from

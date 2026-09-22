@@ -367,6 +367,14 @@ plain repository checkout the normal result is a complete package list with
 the licences unknown -- which is reported as "unknown" rather than guessed
 from the package name.
 
+When a manifest only gives version ranges (`fastapi>=0.111`), no scanner
+can say which release is installed, so the panel falls back to listing the
+dependencies the project **declares** -- read straight from
+`requirements.txt`, `package.json`, `pyproject.toml` or `go.mod`. That list
+names the libraries but excludes transitive dependencies and carries no
+licences, and the panel says so rather than letting a short list look
+complete.
+
 Packages under copyleft or commercial-use terms are listed first and marked.
 That is a prompt to look, not a verdict, and it is not legal advice.
 

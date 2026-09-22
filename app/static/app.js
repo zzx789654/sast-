@@ -1799,8 +1799,13 @@ function renderSbom(sbom) {
   box.classList.remove("hidden");
 
   const s = sbom.summary || {};
-  $("#sbom-counts").textContent =
-    t("sbom.counts", { n: s.total || 0, unknown: s.unknown || 0 });
+  // A declared list is a smaller claim than a resolved one -- it is what
+  // the project asks for, not what would actually be installed -- so the
+  // header says which of the two this is rather than letting a short list
+  // look like a complete one.
+  $("#sbom-counts").textContent = sbom.declared_only
+    ? t("sbom.countsDeclared", { n: s.total || 0 })
+    : t("sbom.counts", { n: s.total || 0, unknown: s.unknown || 0 });
 
   const note = $("#sbom-note");
   const empty = !packages.length;
@@ -1808,7 +1813,9 @@ function renderSbom(sbom) {
   // "0 packages" on a project that plainly has dependencies reads as a
   // broken feature. Say which it is: nothing declared, or versions that
   // could not be read.
-  if (empty && note) {
+  if (sbom.declared_only && note) {
+    note.textContent = t("sbom.declaredNote");
+  } else if (empty && note) {
     note.textContent = emptySbomReason(sbom.reason || "");
   } else if (note) {
     // The honest caveat, stated where it matters: a lockfile has no licence
