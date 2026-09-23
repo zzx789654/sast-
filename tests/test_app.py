@@ -2374,6 +2374,31 @@ def test_the_inventory_option_is_offered_on_the_scan_form():
     assert "deps.dev" in i18n, "the page does not say where the data goes"
 
 
+def test_the_option_says_what_is_sent_and_where():
+    """"Your dependency list leaves this host" names neither the data nor
+    the destination, which are the two things someone deciding needs.
+
+    Both were measured: the endpoint is api.deps.dev (osv-scanner's default
+    --data-source), and what travels is package names and version ranges --
+    12 packages resolve online against 1 with --offline, and the difference
+    is entirely what deps.dev resolved.
+    """
+    root = Path(__file__).resolve().parents[1] / "app/static"
+    i18n = (root / "i18n.js").read_text("utf-8")
+    html = (root / "index.html").read_text("utf-8")
+
+    for key in ["opt.inventorySends", "opt.inventoryDest",
+                "opt.inventoryNot", "opt.inventoryCost"]:
+        assert i18n.count('"' + key + '"') == 2, key + " missing in one language"
+        assert 'data-i18n="' + key + '"' in html, key + " is never rendered"
+
+    # The destination is named, not implied.
+    assert "api.deps.dev" in i18n, "the endpoint is not named"
+    # And what is not sent is stated, because that is the real worry.
+    assert i18n.count("Not sent:") == 1
+    assert "source code" in i18n
+
+
 def test_a_scan_carries_its_own_inventory_choice(client, tmp_path):
     """Per scan, not per deployment: your own code and a client's are
     different answers to the same question."""

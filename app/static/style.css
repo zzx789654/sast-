@@ -797,3 +797,9 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
   display: block; margin-top: .2rem; font-style: normal;
   font-size: .78rem; color: var(--muted); line-height: 1.45;
 }
+
+/* What is sent, where to, and what is not. The third line is the one that
+   answers the question people actually have, so it is not dimmed away. */
+.scan-option .opt-sends,
+.scan-option .opt-dest { color: var(--ink); }
+.scan-option .opt-not { color: var(--ok); }

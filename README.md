@@ -375,10 +375,19 @@ To turn it on for every scan on a deployment:
 SAST_OSV_FULL_INVENTORY=true    # in .env, then ./setup.sh --update
 ```
 
-The reason it is opt-in: resolving `>=0.111` to a real release means asking
-deps.dev, which is ~88 KB per scan and discloses your dependency list. That
-is fine for your own code and not obviously fine for a client's, so the scan
-does not do it unless asked.
+The reason it is opt-in, stated precisely:
+
+| | |
+|---|---|
+| **Sent** | package names and version constraints (`fastapi`, `>=0.111`) |
+| **Sent to** | `api.deps.dev` — osv-scanner's default data source, run by Google |
+| **Not sent** | source code, file contents, file names, secrets, scan findings |
+| **Size** | ~88 KB per scan, measured |
+
+Measured rather than assumed: the same project resolves 12 packages online
+and 1 with `--offline`, and the difference is entirely what deps.dev
+resolved from the range. That is fine for your own code and not obviously
+fine for a client's, so the scan does not do it unless asked.
 
 ### Packages and licences
 
