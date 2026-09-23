@@ -4697,3 +4697,156 @@ def test_the_sampler_is_started_at_boot():
     """A sampler nothing starts is the same as no sampler."""
     main = _read("app/main.py")
     assert "docker_stats.start_sampler()" in main
+
+
+# ---------------------------------------------------------- docker resources
+
+def test_sizes_are_read_the_way_people_write_them():
+    from app.docker_stats import _parse_size
+    assert _parse_size("2g") == 2 * 1024 ** 3
+    assert _parse_size("512m") == 512 * 1024 ** 2
+    assert _parse_size("1.5G") == int(1.5 * 1024 ** 3)
+    assert _parse_size("2gi") == 2 * 1024 ** 3   # 2gi and 2g mean the same here
+    assert _parse_size("1024") == 1024           # bare number is bytes
+
+
+def test_a_nonsense_size_is_refused_with_an_example():
+    """An error that does not say what good input looks like wastes a turn."""
+    import pytest
+    from app.docker_stats import _parse_size
+    for bad in ("", "abc", "-1g", "0", "0g"):
+        with pytest.raises(ValueError) as exc:
+            _parse_size(bad)
+        assert str(exc.value)
+
+
+def test_the_fragment_is_valid_compose():
+    """It gets pasted into docker-compose.yml, so it has to parse as YAML."""
+    from app.docker_stats import compose_fragment
+    text = compose_fragment({"sast-studio": {"memory": "2g", "cpus": "2.0"},
+                             "nginx": {"memory": "256m"}})
+    try:
+        import yaml
+    except ImportError:
+        # No yaml in this environment; check the shape instead of skipping.
+        assert text.startswith("services:")
+        assert "        limits:" in text
+        assert "          memory: 2g" in text
+        return
+    parsed = yaml.safe_load(text)
+    limits = parsed["services"]["sast-studio"]["deploy"]["resources"]["limits"]
+    assert limits["memory"] == "2g"
+    assert str(limits["cpus"]) == "2.0"
+    assert parsed["services"]["nginx"]["deploy"]["resources"]["limits"]["memory"] == "256m"
+
+
+def test_a_limit_above_the_host_is_refused():
+    """A limit larger than the machine reads as protection and gives none."""
+    import pytest
+    from app.docker_stats import compose_fragment
+    host = 4 * 1024 ** 3
+    compose_fragment({"web": {"memory": "2g"}}, host_memory=host)   # fits
+    with pytest.raises(ValueError) as exc:
+        compose_fragment({"web": {"memory": "8g"}}, host_memory=host)
+    assert "host" in str(exc.value).lower()
+
+    with pytest.raises(ValueError):
+        compose_fragment({"web": {"cpus": "64"}}, host_cpus=4)
+
+
+def test_a_service_name_cannot_smuggle_yaml():
+    """The name is interpolated into YAML, so it must be constrained."""
+    import pytest
+    from app.docker_stats import compose_fragment
+    for bad in ("web: {}\nevil", "../etc", "a b", "x:y"):
+        with pytest.raises(ValueError):
+            compose_fragment({bad: {"memory": "1g"}})
+
+
+def test_empty_input_produces_nothing_rather_than_an_empty_skeleton():
+    """An empty services: block pasted into compose is a broken file."""
+    import pytest
+    from app.docker_stats import compose_fragment
+    for empty in ({}, {"web": {}}, {"web": {"memory": "", "cpus": ""}}):
+        with pytest.raises(ValueError):
+            compose_fragment(empty)
+
+
+def test_limits_reports_unset_as_a_warning_not_a_blank(monkeypatch):
+    """An unset limit is the finding: the container can exhaust the host."""
+    from app import docker_stats
+    monkeypatch.setattr(docker_stats, "availability", lambda: (True, ""))
+
+    def fake_get(path, timeout=5.0):
+        if path.startswith("/containers/json"):
+            return [{"Id": "abc", "Names": ["/proj-web-1"], "State": "running",
+                     "Labels": {"com.docker.compose.service": "web"}}]
+        if path == "/info":
+            return {"MemTotal": 4 * 1024 ** 3, "NCPU": 4}
+        if path.endswith("/json"):
+            return {"HostConfig": {"Memory": 0, "NanoCpus": 0}}
+        return {"memory_stats": {"usage": 1024, "limit": 0}}
+
+    monkeypatch.setattr(docker_stats, "_get", fake_get)
+    out = docker_stats.limits()
+    assert out["available"] is True
+    row = out["containers"][0]
+    assert row["unlimited_memory"] is True
+    assert row["unlimited_cpus"] is True
+    assert out["host_memory"] == 4 * 1024 ** 3
+    assert out["host_cpus"] == 4
+
+
+def test_limits_reads_both_ways_of_expressing_a_cpu_limit(monkeypatch):
+    """--cpus writes NanoCpus; older setups use CpuQuota/CpuPeriod."""
+    from app import docker_stats
+    monkeypatch.setattr(docker_stats, "availability", lambda: (True, ""))
+
+    cfg = {"Memory": 2 * 1024 ** 3, "NanoCpus": 0,
+           "CpuQuota": 150000, "CpuPeriod": 100000}
+
+    def fake_get(path, timeout=5.0):
+        if path.startswith("/containers/json"):
+            return [{"Id": "a", "Names": ["/web"], "State": "exited", "Labels": {}}]
+        if path == "/info":
+            return {"MemTotal": 8 * 1024 ** 3, "NCPU": 8}
+        if path.endswith("/json"):
+            return {"HostConfig": cfg}
+        return {}
+
+    monkeypatch.setattr(docker_stats, "_get", fake_get)
+    row = docker_stats.limits()["containers"][0]
+    assert row["cpus"] == 1.5, "quota/period form was not read"
+    assert row["unlimited_memory"] is False
+
+
+def test_limits_degrades_instead_of_raising_when_docker_is_off(monkeypatch):
+    from app import docker_stats
+    monkeypatch.setattr(docker_stats, "availability", lambda: (False, "off"))
+    out = docker_stats.limits()
+    assert out["available"] is False
+    assert out["reason"] == "off"
+    assert out["containers"] == []
+
+
+def test_the_app_never_writes_container_config():
+    """The socket allows it; this app deliberately does not use it.
+
+    Writing would promote the app from "can read container state" to "can
+    reconfigure any container on the host", and compose would undo the change
+    on the next deploy anyway.
+    """
+    source = _read("app/docker_stats.py") + _read("app/main.py")
+    for forbidden in ("/update", "/containers/create", "/start", "/stop", "/kill"):
+        assert f'"{forbidden}' not in source, f"{forbidden} is called somewhere"
+    assert 'conn.request("GET"' in _read("app/docker_stats.py")
+    assert 'conn.request("POST"' not in _read("app/docker_stats.py")
+
+
+def test_the_limits_endpoints_are_admin_only():
+    """Host memory and cpu counts are infrastructure detail."""
+    main = _read("app/main.py")
+    block = main[main.index('@app.get("/api/docker/limits")'):]
+    block = block[:block.index('@app.get("/api/logs")')]
+    assert block.count("require_admin(request)") == 2, \
+        "one of the two limits endpoints is not admin-gated"

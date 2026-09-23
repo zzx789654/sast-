@@ -212,6 +212,12 @@ function wireTokens() {
   if (level) level.addEventListener("change", loadLogs);
   const saveDays = $("#log-days-save");
   if (saveDays) saveDays.addEventListener("click", saveRetention);
+  const dkRefresh = $("#dk-refresh");
+  if (dkRefresh) dkRefresh.addEventListener("click", loadDockerLimits);
+  const dkGen = $("#dk-generate");
+  if (dkGen) dkGen.addEventListener("click", generateComposeFragment);
+  const dkCopy = $("#dk-copy");
+  if (dkCopy) dkCopy.addEventListener("click", copyComposeFragment);
 
   document.querySelectorAll("#settings-nav .subtab").forEach((tab) => {
     tab.addEventListener("click", () => showSettingsGroup(tab.dataset.sub));
@@ -233,6 +239,7 @@ function showSettingsGroup(name) {
   // Fetch when the tab is opened. Loading it up front would mean an admin
   // query on every page load for a view most visits never reach.
   if (name === "logs") loadLogs();
+  if (name === "docker") loadDockerLimits();
 }
 
 // ------------------------------------------------------- API and MCP panel
@@ -2513,3 +2520,143 @@ document.addEventListener("DOMContentLoaded", () => {
   setLang(getLang());   // apply static i18n + toggle label
   init();
 });
+
+
+// ---------------------------------------------------------- docker resources
+// Shows the limit, the real usage and the host's total together: a limit on
+// its own says nothing, since 2GB is generous or crippling depending on what
+// the container uses and what the host has.
+//
+// It produces a compose fragment rather than applying anything. The app can
+// reach /containers/update through the mounted socket, but using it would
+// give it write access to every container on the host, and compose would
+// overwrite the change on the next deploy.
+
+async function loadDockerLimits() {
+  const body = $("#dk-rows");
+  if (!body) return;
+  let data;
+  try {
+    data = await (await fetch("/api/docker/limits")).json();
+  } catch (e) {
+    return;
+  }
+
+  const host = $("#dk-host");
+  if (host) {
+    host.textContent = data.available
+      ? t("dk.host").replace("{mem}", data.host_memory_text || "?")
+                    .replace("{cpus}", data.host_cpus || "?")
+      : (data.reason || t("dk.off"));
+  }
+
+  body.innerHTML = "";
+  if (!data.available || !(data.containers || []).length) {
+    const tr = el("tr");
+    const td = el("td", "mon-subnote", data.reason || t("dk.off"));
+    td.colSpan = 6;
+    tr.appendChild(td);
+    body.appendChild(tr);
+    return;
+  }
+  data.containers.forEach((c) => body.appendChild(dockerRow(c)));
+}
+
+function dockerRow(c) {
+  const tr = el("tr");
+  tr.dataset.service = c.service;
+  tr.appendChild(el("td", "c-name", c.service));
+
+  // An unset limit is the finding, not an empty cell: the container can
+  // exhaust the host rather than only itself.
+  const mem = el("td");
+  if (c.unlimited_memory) {
+    mem.appendChild(el("span", "dk-warn", t("dk.unlimited")));
+  } else {
+    mem.textContent = c.memory_text;
+  }
+  tr.appendChild(mem);
+
+  tr.appendChild(el("td", "mon-subnote", c.memory_used_text || "—"));
+
+  const cpu = el("td");
+  if (c.unlimited_cpus) {
+    cpu.appendChild(el("span", "dk-warn", t("dk.unlimited")));
+  } else {
+    cpu.textContent = String(c.cpus);
+  }
+  tr.appendChild(cpu);
+
+  // Pre-filled with what is already set, so leaving a row alone keeps it.
+  const memIn = el("input", "dk-in dk-mem");
+  memIn.type = "text";
+  memIn.placeholder = "2g";
+  memIn.value = c.memory_text || "";
+  const memCell = el("td");
+  memCell.appendChild(memIn);
+  tr.appendChild(memCell);
+
+  const cpuIn = el("input", "dk-in dk-cpu");
+  cpuIn.type = "text";
+  cpuIn.placeholder = "2.0";
+  cpuIn.value = c.cpus != null ? String(c.cpus) : "";
+  const cpuCell = el("td");
+  cpuCell.appendChild(cpuIn);
+  tr.appendChild(cpuCell);
+
+  return tr;
+}
+
+async function generateComposeFragment() {
+  const spec = {};
+  document.querySelectorAll("#dk-rows tr[data-service]").forEach((tr) => {
+    const mem = tr.querySelector(".dk-mem");
+    const cpu = tr.querySelector(".dk-cpu");
+    const m = mem && mem.value.trim();
+    const c = cpu && cpu.value.trim();
+    if (m || c) spec[tr.dataset.service] = { memory: m || "", cpus: c || "" };
+  });
+
+  const msg = $("#dk-msg");
+  const box = $("#dk-result");
+  if (!Object.keys(spec).length) {
+    if (msg) msg.textContent = t("dk.nothing");
+    if (box) box.classList.add("hidden");
+    return;
+  }
+
+  const body = new FormData();
+  body.append("spec", JSON.stringify(spec));
+  const res = await fetch("/api/docker/limits/preview", { method: "POST", body });
+  if (!res.ok) {
+    let detail = "";
+    try { detail = (await res.json()).detail || ""; } catch (e) { detail = ""; }
+    if (msg) msg.textContent = detail || t("dk.failed");
+    if (box) box.classList.add("hidden");
+    return;
+  }
+  const out = await res.json();
+  const pre = $("#dk-fragment");
+  if (pre) pre.textContent = out.fragment;
+  if (box) box.classList.remove("hidden");
+  if (msg) msg.textContent = "";
+}
+
+async function copyComposeFragment() {
+  const pre = $("#dk-fragment");
+  const msg = $("#dk-msg");
+  if (!pre || !pre.textContent) return;
+  try {
+    await navigator.clipboard.writeText(pre.textContent);
+    if (msg) msg.textContent = t("dk.copied");
+  } catch (e) {
+    // Clipboard access needs a secure context; over plain http it throws.
+    // Select the text instead so it can still be copied by hand.
+    const range = document.createRange();
+    range.selectNodeContents(pre);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    if (msg) msg.textContent = t("dk.copyManual");
+  }
+}

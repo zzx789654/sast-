@@ -231,6 +231,7 @@
       <button class="subtab active" data-sub="account" data-i18n="set.group.account">帳號</button>
       <button class="subtab" data-sub="mcp" data-i18n="set.group.mcp">MCP</button>
       <button class="subtab" data-sub="logs" data-i18n="set.group.logs">Log</button>
+      <button class="subtab" data-sub="docker" data-i18n="set.group.docker">Docker 規格</button>
       <button class="subtab" data-sub="tools" data-i18n="set.group.tools">掃描工具說明</button>
     </nav>
 
@@ -385,6 +386,50 @@
         <div class="api-block">
           <div class="api-label" data-i18n="api.tools">MCP 可用工具</div>
           <div id="mcp-tools" class="users-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- =========================================== docker resources -->
+    <div class="subview hidden" data-sub="docker">
+      <div class="panel">
+        <div class="mon-head">
+          <h2 data-i18n="dk.title">Docker 規格</h2>
+          <button id="dk-refresh" class="linkbtn" data-i18n="mon.refresh">重新整理</button>
+        </div>
+        <p class="mon-hint" data-i18n="dk.intro"></p>
+        <p class="mon-subnote" id="dk-host"></p>
+
+        <div class="log-wrap">
+          <table class="mon-table">
+            <thead>
+              <tr>
+                <th data-i18n="dk.col.service">服務</th>
+                <th data-i18n="dk.col.memNow">目前記憶體上限</th>
+                <th data-i18n="dk.col.memUsed">實際用量</th>
+                <th data-i18n="dk.col.cpuNow">目前 CPU 上限</th>
+                <th data-i18n="dk.col.memWant">要設定的記憶體</th>
+                <th data-i18n="dk.col.cpuWant">要設定的 CPU</th>
+              </tr>
+            </thead>
+            <tbody id="dk-rows"></tbody>
+          </table>
+        </div>
+
+        <div class="dk-actions">
+          <button id="dk-generate" class="btn" data-i18n="dk.generate">產生設定</button>
+          <span class="mon-subnote" id="dk-msg"></span>
+        </div>
+
+        <!-- Hidden until there is something in it: an empty code block with
+             a Copy button invites a click that copies nothing. -->
+        <div id="dk-result" class="hidden">
+          <p class="mon-hint" data-i18n="dk.resultHint"></p>
+          <pre id="dk-fragment" class="dk-fragment"></pre>
+          <div class="dk-actions">
+            <button id="dk-copy" class="btn small" data-i18n="dk.copy">複製</button>
+            <span class="mon-subnote" data-i18n="dk.applyHint"></span>
+          </div>
         </div>
       </div>
     </div>

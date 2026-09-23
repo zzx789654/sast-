@@ -324,3 +324,171 @@ def stop_sampler() -> None:
     if _stop is not None:
         _stop.set()
     _sampler = None
+
+
+# ------------------------------------------------------------------- limits
+#: Ceilings for a hand-typed value. Not policy -- just the point past which a
+#: number is certainly a typo (someone means 2g and types 2000g).
+MAX_MEMORY_BYTES = 1024 ** 4      # 1 TiB
+MAX_CPUS = 512.0
+
+
+def _parse_size(text: str) -> int:
+    """Turn "2g", "512m", "1.5G" into bytes. Raises ValueError on nonsense."""
+    raw = str(text or "").strip().lower().replace("i", "")
+    if not raw:
+        raise ValueError("memory limit is required")
+    units = {"b": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}
+    mult = 1
+    if raw[-1] in units:
+        mult = units[raw[-1]]
+        raw = raw[:-1]
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"cannot read '{text}' as a size (try 2g or 512m)") from exc
+    if value <= 0:
+        raise ValueError("memory limit must be greater than zero")
+    return int(value * mult)
+
+
+def _fmt_size(n: int | None) -> str:
+    """Bytes as something a person reads, which is what the UI shows."""
+    if not n:
+        return ""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024.0
+    return f"{n:.1f}TB"
+
+
+def limits() -> dict:
+    """Current limits, real usage and host capacity, per container.
+
+    All three together because a limit means nothing on its own: "2GB" is
+    generous or crippling depending on what the container actually uses and
+    what the host has to give.
+    """
+    ok, reason = availability()
+    if not ok:
+        return {"available": False, "reason": reason, "containers": [],
+                "host_memory": None, "host_cpus": None}
+    try:
+        listing = _get("/containers/json" + _project_filter())
+        info = _get("/info")
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "reason": f"cannot reach docker: {exc}",
+                "containers": [], "host_memory": None, "host_cpus": None}
+
+    host_memory = int(info.get("MemTotal") or 0) or None
+    host_cpus = int(info.get("NCPU") or 0) or None
+
+    out = []
+    for c in listing:
+        names = c.get("Names") or []
+        name = names[0].lstrip("/") if names else c.get("Id", "")[:12]
+        try:
+            detail = _get(f"/containers/{c['Id']}/json")
+        except Exception:  # noqa: BLE001
+            continue
+        host_cfg = detail.get("HostConfig") or {}
+        mem = int(host_cfg.get("Memory") or 0)
+        nano = int(host_cfg.get("NanoCpus") or 0)
+        cpu_quota = int(host_cfg.get("CpuQuota") or 0)
+        cpu_period = int(host_cfg.get("CpuPeriod") or 0)
+        # Two ways to express a CPU limit; --cpus writes NanoCpus, older
+        # setups use the quota/period pair. Report whichever is set.
+        cpus = None
+        if nano:
+            cpus = round(nano / 1e9, 2)
+        elif cpu_quota and cpu_period:
+            cpus = round(cpu_quota / cpu_period, 2)
+
+        used_mem = None
+        if c.get("State") == "running":
+            try:
+                used_mem = _memory(_get(f"/containers/{c['Id']}/stats?stream=false")
+                                   ).get("mem_used")
+            except Exception:  # noqa: BLE001
+                used_mem = None
+
+        out.append({
+            "name": name,
+            "state": c.get("State", ""),
+            "service": ((c.get("Labels") or {}).get(
+                "com.docker.compose.service") or name),
+            "memory": mem or None,
+            "memory_text": _fmt_size(mem) if mem else "",
+            "cpus": cpus,
+            "memory_used": used_mem,
+            "memory_used_text": _fmt_size(used_mem) if used_mem else "",
+            # An unset limit is the finding, not a blank field: the container
+            # can exhaust the host rather than only itself.
+            "unlimited_memory": not mem,
+            "unlimited_cpus": cpus is None,
+        })
+
+    return {"available": True, "reason": "", "containers": out,
+            "host_memory": host_memory, "host_cpus": host_cpus,
+            "host_memory_text": _fmt_size(host_memory)}
+
+
+def compose_fragment(wanted: dict, host_memory: int | None = None,
+                     host_cpus: int | None = None) -> str:
+    """A compose snippet for the limits asked for, validated first.
+
+    Produced rather than applied. Writing straight to the daemon would need
+    write access this app deliberately does not use, and the change would be
+    undone by the next deploy because compose is what defines these.
+    """
+    if not isinstance(wanted, dict) or not wanted:
+        raise ValueError("no services given")
+
+    lines = ["services:"]
+    for service in sorted(wanted):
+        spec = wanted[service] or {}
+        if not str(service).replace("-", "").replace("_", "").isalnum():
+            raise ValueError(f"'{service}' is not a service name")
+
+        mem_text = str(spec.get("memory") or "").strip()
+        cpu_text = str(spec.get("cpus") or "").strip()
+        if not mem_text and not cpu_text:
+            continue
+
+        body = []
+        if mem_text:
+            mem = _parse_size(mem_text)
+            if mem > MAX_MEMORY_BYTES:
+                raise ValueError(f"{mem_text} is larger than this tool accepts")
+            # A limit above host memory is not a limit; it reads as one and
+            # protects nothing, so it is refused rather than quietly written.
+            if host_memory and mem > host_memory:
+                raise ValueError(
+                    f"{mem_text} is more than the host has "
+                    f"({_fmt_size(host_memory)})")
+            body.append(f"memory: {mem_text}")
+        if cpu_text:
+            try:
+                cpus = float(cpu_text)
+            except ValueError as exc:
+                raise ValueError(f"cannot read '{cpu_text}' as a cpu count") from exc
+            if cpus <= 0:
+                raise ValueError("cpu limit must be greater than zero")
+            if cpus > MAX_CPUS:
+                raise ValueError(f"{cpu_text} is more cpus than this tool accepts")
+            if host_cpus and cpus > host_cpus:
+                raise ValueError(
+                    f"{cpu_text} is more than the host's {host_cpus} cpus")
+            body.append(f"cpus: '{cpus}'")
+
+        lines.append(f"  {service}:")
+        lines.append("    deploy:")
+        lines.append("      resources:")
+        lines.append("        limits:")
+        for item in body:
+            lines.append(f"          {item}")
+
+    if len(lines) == 1:
+        raise ValueError("no limits given")
+    return "\n".join(lines)

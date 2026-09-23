@@ -773,6 +773,50 @@ async def update_auth_policy(request: Request,
         raise HTTPException(400, str(exc)) from exc
 
 
+@app.get("/api/docker/limits")
+async def get_docker_limits(request: Request) -> dict:
+    """Current container limits, usage and host capacity.
+
+    Administrators only: it reports the host's total memory and cpu count,
+    which is infrastructure detail rather than something every account needs.
+    """
+    from . import docker_stats
+
+    require_admin(request)
+    return await run_in_threadpool(docker_stats.limits)
+
+
+@app.post("/api/docker/limits/preview")
+async def preview_docker_limits(request: Request,
+                                spec: str = Form(...)) -> dict:
+    """Turn the wanted limits into a compose fragment. Changes nothing.
+
+    Deliberately a preview and not an apply. The container can reach
+    /containers/update through the mounted socket, but using it would give
+    this app write access to every container on the host, and compose would
+    overwrite the result on the next deploy anyway.
+    """
+    from . import docker_stats
+
+    require_admin(request)
+    try:
+        wanted = json.loads(spec)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, f"spec: {exc}") from exc
+
+    current = await run_in_threadpool(docker_stats.limits)
+    try:
+        fragment = docker_stats.compose_fragment(
+            wanted, current.get("host_memory"), current.get("host_cpus"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    events.record("service", "limits", actor=_owner_name(request),
+                  source=_client_ip(request),
+                  detail="previewed container resource limits")
+    return {"fragment": fragment}
+
+
 @app.get("/api/logs")
 async def get_logs(request: Request,
                    categories: str = "", level: str = "", actor: str = "",
