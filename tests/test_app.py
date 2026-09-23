@@ -4850,3 +4850,17 @@ def test_the_limits_endpoints_are_admin_only():
     block = block[:block.index('@app.get("/api/logs")')]
     assert block.count("require_admin(request)") == 2, \
         "one of the two limits endpoints is not admin-gated"
+
+
+def test_every_styled_class_the_ui_uses_exists_in_the_css():
+    """A class the JS applies but the CSS never defines is invisible.
+
+    It costs nothing at runtime and nothing in review: the feature works,
+    it just looks wrong, and only a deployment shows it. That is exactly
+    what happened to the docker panel -- the CSS was appended by a command
+    chained after a failing one, so it silently never ran.
+    """
+    css = _read("app/static/style.css")
+    for cls in ("dk-in", "dk-warn", "dk-actions", "dk-fragment",
+                "log-chip", "log-table", "log-cat", "log-wrap"):
+        assert "." + cls in css, f".{cls} is used but never defined"

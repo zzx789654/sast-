@@ -860,3 +860,24 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
      legible instead of squeezing seven columns onto a phone. */
   .log-table .log-target, .log-table th:nth-child(6) { display: none; }
 }
+
+/* ------------------------------------------------------- docker resources */
+.dk-in {
+  width: 6rem; padding: .25rem .4rem; font-size: .82rem;
+  border: 1px solid var(--line); border-radius: 5px;
+  background: var(--panel); color: var(--ink); font-family: inherit;
+}
+.dk-in:focus { outline: none; border-color: var(--accent); }
+/* An unset limit is a finding, not a blank: the container can exhaust the
+   host rather than only itself, so it reads as a warning. */
+.dk-warn { color: var(--high); font-weight: 600; font-size: .8rem; }
+.dk-actions { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-top: .7rem; }
+.dk-fragment {
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  padding: .7rem .9rem; font-family: ui-monospace, monospace; font-size: .8rem;
+  overflow-x: auto; white-space: pre; margin: .5rem 0 0;
+}
+@media (max-width: 720px) {
+  /* Usage is context, not the decision; drop it before the inputs. */
+  .mon-table th:nth-child(3), #dk-rows td:nth-child(3) { display: none; }
+}
