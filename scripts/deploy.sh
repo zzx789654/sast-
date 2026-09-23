@@ -70,11 +70,17 @@ step "Detecting the docker group id for the Monitor tab"
 # not enough on its own -- that container has to be recreated, or the
 # Monitor tab stays broken however often the service is restarted.
 RECREATE_FOR_GID=0
-if ! bash "${ROOT}/scripts/docker-gid.sh"; then
-  rc=$?
-  [ "${rc}" -eq 2 ] || die "could not determine the docker group id"
-  RECREATE_FOR_GID=1
-fi
+# Capture the status directly. Inside `if ! cmd`, $? is the status of the
+# negation rather than the command, so the exit-2 signal was read as 0 and
+# a stale container aborted the deploy instead of being recreated.
+# `|| rc=$?` also keeps set -e from killing the script on a non-zero exit.
+rc=0
+bash "${ROOT}/scripts/docker-gid.sh" || rc=$?
+case "${rc}" in
+  0) ;;
+  2) RECREATE_FOR_GID=1 ;;
+  *) die "could not determine the docker group id" ;;
+esac
 
 # Download the scanner binaries before the build rather than during it. On a
 # slow link this is the difference between a build of minutes and one of tens

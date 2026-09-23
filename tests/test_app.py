@@ -4499,3 +4499,15 @@ def test_docker_monitoring_is_on_in_the_default_compose_file():
     assert 'SAST_ENABLE_DOCKER_STATS: "true"' in compose
     assert "/var/run/docker.sock:/var/run/docker.sock:ro" in compose
     assert "${DOCKER_GID:-999}" in compose
+
+
+def test_the_gid_exit_code_is_read_correctly():
+    """`if ! cmd; then rc=$?` reads the negation, not the command.
+
+    The first attempt at this did exactly that, so docker-gid.sh's exit 2
+    arrived as 0 and a stale container aborted the deploy instead of being
+    recreated. Verified on the machine that was actually broken.
+    """
+    deploy = _read("scripts/deploy.sh")
+    assert 'if ! bash "${ROOT}/scripts/docker-gid.sh"; then' not in deploy
+    assert 'bash "${ROOT}/scripts/docker-gid.sh" || rc=$?' in deploy
