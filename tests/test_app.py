@@ -4443,3 +4443,59 @@ def test_the_scanner_matrix_covers_every_adapter():
     table = table[:table.index("];")]
     for adapter in ADAPTERS:
         assert f'"{adapter.name}"' in table, f"{adapter.name} is not in the matrix"
+
+
+# --------------------------------------------------------------- docker gid
+
+def _read(rel):
+    from pathlib import Path
+    return (Path(__file__).resolve().parents[1] / rel).read_text(encoding="utf-8")
+
+
+def test_first_run_writes_the_docker_gid_before_starting_containers():
+    """The gid has to exist before the first container does.
+
+    Compose stamps group_add onto a container when it creates it and never
+    revisits it, so a DOCKER_GID written afterwards reaches nothing that is
+    already running. `setup.sh --docker` used to go straight to `compose up`,
+    which is why a freshly deployed machine reported "permission denied" in
+    the Monitor tab until someone happened to run deploy.sh.
+    """
+    setup = _read("setup.sh")
+    gid_at = setup.find("scripts/docker-gid.sh")
+    up_at = setup.find("$COMPOSE up --build -d")
+    assert gid_at != -1, "setup.sh --docker never determines the docker gid"
+    assert up_at != -1
+    assert gid_at < up_at, "the gid is written after the first container is created"
+
+
+def test_both_entry_points_share_one_gid_implementation():
+    """Two copies drift; one of them is how the bug survived."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    assert (root / "scripts/docker-gid.sh").exists()
+    for entry in ("setup.sh", "scripts/deploy.sh"):
+        assert "scripts/docker-gid.sh" in _read(entry), entry
+    # The detection itself must live in exactly one place.
+    assert _read("scripts/deploy.sh").count("stat -c '%g' /var/run/docker.sock") == 0
+
+
+def test_a_stale_container_group_forces_a_recreate():
+    """Writing the right gid does not fix a container that already exists.
+
+    docker-gid.sh reports that with exit 2; deploy.sh has to act on it, or the
+    Monitor tab stays broken through any number of restarts.
+    """
+    gid = _read("scripts/docker-gid.sh")
+    assert "exit 2" in gid, "no signal for a container created with the wrong group"
+    deploy = _read("scripts/deploy.sh")
+    assert "RECREATE_FOR_GID" in deploy
+    assert "--force-recreate sast-studio" in deploy
+
+
+def test_docker_monitoring_is_on_in_the_default_compose_file():
+    """The default deployment monitors itself; it is not an opt-in extra."""
+    compose = _read("docker-compose.yml")
+    assert 'SAST_ENABLE_DOCKER_STATS: "true"' in compose
+    assert "/var/run/docker.sock:/var/run/docker.sock:ro" in compose
+    assert "${DOCKER_GID:-999}" in compose

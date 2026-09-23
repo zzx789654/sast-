@@ -65,33 +65,15 @@ echo "  deploying $(git rev-parse --short HEAD 2>/dev/null || echo 'working tree
 # and the gid differs between hosts, so read the real one rather than guessing.
 # Without this the Monitor tab just says "permission denied".
 step "Detecting the docker group id for the Monitor tab"
-if [ -S /var/run/docker.sock ]; then
-  DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
-  echo "  docker.sock is group ${DOCKER_GID}"
-  # A .env this user cannot write stops the deploy dead, and under set -e
-  # the only clue is one "Permission denied" line among the build output.
-  # It happens for a mundane reason: one deploy run with sudo leaves the
-  # file owned by root, and every later run as a normal user fails.
-  if [ -e .env ] && [ ! -w .env ]; then
-    echo "  ! cannot write .env -- it belongs to $(stat -c '%U' .env), you are $(id -un)" >&2
-    echo "  !   sudo chown $(id -un):$(id -gn) $(pwd)/.env" >&2
-    echo "  ! (a previous deploy run with sudo is the usual cause)" >&2
-    die "fix the ownership of .env and run this again"
-  fi
-
-  if [ -f .env ] && grep -q '^DOCKER_GID=' .env; then
-    # Portable in-place edit: BSD and GNU sed disagree about -i.
-    tmp="$(mktemp)"
-    sed "s/^DOCKER_GID=.*/DOCKER_GID=${DOCKER_GID}/" .env > "${tmp}" \
-      && mv "${tmp}" .env \
-      || die "could not update DOCKER_GID in .env"
-  else
-    echo "DOCKER_GID=${DOCKER_GID}" >> .env \
-      || die "could not write DOCKER_GID to .env"
-  fi
-  echo "  wrote DOCKER_GID=${DOCKER_GID} to .env"
-else
-  echo "  no docker socket on this host; the Monitor tab will show it as off"
+# Exit 2 means a running container still carries the old group. Compose
+# reads .env only when it creates a container, so writing the right gid is
+# not enough on its own -- that container has to be recreated, or the
+# Monitor tab stays broken however often the service is restarted.
+RECREATE_FOR_GID=0
+if ! bash "${ROOT}/scripts/docker-gid.sh"; then
+  rc=$?
+  [ "${rc}" -eq 2 ] || die "could not determine the docker group id"
+  RECREATE_FOR_GID=1
 fi
 
 # Download the scanner binaries before the build rather than during it. On a
@@ -105,6 +87,11 @@ step "Building the new image (the running service is untouched)"
 compose build || die "build failed -- the old version is still serving"
 
 step "Switching to the new image"
+if [ "${RECREATE_FOR_GID}" -eq 1 ]; then
+  echo "  forcing a recreate so the corrected docker group takes effect"
+  compose up -d --force-recreate sast-studio \
+    || die "could not start the new image; ./scripts/deploy.sh --rollback"
+fi
 compose up -d || die "could not start the new image; ./scripts/deploy.sh --rollback"
 
 # nginx.conf is bind-mounted as a single file, which pins the inode it had
