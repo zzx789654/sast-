@@ -1741,3 +1741,53 @@ lockfile？實際安裝？還是從範圍推測？三者結論可能完全不同
   但 npm audit／OSV-Scanner 會傳出套件名稱與版本，Trivy／Bearer 有版本檢查——
   對敏感專案這些都是答案的一部分。
 - 截圖要用**實際跑出結果**的示範專案，空白畫面無法說明產品。示範用的密鑰只能是公開範例值。
+---
+
+## 2026-09-23 輪結 Round 15 — .240 乾淨重建驗證 Docker 監控
+
+- 現況：已過 G1、G6；下一步 = 無（本輪目標達成）
+- PM：範圍限定「部署驗證」，不改碼；與使用者確認採「乾淨重建」而非
+  「只更新」——後者會被既有容器的正確狀態掩蓋，證明不了首次部署行為
+- Dev/Sec：本輪未改碼，沿用 G5 基線；弱點 Crit 0 / High 0
+- QA：Pass 7 / Fail 0 / Blocked 0（TC-00~TC-06 + TC-04b）；通過率 100%
+- 退回事件：無
+- 部署：.240 `compose down`（未加 -v）+ `rm .env` → `./setup.sh --docker`
+  → commit 2cf0cc4；三個具名 volume 全程存活
+
+### 核心結論
+第 14 輪的 gid 順序修正，在**真正的首次部署路徑**上確認有效：
+全新容器拿到 `GroupAdd:[988]`，不是 999 fallback，
+`docker_stats.collect()` available=True 且 cpu/mem 為實數。
+
+背景取樣器在**無人看管**下實證有效：停掉 nginx、不開任何頁面，
+12:32 自動記下 `running -> exited`（error 級），
+12:33 記下 `exited -> running`（info 級）。
+
+### 教訓 / 準則
+
+**準則一：驗證修復時，要走使用者真正會走的那條路徑。**
+情境：修了「首次部署」的 bug，卻用 `deploy.sh`（更新路徑）驗證。
+第 14 輪就是這樣——修對了，但驗證方式證明不了修對。
+只有 `compose down` + `rm .env` 才會重現首次部署的初始條件。
+既有的正確狀態會掩蓋問題，讓壞掉的版本看起來也是好的。
+
+**準則二：`docker compose down` 不加 `-v` 不會刪具名 volume。**
+情境：需要重建容器但要保住資料。
+本輪部署前後各拍一次 `docker volume ls` 快照當證據，
+而不是只靠「我記得 -v 才會刪」。破壞性操作前後都要留快照。
+
+**準則三：in-memory 狀態不能用 `docker exec` 驗證。**
+情境：想確認背景執行緒有沒有在跑。
+每個 `docker exec python -c` 都是**全新程序**，看不到 uvicorn 的執行緒，
+也看不到它的 `_seen` 字典。上一輪因此誤判取樣器壞掉。
+正解：用它的**副作用**反證——製造一次真實狀態變化，看 Log 有沒有自己記下。
+
+**準則四：透過 stdin 餵含中文的腳本給 paramiko，要明確指定 utf-8。**
+情境：`ssh.py - < script.sh` 在 Windows 下炸出
+`UnicodeEncodeError: surrogates not allowed`。
+`sys.stdin.read()` 用系統預設編碼（cp950）讀 UTF-8 檔案會產生孤立代理字元。
+改用 `sys.stdin.buffer.read().decode("utf-8")`。
+好消息：它在送出**前**就失敗，不會有半套指令跑到遠端。
+
+### 過程原始輸出位置
+scratchpad/r15_clean_deploy.sh、r15_qa.sh、r15_sampler.sh
