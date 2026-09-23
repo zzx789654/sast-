@@ -3233,7 +3233,7 @@ def test_both_readmes_say_how_to_get_the_code():
     to anyone who already has it, a dead end for anyone who does not.
     """
     root = Path(__file__).resolve().parents[1]
-    for name in ["README.md", "README.zh.md"]:
+    for name in ["README.md", "README.en.md"]:
         text = (root / name).read_text("utf-8")
         assert "git clone" in text, f"{name} never says how to get the code"
         # And before the command that needs it.
@@ -3266,7 +3266,7 @@ def test_both_readmes_say_which_command_to_run():
     """
     root = Path(__file__).resolve().parents[1]
 
-    for name in ["README.md", "README.zh.md"]:
+    for name in ["README.md", "README.en.md"]:
         text = (root / name).read_text("utf-8")
         assert "./setup.sh --docker" in text, f"{name}: first-run command missing"
         assert "./setup.sh --update" in text, f"{name}: update command missing"
@@ -3287,8 +3287,8 @@ def test_the_readme_does_not_promise_scan_history_survives():
         "scan history may no longer be in memory; recheck what the README says"
     )
 
-    for name, phrase in [("README.md", "Scan history is the exception"),
-                         ("README.zh.md", "掃描記錄例外")]:
+    for name, phrase in [("README.en.md", "Scan history is the exception"),
+                         ("README.md", "掃描記錄例外")]:
         text = (root / name).read_text("utf-8")
         assert phrase in text, f"{name} does not flag that scan history is lost"
 
