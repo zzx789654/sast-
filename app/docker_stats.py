@@ -118,7 +118,53 @@ def collect() -> dict:
                 pass
         item["capacity"] = _capacity(item, host_total)
         out.append(item)
+    _log_changes(out)
     return {"available": True, "reason": "", "containers": out}
+
+
+#: Last state seen per container, so only transitions are logged. The Monitor
+#: tab polls this every few seconds; writing a row each time would bury every
+#: other category and grow the log by tens of thousands of rows a day for no
+#: added information.
+_seen: dict[str, tuple[str, str]] = {}
+
+
+def _log_changes(containers: list) -> None:
+    """Record starts, stops, restarts and capacity trouble. Never raises."""
+    try:
+        from . import events
+    except Exception:  # noqa: BLE001
+        return
+    for c in containers:
+        name = c.get("name") or ""
+        if not name:
+            continue
+        state = c.get("state") or ""
+        level_now = ((c.get("capacity") or {}).get("level")) or ""
+        before = _seen.get(name)
+        _seen[name] = (state, level_now)
+        if before is None:
+            # First sighting after a restart of this process is not an event:
+            # the container was already in that state before we looked.
+            continue
+        was_state, was_level = before
+        try:
+            if state != was_state:
+                events.record(
+                    "docker", "state", target=name,
+                    level="error" if state != "running" else "info",
+                    detail=f"{was_state or 'unknown'} -> {state or 'unknown'}")
+            elif level_now != was_level and level_now in ("warn", "tight"):
+                # Saturation, which is the other thing worth a row: reported
+                # once when it starts, not for as long as it lasts.
+                reasons = ", ".join((c.get("capacity") or {}).get("reasons") or [])
+                events.record(
+                    "docker", "capacity", target=name,
+                    level="error" if level_now == "tight" else "warn",
+                    detail=f"{level_now}: {reasons}"
+                           f" (cpu {c.get('cpu_pct')}%, mem {c.get('mem_pct')}%)")
+        except Exception:  # noqa: BLE001 - monitoring must not break the tab
+            continue
 
 
 #: Headroom thresholds for the capacity verdict, in percent of the limit.

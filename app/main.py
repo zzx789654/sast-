@@ -23,6 +23,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .adapters import ADAPTERS
 from .config import config
+from . import events
 from .inventory import inventory
 from .models import JobStatus, ScanTarget
 from .orchestrator import manager
@@ -36,7 +37,18 @@ async def _lifespan(_app: FastAPI):
     turned it on keeps working exactly as before.
     """
     await _prepare_accounts()
+    try:
+        from . import events
+        events.init()
+        events.record("service", "start", detail=f"SAST Studio {app.version}")
+    except Exception:  # noqa: BLE001 - never block startup on the log
+        pass
     yield
+    try:
+        from . import events
+        events.record("service", "stop", detail="shutting down")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 
@@ -99,7 +111,11 @@ async def admin_restart(request: Request) -> JSONResponse:
 
     require_admin(request)
     result = admin.restart_app()
-    return JSONResponse(result, status_code=202 if result.get("restarting") else 409)
+    ok = bool(result.get("restarting"))
+    events.record("service", "restart", level="warn" if ok else "error",
+                  actor=_owner_name(request), source=_client_ip(request),
+                  detail=result.get("detail") or ("restarting" if ok else "refused"))
+    return JSONResponse(result, status_code=202 if ok else 409)
 
 
 # The published rulesets we offer for Semgrep. "auto" is deliberately absent:
@@ -166,6 +182,18 @@ def require_admin(request: Request):
     if not user.is_admin:
         raise HTTPException(403, "administrator access required")
     return user
+
+
+def _client_ip(request: Request) -> str:
+    """The client address as the proxy saw it.
+
+    "unknown" rather than a guess when there is no proxy header and no peer:
+    a wrong address in a log is worse than an absent one, because it reads as
+    evidence. Only the first hop is taken -- the rest of x-forwarded-for is
+    whatever the client chose to send.
+    """
+    forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    return forwarded or (request.client.host if request.client else "unknown")
 
 
 def _owner_name(request: Request) -> Optional[str]:
@@ -266,6 +294,12 @@ async def _auth_gate(request: Request, call_next):
                             status_code=403)
 
     user = current_user(request)
+    if user is not None and request.headers.get("authorization") \
+            and path.startswith("/api/"):
+        events.record("api", "call", actor=user.username,
+                      source=_client_ip(request),
+                      target=f"{request.method} {path}",
+                      detail="api token")
     if public or user is not None:
         # An expired password was reported by whoami and enforced nowhere, so
         # the setting did nothing at all: the account kept working, and its
@@ -327,8 +361,7 @@ async def change_expired_password(request: Request,
     """
     from . import accounts
 
-    source = (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-              or (request.client.host if request.client else "unknown"))
+    source = _client_ip(request)
     # This endpoint checks a password too, so without the same throttle it
     # would be an unlimited guessing oracle sitting next to a limited one.
     wait = accounts.login_blocked(username, source)
@@ -367,10 +400,7 @@ async def login(request: Request, response: Response,
                 username: str = Form(...), password: str = Form(...)) -> dict:
     from . import accounts
 
-    # The client address as the proxy saw it; "unknown" rather than a guess
-    # when there is no proxy header to read.
-    source = (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-              or (request.client.host if request.client else "unknown"))
+    source = _client_ip(request)
 
     # Checked before the password, so a locked-out attacker cannot keep
     # measuring how long a hash takes, and cannot keep guessing at all.
@@ -597,9 +627,14 @@ async def mcp_endpoint(request: Request) -> Response:
     # which is why absent is allowed and mismatched is not.
     origin = request.headers.get("origin")
     if origin and not _origin_allowed(origin, request):
+        events.record("api", "mcp", level="warn", source=_client_ip(request),
+                      target="/mcp", detail=f"origin refused: {origin[:80]}")
         raise HTTPException(403, "origin not allowed")
 
     user = current_user(request)
+    events.record("api", "mcp", actor=(user.username if user else ""),
+                  source=_client_ip(request), target="/mcp",
+                  detail="authenticated" if user else "unauthenticated")
     if config.REQUIRE_AUTH and user is None:
         # 401 with the scheme, so a client knows what to send.
         return JSONResponse(
@@ -726,6 +761,47 @@ async def update_auth_policy(request: Request,
         return accounts.set_policy(changes)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/logs")
+async def get_logs(request: Request,
+                   categories: str = "", level: str = "", actor: str = "",
+                   text: str = "", since: str = "",
+                   limit: int = 200, offset: int = 0) -> dict:
+    """The activity log, filtered.
+
+    Administrators see everything. Everyone else sees only their own rows:
+    the log names who scanned what and which address called the API, which is
+    an account's activity, not shared information.
+    """
+    user = require_user(request)
+    if user is None:
+        raise HTTPException(400, "authentication is disabled")
+    is_admin = bool(user.is_admin)
+    wanted = [c.strip() for c in categories.split(",") if c.strip()]
+    result = await run_in_threadpool(
+        events.query,
+        categories=wanted, level=level,
+        actor=actor if is_admin else (user.username if user else "\x00"),
+        text=text, since=since, limit=limit, offset=offset)
+    result["scope"] = "all" if is_admin else "mine"
+    if is_admin:
+        result["counts"] = await run_in_threadpool(events.counts_by_category)
+    return result
+
+
+@app.post("/api/logs/retention")
+async def set_log_retention(request: Request, days: str = Form(...)) -> dict:
+    """How many days of log to keep. Older rows are deleted immediately."""
+    require_admin(request)
+    try:
+        kept = await run_in_threadpool(events.set_retention_days, days)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    events.record("service", "retention", level="warn",
+                  actor=_owner_name(request), source=_client_ip(request),
+                  detail=f"log retention set to {kept} days")
+    return {"retention_days": kept}
 
 
 @app.get("/api/auth/logins")
@@ -1108,6 +1184,10 @@ async def create_scan(
     else:
         raise HTTPException(400, f"unknown source_kind: {source_kind}")
 
+    # The target and the moment, which is what "which scan was that?" needs.
+    events.record("scan", "start", actor=_owner_name(request),
+                  source=_client_ip(request), target=target.display,
+                  detail=f"{source_kind}: {', '.join(requested) or 'all tools'}")
     return JSONResponse({"id": job.id, "status": job.status.value}, status_code=201)
 
 

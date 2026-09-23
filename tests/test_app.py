@@ -2139,8 +2139,10 @@ def test_settings_panels_survived_the_regrouping():
         # MCP
         "api-curl", "mcp-json", "mcp-tools", "mcp-download",
         "env-template", "env-download",
-        # history and matrix
-        "logins-list", "logins-scope", "tool-matrix",
+        # activity log and matrix
+        "log-rows", "logs-scope", "log-cats", "log-search", "log-level",
+        "log-count", "log-retention", "log-days", "log-days-save",
+        "logs-refresh", "tool-matrix",
     ]:
         assert f'id="{element_id}"' in html, f"#{element_id} is gone"
 
@@ -4511,3 +4513,140 @@ def test_the_gid_exit_code_is_read_correctly():
     deploy = _read("scripts/deploy.sh")
     assert 'if ! bash "${ROOT}/scripts/docker-gid.sh"; then' not in deploy
     assert 'bash "${ROOT}/scripts/docker-gid.sh" || rc=$?' in deploy
+
+
+# ------------------------------------------------------------- activity log
+
+def _fresh_events(tmp_path, monkeypatch):
+    """An empty log on its own database."""
+    from app import accounts, events
+    from app.config import config
+    monkeypatch.setattr(config, "ACCOUNTS_DB", tmp_path / "acc.db")
+    accounts.init_db()
+    events.init()
+    events._last_sweep = None
+    return events
+
+
+def test_every_category_is_recorded_and_read_back(tmp_path, monkeypatch):
+    """All five kinds land in one table, which is the point of having it."""
+    events = _fresh_events(tmp_path, monkeypatch)
+    for cat in events.CATEGORIES:
+        events.record(cat, "start", actor="alice", source="10.0.0.1",
+                      target="t-" + cat, detail="d")
+    got = events.query()
+    assert got["total"] == len(events.CATEGORIES)
+    assert {e["category"] for e in got["events"]} == set(events.CATEGORIES)
+
+
+def test_old_rows_are_deleted_not_merely_hidden(tmp_path, monkeypatch):
+    """Retention means gone from disk.
+
+    A filter that hides old rows still leaves them in the database, which is
+    not what someone setting a retention period is asking for.
+    """
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+    events = _fresh_events(tmp_path, monkeypatch)
+    events.record("auth", "login", actor="old")
+    old = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+    with events._connect() as conn:
+        conn.execute("UPDATE events SET at = ?", (old,))
+    assert events.query()["total"] == 1
+
+    events.set_retention_days(30)
+    with events._connect() as conn:
+        left = conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()["n"]
+    assert left == 0, "the row was filtered out but still on disk"
+
+
+def test_retention_applies_the_moment_it_is_set(tmp_path, monkeypatch):
+    """Lowering it is usually a decision that the rows should not be kept."""
+    from datetime import datetime, timedelta, timezone
+    events = _fresh_events(tmp_path, monkeypatch)
+    events.record("scan", "start", target="repo")
+    with events._connect() as conn:
+        conn.execute("UPDATE events SET at = ?",
+                     ((datetime.now(timezone.utc) - timedelta(days=5)).isoformat(),))
+    events.set_retention_days(90)
+    assert events.query()["total"] == 1
+    events.set_retention_days(2)
+    assert events.query()["total"] == 0
+
+
+def test_retention_is_bounded(tmp_path, monkeypatch):
+    events = _fresh_events(tmp_path, monkeypatch)
+    for bad in (0, -1, 99999, "x", None):
+        with pytest.raises(ValueError):
+            events.set_retention_days(bad)
+    assert events.set_retention_days(7) == 7
+    assert events.retention_days() == 7
+
+
+def test_filters_narrow_by_category_level_and_text(tmp_path, monkeypatch):
+    events = _fresh_events(tmp_path, monkeypatch)
+    events.record("auth", "login", level="warn", actor="mallory", detail="wrong")
+    events.record("scan", "start", actor="alice", target="github.com/a/b")
+    events.record("docker", "state", level="error", target="nginx")
+
+    assert events.query(categories=["auth"])["total"] == 1
+    assert events.query(level="error")["total"] == 1
+    assert events.query(text="github.com")["total"] == 1
+    assert events.query(categories=["auth", "docker"])["total"] == 2
+    # An unknown category must not silently widen the result to everything.
+    assert events.query(categories=["nonsense"])["total"] == 3
+
+
+def test_a_search_cannot_break_out_of_the_query(tmp_path, monkeypatch):
+    """The wildcards are in the value, not the SQL."""
+    events = _fresh_events(tmp_path, monkeypatch)
+    events.record("scan", "start", target="ordinary")
+    for probe in ("%", "_", "' OR 1=1 --", '" OR "1"="1'):
+        out = events.query(text=probe)
+        assert isinstance(out["total"], int)
+    # A literal % would match everything if it reached the SQL as a wildcard.
+    assert events.query(text="' OR 1=1 --")["total"] == 0
+
+
+def test_logging_never_breaks_the_thing_being_logged(tmp_path, monkeypatch):
+    """A log write that raises would turn a gap in the record into an outage."""
+    import sqlite3
+    events = _fresh_events(tmp_path, monkeypatch)
+
+    def boom(*a, **k):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(events, "_connect", boom)
+    events.record("scan", "start", target="repo")  # must not raise
+
+
+def test_docker_state_changes_are_logged_but_not_every_poll(tmp_path, monkeypatch):
+    """The Monitor tab polls constantly; only transitions are events."""
+    from app import docker_stats
+    events = _fresh_events(tmp_path, monkeypatch)
+    docker_stats._seen.clear()
+
+    running = [{"name": "web", "state": "running",
+                "capacity": {"level": "ok", "reasons": []}}]
+    docker_stats._log_changes(running)
+    assert events.query(categories=["docker"])["total"] == 0, "first sighting is not an event"
+    for _ in range(5):
+        docker_stats._log_changes(running)
+    assert events.query(categories=["docker"])["total"] == 0, "a steady state is not an event"
+
+    docker_stats._log_changes([{"name": "web", "state": "exited",
+                                "capacity": {"level": "idle", "reasons": []}}])
+    assert events.query(categories=["docker"])["total"] == 1
+    row = events.query(categories=["docker"])["events"][0]
+    assert row["level"] == "error" and "exited" in row["detail"]
+
+
+def test_the_log_records_who_and_from_where(tmp_path, monkeypatch):
+    """An API row without an address does not answer the question asked of it."""
+    events = _fresh_events(tmp_path, monkeypatch)
+    events.record("api", "call", actor="bot", source="192.168.1.50",
+                  target="GET /api/scans")
+    row = events.query(categories=["api"])["events"][0]
+    assert row["actor"] == "bot"
+    assert row["source"] == "192.168.1.50"
+    assert row["target"] == "GET /api/scans"

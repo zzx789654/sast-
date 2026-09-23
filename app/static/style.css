@@ -803,3 +803,60 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 .scan-option .opt-sends,
 .scan-option .opt-dest { color: var(--ink); }
 .scan-option .opt-not { color: var(--ok); }
+
+/* ------------------------------------------------------------ activity log */
+/* The filters sit above the rows and the table scrolls under them, so the
+   controls stay put while the results move. */
+.log-filters { display: flex; flex-direction: column; gap: .5rem; margin: .6rem 0 .5rem; }
+.log-chips { display: flex; flex-wrap: wrap; gap: .35rem; }
+.log-chip {
+  border: 1px solid var(--line); background: transparent; color: var(--muted);
+  border-radius: 999px; padding: .2rem .65rem; font-size: .78rem; cursor: pointer;
+  font-family: inherit; line-height: 1.6;
+}
+.log-chip:hover { border-color: var(--accent); color: var(--ink); }
+.log-chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.log-row2 { display: flex; gap: .5rem; flex-wrap: wrap; }
+.log-search { flex: 1 1 16rem; min-width: 0; }
+.log-level { flex: 0 0 auto; }
+
+/* A long log is read by scrolling the rows, not the page: the header stays
+   visible so the columns remain identifiable. */
+.log-wrap { max-height: 28rem; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+.log-table { font-size: .8rem; }
+.log-table thead th {
+  position: sticky; top: 0; background: var(--panel); z-index: 1;
+  border-bottom: 1px solid var(--line);
+}
+.log-table td { vertical-align: top; }
+.log-at { white-space: nowrap; color: var(--muted); font-family: ui-monospace, monospace; font-size: .74rem; }
+.log-src { font-family: ui-monospace, monospace; font-size: .76rem; }
+.log-actor { font-weight: 600; }
+.log-target, .log-detail { word-break: break-word; }
+.log-detail { color: var(--muted); }
+
+/* The category is a coloured label rather than a plain word, so scanning the
+   column for one kind of row does not mean reading every row. */
+.log-cat {
+  display: inline-block; border-radius: 4px; padding: .05rem .4rem;
+  font-size: .72rem; font-weight: 600; white-space: nowrap;
+  background: var(--line); color: var(--ink);
+}
+.log-cat-scan    { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.log-cat-auth    { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.log-cat-service { background: color-mix(in srgb, var(--high) 20%, transparent); color: var(--high); }
+.log-cat-docker  { background: color-mix(in srgb, var(--muted) 20%, transparent); color: var(--muted); }
+.log-cat-api     { background: color-mix(in srgb, var(--crit) 15%, transparent); color: var(--crit); }
+
+/* Severity is carried by a left edge, not a background wash: a whole row in
+   colour is harder to read, and the point is to find the row, then read it. */
+.log-table tr.log-warn  td:first-child { box-shadow: inset 3px 0 0 var(--high); }
+.log-table tr.log-error td:first-child { box-shadow: inset 3px 0 0 var(--bad); }
+
+.log-retention { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin-top: .7rem; }
+.log-days { width: 5.5rem; }
+@media (max-width: 720px) {
+  /* Target and detail are the wide columns; dropping them keeps the rest
+     legible instead of squeezing seven columns onto a phone. */
+  .log-table .log-target, .log-table th:nth-child(6) { display: none; }
+}

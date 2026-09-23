@@ -197,8 +197,21 @@ function wireTokens() {
   if (dl) dl.addEventListener("click", downloadMcpConfig);
   const env = $("#env-download");
   if (env) env.addEventListener("click", downloadEnvTemplate);
-  const logins = $("#logins-refresh");
-  if (logins) logins.addEventListener("click", loadLoginHistory);
+  const logs = $("#logs-refresh");
+  if (logs) logs.addEventListener("click", loadLogs);
+  const search = $("#log-search");
+  if (search) {
+    // Debounced, so typing filters as you go without a request per keystroke.
+    let timer = null;
+    search.addEventListener("input", () => {
+      clearTimeout(timer);
+      timer = setTimeout(loadLogs, 250);
+    });
+  }
+  const level = $("#log-level");
+  if (level) level.addEventListener("change", loadLogs);
+  const saveDays = $("#log-days-save");
+  if (saveDays) saveDays.addEventListener("click", saveRetention);
 
   document.querySelectorAll("#settings-nav .subtab").forEach((tab) => {
     tab.addEventListener("click", () => showSettingsGroup(tab.dataset.sub));
@@ -217,6 +230,9 @@ function showSettingsGroup(name) {
   document.querySelectorAll("#view-settings .subview").forEach((box) => {
     box.classList.toggle("hidden", box.dataset.sub !== name);
   });
+  // Fetch when the tab is opened. Loading it up front would mean an admin
+  // query on every page load for a view most visits never reach.
+  if (name === "logs") loadLogs();
 }
 
 // ------------------------------------------------------- API and MCP panel
@@ -370,35 +386,141 @@ async function savePolicy(ev) {
   if (res.ok) loadPasswordPolicy();
 }
 
-// ------------------------------------------------------------ login history
-async function loadLoginHistory() {
-  const box = $("#logins-list");
-  if (!box) return;
+// -------------------------------------------------------------- activity log
+// One table for scans, logins, service state, docker state and API calls.
+// They are together because the useful questions cross categories: "what was
+// running when it restarted?" cannot be answered from separate lists.
+
+//: Which categories are ticked. Empty means all, which is also the default --
+//: arriving at a filtered view you did not set is disorienting.
+const logFilter = { cats: new Set(), level: "" };
+
+function logRowsEl() { return $("#log-rows"); }
+
+async function loadLogs() {
+  const body = logRowsEl();
+  if (!body) return;
+  const params = new URLSearchParams();
+  if (logFilter.cats.size) params.set("categories", [...logFilter.cats].join(","));
+  if (logFilter.level) params.set("level", logFilter.level);
+  const search = $("#log-search");
+  if (search && search.value.trim()) params.set("text", search.value.trim());
+
   let data;
   try {
-    data = await (await fetch("/api/auth/logins")).json();
+    data = await (await fetch("/api/logs?" + params.toString())).json();
   } catch (e) {
     return;
   }
-  const scope = $("#logins-scope");
+
+  const scope = $("#logs-scope");
   if (scope) {
     scope.textContent = data.scope === "all"
-      ? t("logins.scopeAll") : t("logins.scopeMine");
+      ? t("logs.scopeAll") : t("logs.scopeMine");
   }
-  box.innerHTML = "";
+  renderLogChips(data);
+  renderLogLevels(data);
+  renderRetention(data);
+
+  body.innerHTML = "";
   if (!(data.events || []).length) {
-    box.appendChild(el("div", "mon-subnote", t("logins.none")));
+    const tr = el("tr");
+    const td = el("td", "mon-subnote", t("logs.none"));
+    td.colSpan = 7;
+    tr.appendChild(td);
+    body.appendChild(tr);
+  } else {
+    data.events.forEach((ev) => body.appendChild(logRow(ev)));
+  }
+
+  const count = $("#log-count");
+  if (count) {
+    // "showing 200 of 4312" rather than just a number, so a truncated view
+    // never reads as the whole story.
+    count.textContent = (data.total > (data.events || []).length)
+      ? t("logs.showing").replace("{n}", (data.events || []).length)
+                         .replace("{total}", data.total)
+      : t("logs.total").replace("{total}", data.total);
+  }
+}
+
+function logRow(ev) {
+  const tr = el("tr", "log-" + (ev.level || "info"));
+  tr.appendChild(el("td", "log-at", (ev.at || "").slice(0, 19).replace("T", " ")));
+  const cat = el("td");
+  cat.appendChild(el("span", "log-cat log-cat-" + (ev.category || ""),
+                     t("logs.cat." + ev.category) || ev.category));
+  tr.appendChild(cat);
+  tr.appendChild(el("td", "", t("logs.act." + ev.action) || ev.action || ""));
+  tr.appendChild(el("td", "log-actor", ev.actor || "—"));
+  tr.appendChild(el("td", "log-src", ev.source || "—"));
+  tr.appendChild(el("td", "log-target", ev.target || "—"));
+  tr.appendChild(el("td", "log-detail", ev.detail || ""));
+  return tr;
+}
+
+function renderLogChips(data) {
+  const box = $("#log-cats");
+  if (!box) return;
+  box.innerHTML = "";
+  // "All" is a chip rather than an unticked state, so clearing the filter is
+  // one click from anywhere instead of untangling which ones are on.
+  const all = el("button", "log-chip" + (logFilter.cats.size ? "" : " on"),
+                 t("logs.all"));
+  all.addEventListener("click", () => { logFilter.cats.clear(); loadLogs(); });
+  box.appendChild(all);
+
+  (data.categories || []).forEach((c) => {
+    const n = (data.counts || {})[c];
+    const label = (t("logs.cat." + c) || c) + (n === undefined ? "" : " (" + n + ")");
+    const chip = el("button", "log-chip" + (logFilter.cats.has(c) ? " on" : ""), label);
+    chip.addEventListener("click", () => {
+      if (logFilter.cats.has(c)) logFilter.cats.delete(c);
+      else logFilter.cats.add(c);
+      loadLogs();
+    });
+    box.appendChild(chip);
+  });
+}
+
+function renderLogLevels(data) {
+  const sel = $("#log-level");
+  if (!sel || sel.dataset.built === "1") return;
+  sel.appendChild(new Option(t("logs.anyLevel"), ""));
+  (data.levels || []).forEach((lv) => {
+    sel.appendChild(new Option(t("logs.level." + lv) || lv, lv));
+  });
+  sel.dataset.built = "1";
+}
+
+function renderRetention(data) {
+  const box = $("#log-retention");
+  if (!box) return;
+  // Only an administrator can change it, so only an administrator sees it.
+  if (data.scope !== "all") { box.classList.add("hidden"); return; }
+  box.classList.remove("hidden");
+  const input = $("#log-days");
+  if (input && document.activeElement !== input) {
+    input.value = data.retention_days || "";
+  }
+}
+
+async function saveRetention() {
+  const input = $("#log-days");
+  if (!input) return;
+  const body = new FormData();
+  body.append("days", input.value);
+  const res = await fetch("/api/logs/retention", { method: "POST", body });
+  const note = $("#log-count");
+  if (!res.ok) {
+    let detail = "";
+    try { detail = (await res.json()).detail || ""; } catch (e) { detail = ""; }
+    if (note) note.textContent = detail || t("logs.saveFailed");
     return;
   }
-  data.events.forEach((ev) => {
-    const row = el("div", "user-row" + (ev.success ? "" : " login-failed"));
-    row.appendChild(el("span", "u-tag " + (ev.success ? "ok-tag" : "off"),
-                       t(ev.success ? "logins.ok" : "logins.failed")));
-    row.appendChild(el("span", "u-name", ev.username));
-    if (ev.source) row.appendChild(el("span", "tk-name", ev.source));
-    row.appendChild(el("span", "u-last", (ev.at || "").slice(0, 19).replace("T", " ")));
-    box.appendChild(row);
-  });
+  // Rows outside the new window are gone already, so reload rather than
+  // leaving deleted rows on screen.
+  loadLogs();
 }
 
 // ------------------------------------------------------ scanner matrix
@@ -484,7 +606,7 @@ async function renderSettings() {
   // Independent fetches: one slow or failing panel should not hold up the
   // rest of the page.
   await Promise.all([
-    loadTokens(), loadApiPanel(), loadPasswordPolicy(), loadLoginHistory(),
+    loadTokens(), loadApiPanel(), loadPasswordPolicy(), loadLogs(),
   ].map((p) => p.catch(() => {})));
   renderToolMatrix();
   if (AUTH.user && AUTH.user.is_admin) await loadUsers();

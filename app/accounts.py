@@ -605,6 +605,18 @@ def record_login(username: str, success: bool, source: str = "") -> None:
     account is what somebody guessing looks like, and without a record there
     is nothing to notice it in.
     """
+    # Mirror into the activity log, where logins sit alongside the scans,
+    # restarts and API calls that surround them. login_events stays as it is:
+    # the lockout logic counts rows in it, and that is not worth rewriting to
+    # add a column to a view.
+    try:
+        from . import events
+        events.record("auth", "login", level="info" if success else "warn",
+                      actor=username, source=source,
+                      detail="signed in" if success else "wrong credentials")
+    except Exception:  # noqa: BLE001 - logging must not break signing in
+        pass
+
     with _lock, _connect() as conn:
         conn.execute(
             "INSERT INTO login_events (username, success, source, at) "

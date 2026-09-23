@@ -230,7 +230,7 @@
     <nav class="subnav" id="settings-nav">
       <button class="subtab active" data-sub="account" data-i18n="set.group.account">帳號</button>
       <button class="subtab" data-sub="mcp" data-i18n="set.group.mcp">MCP</button>
-      <button class="subtab" data-sub="logins" data-i18n="set.group.logins">登入紀錄</button>
+      <button class="subtab" data-sub="logs" data-i18n="set.group.logs">Log</button>
       <button class="subtab" data-sub="tools" data-i18n="set.group.tools">掃描工具說明</button>
     </nav>
 
@@ -389,15 +389,52 @@
       </div>
     </div>
 
-    <!-- ================================================ login history -->
-    <div class="subview hidden" data-sub="logins">
+    <!-- ============================================= activity log -->
+    <div class="subview hidden" data-sub="logs">
       <div class="panel">
         <div class="mon-head">
-          <h2 data-i18n="logins.title">登入紀錄</h2>
-          <button id="logins-refresh" class="linkbtn" data-i18n="mon.refresh">重新整理</button>
+          <h2 data-i18n="logs.title">Log</h2>
+          <button id="logs-refresh" class="linkbtn" data-i18n="mon.refresh">重新整理</button>
         </div>
-        <p class="mon-hint" id="logins-scope"></p>
-        <div id="logins-list" class="users-list"></div>
+        <p class="mon-hint" id="logs-scope"></p>
+
+        <!-- Filters sit directly above the rows they filter, so the effect
+             of a click is visible without scrolling away from it. -->
+        <div class="log-filters">
+          <div class="log-chips" id="log-cats"></div>
+          <div class="log-row2">
+            <input type="search" id="log-search" class="log-search"
+                   data-i18n-ph="logs.searchHint">
+            <select id="log-level" class="log-level"></select>
+          </div>
+        </div>
+
+        <div class="log-wrap">
+          <table class="mon-table log-table">
+            <thead>
+              <tr>
+                <th data-i18n="logs.col.at">時間</th>
+                <th data-i18n="logs.col.category">類別</th>
+                <th data-i18n="logs.col.action">動作</th>
+                <th data-i18n="logs.col.actor">帳號</th>
+                <th data-i18n="logs.col.source">來源 IP</th>
+                <th data-i18n="logs.col.target">標的</th>
+                <th data-i18n="logs.col.detail">說明</th>
+              </tr>
+            </thead>
+            <tbody id="log-rows"></tbody>
+          </table>
+        </div>
+        <p class="mon-subnote" id="log-count"></p>
+
+        <!-- Retention is an administrator setting, so it is hidden for
+             everyone else rather than shown disabled. -->
+        <div class="log-retention hidden" id="log-retention">
+          <label for="log-days" data-i18n="logs.retention">保留天數</label>
+          <input type="number" id="log-days" min="1" max="3650" class="log-days">
+          <button id="log-days-save" class="btn small" data-i18n="logs.save">儲存</button>
+          <span class="mon-subnote" data-i18n="logs.retentionHint"></span>
+        </div>
       </div>
     </div>
 
