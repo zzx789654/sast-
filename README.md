@@ -175,6 +175,9 @@ Any tool you don't install simply shows as unavailable.
   print-to-PDF, styled for print).
 * **Monitor** — scanner versions plus Docker container performance and a
   capacity verdict (see below).
+* **Settings -> Log** — one activity log covering scans, sign-ins, service
+  and container state, and API/MCP calls, with filters and a retention
+  setting in days (see below).
 
 ### Judging a finding
 
@@ -433,6 +436,44 @@ override.
 Marks are recorded on the server with the name of whoever made them. They
 used to live in the browser, which was right while they were only notes for
 the reader; a mark that can clear a Critical finding has to be attributable.
+
+### The activity log (Settings -> Log)
+
+One table for everything worth looking back at, because the useful questions
+cross categories: *what was running when it restarted?* cannot be answered
+from separate lists.
+
+| Category | What lands there |
+|---|---|
+| **掃描 / Scan** | what was scanned, by whom, from which address, and when |
+| **登入 / Login** | sign-ins, successful and failed, with the source address |
+| **服務 / Service** | start, stop, restart, retention changes |
+| **容器 / Container** | container state changes and capacity pressure |
+| **API/MCP** | API-token calls and MCP calls, each with its source IP |
+
+Filter by clicking the category chips (they carry counts), by level
+(info / warning / error), or by typing in the search box — it matches the
+account, address, target and detail together.
+
+**Retention is in days.** Set it at the bottom of the tab; anything older is
+deleted as soon as you save, not at some later sweep. The default is 30 days.
+Days rather than a row count on purpose: a rolling window of N rows sounds
+bounded until a busy afternoon of API calls pushes out last week's failed
+logins, which is the record you actually wanted.
+
+Two things are deliberately *not* logged row-for-row:
+
+- **Container state** is sampled every 60 seconds in the background and only
+  transitions are recorded. The sampler runs whether or not anyone has the
+  Monitor tab open — otherwise a crash at 3am would leave no trace.
+- **API rows** cover token and MCP calls, not browser traffic. A browser
+  session already produces a sign-in row, and logging its every fetch would
+  bury the machine-to-machine calls that are the reason to look.
+
+Administrators see every account's rows and can change retention. Everyone
+else sees only their own: the log names who scanned what and which address
+called the API, which is an account's activity rather than shared
+information.
 
 ### Login throttling and token expiry
 
