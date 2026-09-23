@@ -1845,3 +1845,38 @@ i18n 拋 AssertionError，CSS 實際沒寫入，但輸出看起來像成功了�
 
 ### 過程原始輸出位置
 scratchpad/add_limits.py、add_limits_ui.py、add_limit_tests.py、r16_verify.sh
+
+---
+
+## 2026-09-23 輪結 Round 17 — .145 更新（.git 權限修復）
+
+- 現況：兩台 VM 皆在 1181d6c，監控與 Log 皆正常
+- 部署：.145 修復擁有權後 `./setup.sh --update`；healthy、restarts=0
+- 資料：三個具名 volume 全程存活
+
+### 教訓 / 準則
+
+**準則一：`git fetch` 失敗時，「落後 0 個 commit」是假的。**
+情境：盤點 .145 時顯示「落後 0」，但版本明明比 main 舊 9 個 commit。
+根因是 `git fetch` 因權限失敗（`insufficient permission for adding an
+object to repository database`），沒抓到新的 origin/main，
+所以 `rev-list HEAD..origin/main` 拿舊的引用去比，當然是 0。
+更糟的是 **`git fetch` 失敗後 exit code 仍是 0**（被 pipeline 吃掉），
+腳本不會察覺。
+準則：比對版本前，先確認 fetch 本身成功；
+兩個互相矛盾的指標（版本舊 vs 落後 0）出現時，先查為什麼矛盾，
+不要挑一個相信。
+
+**準則二：用 sudo 跑過一次 git，之後就再也 pull 不動。**
+情境：`.git/objects` 有 11 個檔案屬於 root，一般使用者寫不進去。
+和上一輪 `.env` 被 root 擁有是同一個根因。
+準則：這個專案的所有操作都以 `sast` 身分執行，不要 sudo；
+真的中招就 `sudo chown -R sast:sast ~/sast-`（只改擁有者不動內容）。
+
+**準則三：同一個 bug 修一份不夠，要檢查有沒有第二份。**
+情境：上一輪修了 `ssh240b.py` 的 stdin 編碼問題，
+這一輪 `ssh.py` 用同樣的方式又炸一次（`surrogates not allowed`）。
+兩個檔案是複製關係，我只修了當下在用的那一個。
+準則：修完一處，搜尋同樣的 pattern 還在哪裡；
+複製出來的工具檔特別容易漏。
+好消息是它在送出**前**失敗，不會有半套指令跑到遠端。
