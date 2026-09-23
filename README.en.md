@@ -440,6 +440,42 @@ Marks are recorded on the server with the name of whoever made them. They
 used to live in the browser, which was right while they were only notes for
 the reader; a mark that can clear a Critical finding has to be attributable.
 
+### Container resources (Settings -> Docker resources)
+
+Shows each container's memory and cpu limit, what it is actually using, and
+what the host has. All three together, because a limit means nothing alone:
+2GB is generous or crippling depending on the other two.
+
+By default nothing is limited, which the panel flags as **no limit ⚠** --
+that is the finding, not a blank field. An unlimited container can exhaust
+the host rather than only itself, so a runaway scan takes everything down.
+
+Type the limits you want and press **Generate**. You get a compose snippet:
+
+```yaml
+services:
+  sast-studio:
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: '2.0'
+```
+
+Paste it into `docker-compose.yml` and run `./scripts/deploy.sh`.
+
+**It produces a snippet rather than applying the change**, deliberately. The
+container can reach `/containers/update` through the mounted socket -- `:ro`
+makes the socket file read-only but does not restrict the commands sent over
+it (it answers 409, not 403). Using that would give this app write access to
+every container on the host, and compose would undo the change on the next
+deploy anyway, leaving you wondering where the setting went.
+
+Values are validated server-side: a limit above host capacity, a negative or
+non-numeric size, and a service name carrying YAML syntax are all refused.
+
+Administrators only, since it reports host capacity.
+
 ### The activity log (Settings -> Log)
 
 One table for everything worth looking back at, because the useful questions
