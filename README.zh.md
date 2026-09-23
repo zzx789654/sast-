@@ -2,42 +2,139 @@
 
 > [English README](README.md)
 
-一頁搞定六個**免費**資安掃描器。指向一份程式碼，它就會跑 **Semgrep**、**Bearer**、
-**Trivy**、**npm audit**、**OSV-Scanner** 與 **Gitleaks**，然後把所有發現彙整成
-一張依嚴重度排序的報表——不必分別安裝每個工具、記它們的參數、或讀六種不同格式的輸出。
-六個工具全部免費使用（不需付費授權）。
+**一頁搞定六個免費資安掃描器。** 指向一份程式碼（上傳 zip、Git 網址或伺服器本機路徑），
+SAST Studio 會同時跑 **Semgrep、Bearer、Trivy、npm audit、OSV-Scanner、Gitleaks**，
+再把所有發現彙整成**一張依嚴重度排序的報表**，並給出「通過／需人員審查／不可上線」的判定。
 
-| 工具 | 做什麼 | 類型 |
-|------|--------|------|
-| **Semgrep** | 基於規則的靜態程式碼分析（Python 引擎） | SAST |
-| **Bearer** | 語意／資料流 SAST，找安全與隱私風險 | SAST |
-| **Trivy** | 相依弱點 ＋ 密鑰 ＋ IaC 設定錯誤 | SCA／密鑰／IaC |
-| **npm audit** | Node 相依套件弱點（npm 資料庫） | SCA |
-| **OSV-Scanner** | 多生態系相依套件對比 OSV.dev | SCA |
-| **Gitleaks** | 掃描硬編碼的密鑰／憑證 | 密鑰 |
+不必分別安裝每個工具、記它們的參數、或讀六種不同格式的輸出；六個工具全部免費，不需付費授權。
 
-> **為什麼不用 CodeQL？** 它的 CLI 只有對開源／研究免費，掃描私有程式碼需要付費的
-> GitHub Advanced Security 授權。改用 **Bearer**（語意 SAST）與 **Trivy**（另補上
-> IaC 設定錯誤掃描）零成本取代。這裡六個工具全部免費。
+![掃描報告：嚴重度分佈、各工具結果與判定](docs/images/report.png)
+
+---
+
+## 目錄
+
+1. [畫面導覽](#畫面導覽)
+2. [整合的掃描軟體](#整合的掃描軟體)
+3. [資料會傳到哪裡（隱私與對外連線）](#資料會傳到哪裡隱私與對外連線)
+4. [架構](#架構)
+5. [快速開始](#快速開始)
+6. [部署與更新維護腳本](#部署與更新維護腳本)
+7. [使用方式](#使用方式)
+8. [REST API](#rest-api)
+9. [MCP（讓 AI 助理呼叫）](#mcp讓-ai-助理呼叫)
+10. [帳號與權限](#帳號與權限)
+11. [設定（環境變數）](#設定環境變數)
+12. [工具本身的安全](#工具本身的安全)
+13. [開發與測試](#開發與測試)
+
+---
+
+## 畫面導覽
+
+以下截圖皆為實際執行畫面：用內附六個掃描器掃描一個刻意寫壞的示範專案
+（含 SQL injection、命令注入、硬編碼密鑰、老舊相依套件）。
+
+| 登入 | 掃描分頁 |
+|---|---|
+| ![登入頁](docs/images/login.png) | ![掃描分頁：選來源、選工具、自訂規則](docs/images/scan.png) |
+| **報告分頁：發現卡片** | **監控分頁** |
+| ![發現卡片：嚴重度、位置、CWE/OWASP、人工標記](docs/images/findings.png) | ![監控：掃描器版本與維護動作](docs/images/monitor.png) |
+| **設定 → Log（活動紀錄）** | **設定 → MCP** |
+| ![活動紀錄](docs/images/logs.png) | ![API 與 MCP 設定](docs/images/mcp.png) |
+
+| 分頁 | 功能 |
+|---|---|
+| **掃描** | 選來源（上傳 zip／Git 網址／本機路徑）、勾選工具與 Semgrep 規則集、撰寫自訂規則，按下開始掃描 |
+| **報告** | 左邊是歷次掃描清單，右邊是選中那份的判定、嚴重度分佈、各工具結果、每筆發現卡片；可匯出 CSV 與 PDF |
+| **監控** | 掃描器版本、Docker 容器效能與資源評估、維護動作（更新掃描器、重啟服務） |
+| **設定** | 帳號、API 權杖、密碼原則、MCP 設定、活動紀錄（Log）、掃描工具說明 |
+
+右上角可一鍵切換**中文 / English**（選擇會被記住）。
+
+---
+
+## 整合的掃描軟體
+
+| 工具 | 類型 | 做什麼 | 需要什麼才會跑 | 授權 |
+|------|------|--------|----------------|------|
+| **Semgrep** | SAST | 以規則比對原始碼（30+ 語言），找注入、不安全 API 等 | 原始碼 | LGPL-2.1（引擎）；規則集依 Semgrep 規則授權 |
+| **Bearer** | SAST | 語意／資料流分析，找安全與隱私（個資流向）風險 | Ruby／JS／TS／Java／PHP／Python／Go 原始碼 | Elastic License 2.0 |
+| **Trivy** | SCA／密鑰／IaC | 相依套件弱點 ＋ 硬編碼密鑰 ＋ Dockerfile／K8s／Terraform 設定錯誤 | 任何專案 | Apache-2.0 |
+| **npm audit** | SCA | Node 相依套件弱點（npm 官方資料庫） | `package.json`（沒有 lockfile 會自動產生） | Artistic-2.0（npm） |
+| **OSV-Scanner** | SCA | 多生態系相依套件比對 OSV.dev 弱點資料庫 | 相依鎖定檔（npm、pip、go、cargo…） | Apache-2.0 |
+| **Gitleaks** | 密鑰 | 掃描硬編碼的密鑰／憑證 | 任何檔案 | MIT |
+
+目前釘住的版本（`Dockerfile`、`scripts/install-tools.sh`、`scripts/fetch-vendor.sh` 三處一致）：
+Trivy **0.74.0**、OSV-Scanner **2.6.0**、Gitleaks **8.30.1**；Semgrep 以 pip 安裝最新版；
+Bearer 走官方安裝腳本（CI 內釘 2.1.1 並驗 SHA-256）。
+
+> **為什麼不用 CodeQL？** 它的 CLI 只對開源／研究免費，掃描私有程式碼需要付費的
+> GitHub Advanced Security 授權。本專案改用 **Bearer**（語意 SAST）與 **Trivy**（補上 IaC 設定錯誤掃描）
+> 零成本取代。
+
+**優雅降級**：沒安裝的工具會標示「未安裝」並附安裝指引；不適用的工具（例如沒有 `package.json` 時的
+npm audit）會標示「不適用」與原因——掃描照樣跑其他工具。
+
+---
+
+## 資料會傳到哪裡（隱私與對外連線）
+
+**結論：你的原始碼不會被上傳到任何第三方。** 所有掃描都在本機（或容器內）執行，
+上傳的 zip／clone 下來的程式碼只放在該次掃描的獨立工作區，掃描結束即刪除
+（除非設了 `SAST_KEEP_WORKSPACES=true`）。
+
+但有幾個工具需要連網**下載規則或弱點資料庫**、或**查詢套件是否有已知漏洞**。
+會離開主機的只有下表列出的內容：
+
+| 工具 | 連到哪裡 | 傳出的資料 | 會不會傳原始碼 | 本專案的設定 |
+|---|---|---|---|---|
+| **Semgrep** | `semgrep.dev`（規則登錄庫） | 要下載的規則集名稱（如 `p/default`） | **不會** | 一律加 `--metrics=off`（關閉使用統計）與 `--disable-version-check`（不檢查新版） |
+| **Bearer** | Bearer 官方伺服器 | 啟動時的版本檢查請求 | **不會**（本專案未設定 `--api-key`，不會上傳到 Bearer Cloud） | 未加 `--disable-version-check`；若要完全離線可設環境變數 `BEARER_DISABLE_VERSION_CHECK=true` |
+| **Trivy** | `mirror.gcr.io`／`ghcr.io`（弱點 DB、設定檢查規則包）；`check.trivy.dev`（版本檢查＋匿名使用統計） | 下載 DB 時只是單純下載；版本檢查會帶 Trivy 版本、指令與匿名安裝 ID（官方說明不含檔案路徑與掃描結果） | **不會**——弱點比對在本機完成，套件清單不外傳 | 使用預設值；要關閉版本檢查與統計，可在指令加 `--skip-version-check --disable-telemetry` |
+| **npm audit** | `registry.npmjs.org` | **相依套件的名稱與版本**（整棵相依樹）；沒有 lockfile 時會先用 `npm install --package-lock-only --ignore-scripts` 產生，這一步也會向 registry 查詢套件資訊 | **不會** | `--ignore-scripts`：不執行任何套件的安裝腳本 |
+| **OSV-Scanner** | `api.osv.dev`；勾「完整套件清單與授權」時另查 `deps.dev` | **相依套件的名稱、版本、生態系**（git 相依可能帶 commit hash） | **不會** | 預設只查弱點；授權查詢需逐次勾選或設 `SAST_OSV_FULL_INVENTORY=true` |
+| **Gitleaks** | 無 | 無（完全離線） | **不會** | 找到的密鑰在送到 API／瀏覽器前先遮罩 |
+
+其他會連網的動作：
+
+| 動作 | 連到哪裡 | 說明 |
+|---|---|---|
+| Git 網址掃描 | 你給的 Git 主機 | 只允許 `http`/`https`、depth-1、不互動、有 timeout；預設拒絕內網位址（`SAST_ALLOW_INTERNAL_GIT_HOSTS`） |
+| 監控分頁「檢查版本」 | GitHub Releases API | 只查掃描器是否有新版，不帶任何掃描資料 |
+| 更新掃描器／建置映像 | PyPI、GitHub Releases、Bearer／Trivy 安裝腳本 | 只下載工具本體，二進位檔會驗 checksum |
+
+> **敏感專案須知**：npm audit 與 OSV-Scanner 會讓外部服務知道「這個專案用了哪些套件與版本」。
+> 若連這個都不能外流，請在掃描時不要勾選這兩個工具，或在離線環境使用（它們會顯示錯誤，其餘工具照常執行）。
+> 要讓 Semgrep 離線，把 `SAST_SEMGREP_RULESETS` 設為本機規則檔路徑，並在掃描時不勾選官方規則集
+> （官方規則集 `p/...` 一定要從 semgrep.dev 下載）。
+
+---
 
 ## 架構
 
 ```
-瀏覽器 ──► nginx（反向代理）──► FastAPI ──► Orchestrator ──► 6 個 Adapter ──► 工具
+瀏覽器 ──► nginx（反向代理）──► FastAPI ──► Orchestrator ──► 6 個 Adapter ──► 掃描工具
             :8080  →  :8000       REST API     （工作管理）    （一工具一個）
+                                   /mcp        記憶體工作佇列
+                                   SQLite：帳號、權杖、判定標記、活動紀錄
 ```
 
-- **nginx 反向代理**：Docker 佈署時 nginx 是對外入口（`:8080`），轉發給內網的 FastAPI 後端；
-  後端連接埠不對主機公開。
-- **Adapter 模式**：每個工具一個 adapter，只做三件事：*偵測可用性*、*執行*、*把輸出正規化*
-  成統一的 `Finding` 格式。Orchestrator 不需要理解任何工具的原生格式。
-- **優雅降級**：沒安裝的工具會標示為「未安裝」並附安裝指引——掃描照樣跑其他工具。
-- **專案盤點 ＋ 語言防呆**：每次掃描會回報專案的檔案數、大小與語言分佈；每個工具宣告它
-  需要什麼，本機路徑可在掃描前先「檢查專案」看哪些工具不適用（及原因）。
-  （刻意顯示誠實的盤點，而非假的逐檔進度——這些工具是批次掃描器，沒有可靠的逐檔進度串流，
-  而且 SCA 工具是掃相依鎖定檔而非逐檔。）
-- **簡單至上**：記憶體工作佇列、HTTP 輪詢看進度、無框架的原生 JS 前端。沒有資料庫、沒有建置步驟。
-- **中／英雙語**：介面預設中文，右上角可一鍵即時切換中／英。
+- **nginx 反向代理**：Docker 部署時 nginx 是唯一對外入口（`:8080`），後端 `:8000` 不對主機公開。上傳上限 200 MB。
+- **Adapter 模式**：每個工具一個 adapter，只做三件事——*偵測可用性*、*執行*、*把輸出正規化*成統一的
+  `Finding` 格式。Orchestrator 不需要理解任何工具的原生格式。
+- **專案盤點 ＋ 適用性判斷**：每次掃描回報檔案數、大小與語言分佈，並說明哪些工具不適用、為什麼。
+- **簡單至上**：記憶體工作佇列、HTTP 輪詢看進度、無框架的原生 JS 前端，沒有建置步驟。
+- **資料保存**：
+
+  | 資料 | 存在哪裡 | 重建映像／更新後 |
+  |---|---|---|
+  | 帳號、API 權杖、判定標記、活動紀錄 | Docker volume `sast-accounts`（SQLite） | **保留** |
+  | 自訂規則 | Docker volume `sast-rules` | **保留** |
+  | 掃描工作區 | Docker volume `sast-workspaces`（掃完即清） | 保留（通常是空的） |
+  | 掃描記錄（報告分頁的清單） | **記憶體**，最多保留 100 筆 | **清空** |
+
+---
 
 ## 快速開始
 
@@ -52,377 +149,454 @@ cd sast-
 
 | 情境 | 指令 |
 |---|---|
-| **第一次**，還沒裝 Docker | `./setup.sh --docker` |
+| **第一次**，還沒裝 Docker（Ubuntu） | `./setup.sh --docker` |
 | **第一次**，已經有 Docker | `./scripts/deploy.sh` |
 | **更新**掃描工具（連同程式） | `./setup.sh --update` |
 | 只改了程式碼，工具不變 | `./scripts/deploy.sh` |
-| 不用 Docker，直接跑在主機 | `./setup.sh` 然後 `./setup.sh --run` |
+| 新版出問題，要退回上一版 | `./scripts/deploy.sh --rollback` |
+| 不用 Docker，直接跑在主機（Ubuntu） | `./setup.sh` 然後 `./setup.sh --run` |
+| 忘記管理員密碼 | `./scripts/reset-password.sh` |
+
+部署完成後開啟 **http://你的主機:8080**。第一次部署時，`deploy.sh` 會在最後印出自動產生的
+管理員帳號密碼（只顯示這一次），請當下記下來，登入後到**設定**分頁更改。
 
 第一天之後常用的只有兩個：
 
 ```bash
 ./setup.sh --update      # 完整更新：下載到本機 → 重建映像 → 切換容器
-./scripts/deploy.sh      # 部署程式變更：建置並切換
+./scripts/deploy.sh      # 部署程式變更：拉原始碼 → 建置 → 切換
 ```
 
-兩者都可以重複執行、都會保留舊映像可以回退，而且
-**都不會動到你的帳號與自訂規則** —— 這些存在獨立的 Docker volume，
-重建不會重建它們。**更新不需要重設任何密碼。**
+兩者都可以重複執行、都會保留舊映像可以回退，而且**都不會動到你的帳號與自訂規則**——
+這些存在獨立的 Docker volume，重建映像不會重建它們。**更新不需要重設任何密碼。**
 （掃描記錄例外：它存在記憶體裡，切換容器就會清空。）
 
-如果只是想在一台全新的 Ubuntu 上跑起來：`./setup.sh --docker`。
+---
 
-### 方式 A — 一鍵安裝（推薦）
+## 部署與更新維護腳本
 
-`setup.sh` 會自動安裝所有東西（系統相依、含全部相依套件的 Python 虛擬環境、以及六個
-掃描工具），跑測試驗證建立成功，並告訴你怎麼啟動：
+專案內共有五支給人執行的腳本：
 
-```bash
-./setup.sh              # 完整本機安裝：venv + 相依套件 + 掃描工具 + 驗證
-./setup.sh --run        # …並直接在 http://localhost:8000 啟動服務
-```
+| 腳本 | 用途 | 何時用 |
+|---|---|---|
+| `setup.sh` | 一鍵安裝（主機或 Docker）、一鍵更新 | 第一次安裝；要更新掃描器版本時 |
+| `scripts/deploy.sh` | 建置新映像並切換容器、健康檢查、回退 | 每次程式更新；出問題時回退 |
+| `scripts/reset-password.sh` | 在主機上重設帳號密碼 | 忘記密碼、帳號被鎖 |
+| `scripts/fetch-vendor.sh` | 把掃描器二進位預先下載到 `./vendor` | 由上面兩支自動呼叫；網路慢時可單獨先跑 |
+| `scripts/install-tools.sh` | 把掃描器安裝到主機 | 由 `setup.sh` 自動呼叫；手動安裝時使用 |
 
-其他參數：`./setup.sh --docker`（改用 Docker Compose 建立並啟動）、`--no-tools`
-（只裝 Python app，掃描工具會優雅降級）、`--no-venv`（裝進當前環境）、`--help`。
+另有 `scripts/docker-gid.sh` 由部署腳本自動呼叫（偵測主機 docker 群組 ID 寫入 `.env`，讓監控分頁能讀容器效能），一般不需手動執行。
 
-### 方式 B — Docker（Linux 伺服器免費）
-
-Docker Engine 與 Compose 在 Linux 上免費（Apache-2.0）；只有 Docker **Desktop** GUI
-對大型企業收費，而伺服器佈署不需要它。
+### `setup.sh` — 安裝與更新
 
 ```bash
-docker compose up --build
-# 開啟 http://localhost:8080   （nginx → FastAPI 後端）
+./setup.sh [選項]
 ```
 
-會啟動兩個服務：**nginx**（對外，8080 埠）反向代理到**後端**（內網）。後端映像檔內建六個
-掃描器，全部免費。要用標準 80 埠，把 `docker-compose.yml` 的 nginx 對應改成 `80:80`。
+| 選項 | 做什麼 |
+|---|---|
+| （無） | **主機完整安裝**：檢查並用 apt 補齊 git／curl／Node.js／npm／python3-venv → 建立 `.venv` → 安裝 Python 相依 → 安裝六個掃描器 → 跑測試驗證 → 列出各工具是否可用 |
+| `--run` | 安裝完直接以 `uvicorn` 在 `http://localhost:8000` 啟動服務 |
+| `--docker` | **Docker 安裝**：若沒有 Docker 就從 Docker 官方 apt 來源安裝 Docker Engine ＋ Compose → 偵測 docker 群組 ID → `docker compose up --build -d`，完成後開 `http://localhost:8080` |
+| `--update` | **更新**（詳見下方） |
+| `--no-tools` | 只裝 Python app，不裝掃描器（掃描器會顯示「未安裝」） |
+| `--no-venv` | Python 相依裝進目前環境，不建立 `.venv` |
+| `--help` | 顯示說明 |
 
-### 方式 C — 手動本機安裝
+注意事項：
+
+- 主機安裝與 Docker 自動安裝**只支援 Ubuntu**；其他 Linux 發行版請自行裝好 Docker 後用 `./scripts/deploy.sh`。
+- 非 root 執行時會自動用 `sudo`；Docker 安裝後會把目前使用者加進 `docker` 群組，**需重新登入**才能免 sudo 使用。
+- 可用環境變數調整 pip 下載：`PIP_TIMEOUT`（預設 600 秒）、`PIP_RETRIES`（預設 10 次）、`VENV_DIR`（預設 `.venv`）。
+- 掃描器二進位會裝到 `/usr/local/bin`；沒有寫入權限時改裝到 `~/.local/bin`，腳本會提醒你把它加進 `PATH`。
+
+#### `./setup.sh --update` 具體做了什麼
+
+1. 用 pip 更新 Semgrep（有 `.venv` 會先啟用）。
+2. 判斷目前是 **Docker 部署**（有執行中的 `sast-studio` 容器）還是**主機安裝**。
+3. **下載到本機 `./vendor`**（`scripts/fetch-vendor.sh`）：可續傳、會驗 SHA-256、已經有的就跳過——第二次執行完全不用網路。
+4. 依部署方式分流：
+   - **Docker 部署** → 跳過主機安裝（實際跑掃描的是容器內的副本），直接呼叫 `scripts/deploy.sh` 重建映像並切換。
+   - **主機安裝** → 以 `FORCE=1` 重跑 `scripts/install-tools.sh` 把工具重新裝到主機。
+
+兩個退出口，當你只想做其中一部分：
+
+```bash
+SKIP_DEPLOY=1 ./setup.sh --update    # 只更新下載快取，不重建映像
+SKIP_VENDOR=1 ./setup.sh --update    # 重建映像，不碰 ./vendor 快取
+```
+
+### `scripts/deploy.sh` — 部署、切換、回退
+
+```bash
+./scripts/deploy.sh              # 拉原始碼 → 快取 → 建置 → 切換 → 驗證
+./scripts/deploy.sh --no-pull    # 不 git pull，直接部署目前工作目錄的內容
+./scripts/deploy.sh --rollback   # 退回上一版映像
+```
+
+一次部署依序執行：
+
+| 步驟 | 內容 | 失敗時 |
+|---|---|---|
+| 1. 標記舊映像 | 把 `sast-studio:latest` 另存為 `sast-studio:rollback-<commit>` 與 `sast-studio:rollback-previous` | 第一次部署時略過 |
+| 2. 更新原始碼 | `git pull --ff-only` | 有本機修改會停止，請先處理 |
+| 3. 偵測 docker 群組 | `scripts/docker-gid.sh` 寫入 `DOCKER_GID` 到 `.env`；群組變了會強制重建容器 | 停止 |
+| 4. 快取掃描器 | `scripts/fetch-vendor.sh` | 繼續，建置時再下載缺少的 |
+| 5. 建置新映像 | `docker compose build`，**舊容器持續服務** | 停止，舊版仍在服務 |
+| 6. 切換 | `docker compose up -d`；`nginx.conf` 有變動時自動重建 nginx 容器 | 提示執行 `--rollback` |
+| 7. 等待健康 | 最多等 5 分鐘直到容器 healthy | 提示執行 `--rollback` |
+| 8. 驗證 | 打 `/api/health` 必須 200；`/api/tools` 回報幾個掃描器可用（啟用帳號時回 401 屬正常） | 提示執行 `--rollback` |
+| 9. 首次密碼 | 第一次部署時從日誌撈出自動產生的管理員密碼並顯示 | — |
+
+停機時間只有最後切換容器的幾秒鐘。
+
+### 兩個指令的差別
+
+| | `./setup.sh --update` | `./scripts/deploy.sh` |
+|---|---|---|
+| 沒裝 Docker 時幫你裝 | 否（請用 `./setup.sh --docker`） | 否 |
+| 更新掃描器執行檔 | **是** | 否，用映像釘住的版本 |
+| 先下載到 `./vendor` | 是 | 是 |
+| 拉最新原始碼 | 是（透過 deploy.sh） | 是 |
+| 重建映像並切換容器 | 是 | 是 |
+| 保留回退映像 | 是 | 是 |
+| 等待健康檢查 | 是 | 是 |
+
+簡單說：**要新版掃描器用 `--update`，改了程式碼用 `deploy.sh`。**
+不確定的話用 `--update` 比較安全，它做的事情包含後者。
+
+### 出問題的時候
+
+```bash
+./scripts/deploy.sh --rollback
+```
+
+它把 `sast-studio:rollback-previous` 重新標成 `latest` 並以 `--no-build` 啟動，不需要重新建置。
+建置失敗本身不會改變任何事（舊容器一直在服務）；健康檢查沒過的部署會直接告訴你要回退，而不是留下一個壞掉的容器。
+
+### `scripts/reset-password.sh` — 忘記密碼
+
+登入頁沒有「忘記密碼」連結（寄送重設信需要郵件服務，自助重設也等於多開一條入口）。
+恢復改在主機上執行——能登入主機的人，權限本來就比網頁登入還大。
+
+```bash
+./scripts/reset-password.sh                  # 重設 admin，會要求輸入兩次
+./scripts/reset-password.sh alice            # 重設指定帳號
+./scripts/reset-password.sh admin --generate # 自動產生並顯示一次
+./scripts/reset-password.sh --list           # 列出這台有哪些帳號
+```
+
+- 會自動找到執行中的容器，沒有就改用本地的程式碼。
+- 密碼只能從提示輸入或自動產生，**不接受放在參數裡**（參數會出現在 `ps` 與 shell 歷史紀錄）。
+- 重設時會撤銷該帳號的所有 session 與 API 權杖，被停用的帳號會一併重新啟用。
+- 密碼原則仍然生效，只有「不可重複使用舊密碼」這條被放寬。
+
+### 掃描器版本與弱點資料庫
+
+- **弱點資料庫自動更新**：Trivy 會拉自己的 DB、OSV-Scanner 查 OSV.dev、npm audit 查 npm registry，
+  都在掃描時即時更新。只有工具**本體二進位**需要管理版本。
+- **二進位版本固定**：要升版就同時修改 `Dockerfile`、`scripts/install-tools.sh`、`scripts/fetch-vendor.sh`
+  的版本號（以及 `fetch-vendor.sh` 的 checksum），再跑 `./setup.sh --update`。
+- **網頁上就地更新**：監控分頁的「更新掃描工具」可直接更新 Semgrep（pip）與 Trivy 的弱點 DB；
+  Bearer、Gitleaks、OSV-Scanner、npm 以二進位釘在映像裡，需重建映像才能換版。
+- **查看已安裝版本**：監控分頁，或 `GET /api/tools`。
+
+### 手動安裝（不用腳本）
 
 ```bash
 pip install -r requirements.txt
-bash scripts/install-tools.sh        # 盡力安裝各掃描器
+bash scripts/install-tools.sh        # 盡力安裝各掃描器，某個失敗不影響其他
 uvicorn app.main:app --reload        # http://localhost:8000
 ```
 
-任何你沒安裝的工具就只會顯示為未安裝。
+或只用 Docker Compose：
+
+```bash
+docker compose up --build            # http://localhost:8080（nginx → FastAPI）
+```
+
+要改用標準 80 埠，把 `docker-compose.yml` 的 nginx `ports` 改成 `"80:80"`。
+
+---
 
 ## 使用方式
 
-1. **選擇來源**：上傳 `.zip`、貼 **Git 網址**、或給一個**伺服器本機路徑**。
-2. **勾選工具**（未安裝的會反白停用）。每個工具會顯示中文說明與它需要什麼；本機路徑可先按
-   **檢查專案**看檔案／語言盤點與哪些工具不適用（不適用的會標橘色警告）。
-3. **開始掃描。**
-   - **本機路徑**會直接開始（本來就能先檢查）。
-   - **上傳或 Git 網址**會先抓取並盤點，然後**暫停等待確認**：你檢視檔案／語言盤點與不適用
-     工具的警告後，再按**執行掃描**（或**取消**，會清掉已準備的暫存工作區）。
-4. **看進度**：進度條 + 每個執行中的工具會顯示轉圈與經過秒數；工具一完成就顯示它的發現。
-5. **讀報表**：嚴重度統計（嚴重 → 資訊）、每個工具一列（發現數／耗時，或未安裝／不適用及原因）、
-   每個發現一張卡片（嚴重度、工具、檔名:行號、CWE／OWASP 標籤）。可用嚴重度、工具、檔名篩選。
+1. **選擇來源**：上傳 `.zip`、貼 **Git 網址**、或給一個**伺服器本機路徑**（本機路徑需管理員）。
+2. **勾選工具**（未安裝的會停用）。本機路徑可先按**檢查專案**看檔案／語言盤點與哪些工具不適用。
+3. **選規則**：Semgrep 官方規則集（`p/default`、`p/owasp-top-ten`…可多選）與自己寫的自訂規則。
+4. **開始掃描。**
+   - **本機路徑**直接開始。
+   - **上傳或 Git 網址**會先抓取並盤點，然後**暫停等待確認**：檢視盤點與不適用警告後按**執行掃描**或**取消**。
+5. **看進度**：進度條 ＋ 每個執行中的工具顯示經過秒數；工具一完成就顯示它的發現。
+6. **讀報表**：判定、嚴重度統計、每個工具一列（發現數／耗時，或未安裝／不適用及原因）、每個發現一張卡片。
+   - **程式碼類**：顯示掃描器比對到的那幾行原始碼（附行號）。
+   - **相依套件類**：顯示套件名稱、已安裝版本與修補版本。
+   - **密鑰類**：只顯示遮罩後的預覽，真實密鑰值不會送到瀏覽器。
+7. **標記判斷**：每筆發現可標為 **確認為問題／誤報／已知並接受**，並可**重新判定**。
+8. **匯出**：CSV（發現清單、套件與授權清單）或 PDF（瀏覽器列印，已套用列印樣式）。
 
-   每張卡片還會指出問題本身：**程式碼類**顯示掃描器回報的那幾行原始碼（附行號）；
-   **相依套件類**顯示套件名稱、已安裝版本與修補版本（或標示尚無修補）；
-   **密鑰類**只顯示遮罩後的預覽，真實密鑰值不會送到瀏覽器。
-6. **切換語言**：右上角一鍵切換**中文 / English**（選擇會被記住）。
+> 發現的內文來自掃描工具本身，多為英文原文；介面會補一行中文嚴重度說明。
 
-> 發現的內文來自掃描工具本身，所以是該工具的原文（多為英文）；介面會在旁邊補一行中文嚴重度說明。
+### 判定規則
 
-### 分頁
+只有一條規則，固定不可調整，寫在「開始掃描」按鈕上方。
 
-* **掃描** — 選目標、選工具，然後開始掃描。
-* **報告** — 左邊是歷次掃描清單，右邊是選中那份的細節，上方有嚴重度分佈條狀圖，
-  可匯出 CSV 與 PDF（PDF 走瀏覽器原生列印，已套用列印專用樣式）。
-* **監控** — 掃描器版本，加上 Docker 容器效能與「資源評估」（見下）。
-* **設定 -> Log** — 一份整合的活動紀錄：掃描、登入、服務與容器狀態、API/MCP
-  呼叫，可篩選，並可設定保留天數（見下）。
+| 任一工具的發現 | 判定 |
+|---|---|
+| 「嚴重」或「高」風險 | **不可上線**（`blocked`） |
+| 外洩的密鑰（不分等級） | **不可上線**（`blocked`） |
+| 「中」風險 | **需人員審查**（`manual_review`） |
+| 只有「低」、參考資訊，或完全沒發現 | **通過**（`passed`） |
 
-### 活動紀錄（設定 -> Log）
+- 判定套用在**本次所有執行工具的彙整結果**。`npm audit` 的「高」和 `semgrep` 的「高」擋得一樣。
+- 判定只是這次掃描的**結論標記**，不會中止掃描、也不會阻擋部署；要接進 CI 擋 build，請用 API 讀 `decision`。
+- 標為**誤報**或**已知並接受**的發現不計入判定；標為**確認為問題**不會讓它消失。
 
-所有值得回頭查的事情放在同一張表，因為真正有用的問題會跨類別：
-「它重啟的當下正在跑什麼？」無法從各自分開的清單裡回答。
+### 怎麼判斷一筆發現是不是誤報
+
+掃描器回報的是**樣式**，它判斷不了這個樣式在**你的情境下**是不是問題，所以一定會有誤報。
+三個問題可以解決大部分發現：
+
+1. **先看卡片上的程式碼。** 被標記的值如果是常數、或上面已經驗證過，就是樣式命中但問題不在這。
+2. **外部輸入真的到得了那裡嗎？** 如果它其實來自你自己的程式碼，「未淨化的輸入」前提就不成立。
+3. **防護是不是在掃描器看不到的地方？** 呼叫端驗證、框架保護、反向代理過濾——只讀單一檔案的工具看不見。
+
+標記**存在伺服器上**（所有人共用），記錄是誰、什麼時候標的，重掃同一份程式碼時仍然有效，也會印進 PDF。
+**絕對不要因為看不懂就標成誤報。**
+
+### 自訂規則
+
+掃描分頁右側的規則編輯器可用 **Semgrep（YAML）** 或 **Trivy（Rego）** 寫自己的檢查。
+
+- 內建範本可直接改寫後另存（範本本身不能覆蓋）；規則名稱限小寫英數、`-`、`_`，最長 49 字元。
+- 儲存前會**先請掃描器實際編譯**，編譯不過就不存。
+- **存檔和啟用是兩件事**：要在「這次掃描要套用的自訂規則」勾選才會加入本次掃描，而且是**加在預設規則集之上**。
+- Trivy 自訂規則一律禁用 `http.send`、`net.lookup_ip_addr`、`opa.runtime`、`rego.parse_module`、`trace`，避免規則從容器內發出網路請求。
+- 儲存與刪除規則限管理員（規則會影響之後所有人的掃描）。
+- 規則存在 `sast-rules` volume，不進版控。
+
+### 活動紀錄（設定 → Log）
 
 | 類別 | 會記錄什麼 |
 |---|---|
 | **掃描** | 掃了什麼、誰掃的、從哪個位址、什麼時候 |
 | **登入** | 成功與失敗的登入，含來源位址 |
 | **服務** | 啟動、停止、重啟、保留天數變更 |
-| **容器** | 容器狀態變化與資源吃緊 |
-| **API/MCP** | API token 與 MCP 呼叫，各自帶來源 IP |
+| **容器** | 容器狀態變化與資源吃緊（每 60 秒背景取樣，只記錄變化） |
+| **API/MCP** | API 權杖與 MCP 呼叫，各自帶來源 IP（瀏覽器流量不逐筆記錄） |
 
-點類別標籤篩選（標籤上有筆數）、用層級篩選（資訊／警告／錯誤），或直接在搜尋框
-輸入——它會同時比對帳號、位址、標的與說明。
-
-**保留天數以「天」為單位。** 在分頁下方設定；超過天數的紀錄會在你按下儲存時
-**直接刪除**，不是等下一次清理。預設 30 天。用天數而不是筆數是刻意的：以筆數
-為上限，看似有界，但一個 API 呼叫繁忙的下午就會把上週的登入失敗擠掉——而那
-正是你想留的紀錄。
-
-有兩件事刻意**不**逐筆記錄：
-
-- **容器狀態**每 60 秒在背景取樣一次，只記錄「變化」。取樣不需要有人開著監控
-  分頁——否則凌晨三點的異常重啟會完全沒有紀錄。
-- **API 紀錄**只涵蓋 token 與 MCP 呼叫，不含瀏覽器流量。瀏覽器登入本來就會
-  產生一筆登入紀錄，若連每次 fetch 都記，反而會把真正該看的機器對機器呼叫
-  淹沒。
-
-管理員看得到所有帳號的紀錄，也只有管理員能改保留天數。其他帳號只看得到自己
-的：這份紀錄會寫出誰掃了什麼、哪個位址呼叫了 API，那屬於該帳號的活動，不是
-共享資訊。
-
-### 怎麼判斷一筆發現是不是誤報
-
-掃描器回報的是**樣式**（pattern）。這個樣式在**你的情境下**是不是問題，
-它判斷不了，所以一定會有誤報。完全沒有誤報的工具，代表它漏掉了真的問題。
-
-用本專案掃自己就是最好的例子：唯一一筆「嚴重」是
-`app/adapters/base.py` 的 `subprocess.run`——而那支函式的**存在目的正是讓執行外部指令變安全**。
-樣式是真的（有變數進了 subprocess 呼叫），漏洞不是：
-參數是固定陣列、`shell=False`，工具名稱更早已比對過白名單。
-
-三個問題可以解決大部分發現：
-
-1. **先看卡片上的程式碼。** 每筆發現都會顯示比對到的那幾行。
-   如果被標記的值是常數、或上面已經驗證過，那就是樣式命中但問題不在這。
-2. **外部輸入真的到得了那裡嗎？** 「未淨化的輸入」預設值來自外部。
-   如果它其實來自你自己的程式碼，前提就不成立。
-3. **防護是不是在掃描器看不到的地方？** 呼叫端的驗證、框架的保護、
-   反向代理的過濾——工具只讀單一檔案時都看不見。
-
-判斷完就**標記**。每筆發現都有 **確認為問題 / 誤報 / 已知並接受** 三個選項。
-標記會跟著那筆發現保存、重掃後仍在，而且**會印進 PDF**——
-讓看報告的人看到的是你的判斷，而不是工具的原始輸出。
-
-標記存在你的瀏覽器裡。它是給閱讀者看的註記，**不是稽核軌跡**：
-本系統沒有登入機制，無法記錄「誰」做了判斷，
-存一個沒人驗證過的名字比不存更糟。
-若需要有歸屬的正式簽核，請匯出 PDF 交由有帳號系統的流程處理。
-
-**絕對不要因為看不懂就標成誤報。**
-「我讀過程式碼，外部輸入到不了那裡」是判斷；「這看起來很複雜」不是。
-
-### 自訂規則
-
-掃描分頁右側有規則編輯器，可以用 **Semgrep（YAML）** 或 **Trivy（Rego）**
-寫自己的檢查規則。內建範本是「本來就跑得起來」的完整範例——改一改、取個名字
-另存成自己的規則即可。範本本身不能被覆蓋。
-
-儲存時會**先請掃描器實際檢查規則能不能編譯**，編譯不過就不會存檔，
-錯誤訊息直接顯示在編輯器旁邊，而不是幾天後掃描時才炸開。
-
-**存檔和啟用是兩件事。** 在「這次掃描要套用的自訂規則」勾選，那條規則才會加入本次掃描。
-自訂規則是**加在預設規則集之上**，不是取代它——寫了自己的規則，不會因此失去
-`p/default` 的覆蓋率。
-
-Trivy 的檢查用 Rego 撰寫，那是一個真正的程式語言，而 Trivy 以 OPA 的完整內建函式集執行它。
-呼叫 `http.send` 的規則**真的會從容器內發出網路請求**——這點已在本部署實測確認。
-由於編輯器沒有登入保護，自訂檢查一律禁用 `http.send`、`net.lookup_ip_addr`、
-`opa.runtime`、`rego.parse_module` 與 `trace`；檢查規則只該檢視被掃描的專案。
-這個限制在規則執行**之前**就會套用，按「檢查規則」時也一樣。
-
-掃描開始時會把選中的規則**複製**進該次掃描的工作區，所以掃描進行中去改規則，
-不會影響正在跑的那一次。
-
-規則存在 Docker volume（`SAST_RULES_DIR`，compose 裡是 `/data/rules`），
-重啟與重建映像都不會不見。它們**不進版控**：規則是你的，不是專案的。
-
-只有 Semgrep 與 Trivy 支援自訂規則。Bearer 與 Gitleaks 各自有規則格式，但本專案未接；
-npm audit 與 OSV-Scanner 根本沒有規則語言——它們是拿套件版本去比對漏洞資料庫，
-沒有規則可寫。
-
-### 判定規則
-
-只有一條規則，固定不可調整。掃描前不需要做任何設定，規則就寫在「開始掃描」按鈕上方。
-
-| 任一工具的發現 | 判定 |
-|---|---|
-| 「嚴重」或「高」風險 | **不可上線** |
-| 外洩的密鑰（不分等級） | **不可上線** |
-| 「中」風險 | **需人員審查** |
-| 只有「低」、參考資訊，或完全沒發現 | **通過** |
-
-這條規則有兩點最容易被誤解，所以講明白：
-
-* 判定套用在**本次所有執行工具的彙整結果**，不屬於任何單一工具。
-  `npm audit` 回報的「高」風險，和 `semgrep` 回報的「高」風險，擋得一樣。
-* 判定只是**這次掃描的結論標記**，不會中止掃描，也不會阻擋部署——
-  判定計算時所有工具早就跑完了，而且目前沒有任何下游流程會讀它。
-  要接進 CI 擋 build 是另一件事。
-
-兩種判定在本系統內都**不能更改**。**需人員審查**是給簽核者看的標記——
-匯出 PDF 交給負責人處理即可。**不可上線**則是修好再掃一次。
-在一個沒有登入保護、紀錄又存在記憶體裡的網頁上做簽核，本來就不具效力。
+保留天數預設 **30 天**（可設 1～3650），按儲存後超過天數的紀錄**立即刪除**。
+管理員看得到全部紀錄且只有管理員能改保留天數；其他帳號只看得到自己的。
 
 ### Docker 資源評估（監控分頁）
 
-單看 CPU／記憶體百分比其實回答不了「這個容器夠不夠用」，所以每個執行中的容器
-另外給一個判讀：
+- **記憶體**看「離上限多近」——碰到上限就是掃描被 OOM 中斷的原因；沒設上限也會標示出來。
+- **CPU** 只在真的被配額限流時才示警——掃描器把核心用滿是正常的。
+- **曾發生 OOM 或曾被限流**的優先級高於任何百分比。
+- 需要把 Docker socket 以唯讀掛進容器（`docker-compose.yml` 預設已開），且容器清單只限本 compose 專案。
+  要關閉請設 `SAST_ENABLE_DOCKER_STATS=false` 並移除 socket 掛載。
 
-* **記憶體**看「離上限多近」——碰到上限就是掃描被 OOM 中斷的原因。若上限等於主機
-  記憶體，代表根本沒設限制，也會標示出來：這種容器吃滿時會排擠主機其他服務。
-* **CPU** 只在真的被配額限流時才示警——掃描器把核心用滿是正常的，只是會變慢。
-* **曾發生 OOM 或曾被限流**的優先級高於任何百分比，因為那是既成事實而非預測。
+---
 
-建議在**掃描進行中**再看一次這個分頁，那才是容器真正有負載的時候。
+## REST API
 
-### REST API
+介面只是這組 JSON API 的前端，所有功能都可以用腳本或 CI 呼叫。
 
-介面只是這個小型 JSON API 的前端，方便你寫腳本／接 CI：
+### 認證方式
 
-| 方法與路徑 | 用途 |
-|---|---|
-| `GET /api/tools` | 工具可用性 + 每個工具需要什麼 |
-| `POST /api/inspect` | 盤點本機路徑 + 每工具適用性 |
-| `POST /api/scans` | 開始掃描（`source_kind`=`upload`/`git`/`path`、`tools`…） |
-| `GET /api/scans/{id}` | 掃描狀態、進度、結果 |
-| `GET /api/scans/{id}/export.csv` | 下載該次掃描發現的 CSV |
-| `GET /api/policies` | 判定規則（固定，僅供顯示） |
-| `GET /api/rules` | 自訂規則與內建範本清單 |
-| `GET /api/rules/{engine}/{name}` | 讀取單一規則內容 |
-| `POST /api/rules/validate` | 檢查規則能否編譯（不存檔） |
-| `POST /api/rules/{engine}/{name}` | 儲存規則（先驗證才寫入） |
-| `DELETE /api/rules/{engine}/{name}` | 刪除規則 |
-| `POST /api/scans/{id}/review` | 核准或封鎖等待人工審查的掃描 |
-| `POST /api/scans/{id}/exceptions` | 新增有到期日的誤報例外 |
-| `POST /api/scans/{id}/confirm` \| `/cancel` | 執行或放棄等待確認的掃描 |
-| `GET /api/health` | 健康檢查 |
-
-## 工具本身的安全
-
-它會跑別人的程式碼過掃描器，所以自身的加固很重要：
-
-- **不經 shell**：所有外部指令都走單一 `run_command` 收斂點：list 參數、`shell=False`、一律有 timeout。使用者輸入永不拼接進 shell。
-- **Zip Slip／Zip Bomb 防護**：逃出目的地的壓縮檔成員會被拒絕；解壓大小與檔案數有上限。
-- **Git clone 有界限**：只允許 `http`/`https`、不互動提示、depth-1、有 timeout。
-- **密鑰遮罩**：Gitleaks 的比對結果在送到 API／UI 前先遮罩，報表不會再洩漏密鑰。
-- **隔離工作區**：每次掃描在自己的目錄執行，結束後清理。
-
-## 設定
-
-全部可選，透過環境變數（見 `.env.example`）：工作區目錄、各工具 timeout、上傳／解壓上限、
-`SAST_ALLOW_LOCAL_PATH`、允許的 git scheme、`SAST_SEMGREP_RULESETS`
-（逗號分隔，預設 `p/default,p/owasp-top-ten`，掃描頁也可勾選）、以及 `SAST_SEMGREP_RULES`
-（預設 `p/default`，需要網路；離線可指向本機規則集）。請勿設成 `auto`：
-本專案掃描一律加上 `--metrics=off`（不讓任何程式碼資料外流），
-semgrep 在關閉 metrics 時會拒絕建立 auto 設定。
-
-## 更新掃描工具
-
-### 兩個指令的差別
-
-```bash
-./setup.sh --update      # 更新工具，然後重建並切換
-./scripts/deploy.sh      # 部署目前的原始碼：建置並切換
-```
-
-兩者刻意重疊 —— `--update` 會呼叫 `deploy.sh` 來收尾 ——
-但回答的是不同的問題：
-
-| | `./setup.sh --update` | `./scripts/deploy.sh` |
+| 方式 | 用法 | 適用 |
 |---|---|---|
-| 沒裝 Docker 時幫你裝 | 否 | 否（請用 `./setup.sh --docker`） |
-| 更新掃描器執行檔 | **是** | 否，用映像釘住的版本 |
-| 先下載到 `./vendor` | 是 | 是 |
-| 拉最新原始碼 | 是（透過 deploy.sh） | 是 |
-| 重建映像 | 是 | 是 |
-| 切換容器 | 是 | 是 |
-| 保留回退映像 | 是 | 是 |
-| 等待健康檢查 | 是 | 是 |
+| **API 權杖** | 請求標頭 `Authorization: Bearer sast_...` | 腳本、CI、AI 助理 |
+| **登入 Session** | `POST /api/auth/login` 取得 `sast_session` Cookie（HttpOnly、SameSite=Lax、12 小時） | 瀏覽器 |
 
-簡單說：**要新版掃描器用 `--update`，改了程式碼用 `deploy.sh`。**
-不確定的話用 `--update` 比較安全，它做的事情是包含後者的。
+- 權杖在**設定 → 帳號 → API 權杖**建立，只在建立當下顯示一次，系統只存雜湊值。
+- 權杖**屬於建立它的人**：它做的事就是那個人做的；帳號停用或密碼重設時權杖同時失效。
+- 用 Cookie 發出的 `POST/PUT/PATCH/DELETE` 會檢查 `Origin`，跨站請求回 `403`（防 CSRF）；帶 Bearer 權杖的請求不受影響。
+- 以 `SAST_REQUIRE_AUTH=false` 關閉帳號系統時，所有端點都不需認證（僅限信任的單機環境）。
 
-### `--update` 具體做了什麼
+### 通用回應碼
 
-當 Docker 正在提供服務時：
+| 狀態碼 | 意義 |
+|---|---|
+| `200` / `201` / `202` | 成功／已建立／已受理（背景執行中） |
+| `400` | 參數錯誤（內容見 `detail`） |
+| `401` | 未登入或權杖無效 |
+| `403` | 權限不足（需管理員）、跨站請求、或密碼已過期（`"reason": "password_expired"`） |
+| `404` | 找不到；**別人的掃描也回 404**（不透露它存在） |
+| `409` | 狀態不符（例如掃描不在等待確認、已有維護工作在跑） |
+| `413` | 上傳超過大小上限 |
+| `429` | 登入失敗太多次，`Retry-After` 標頭告訴你要等幾秒 |
 
-1. **下載到本機 `./vendor`**（`scripts/fetch-vendor.sh`）。
-   可續傳、會驗 checksum、已經有的就跳過 —— 所以第二次執行
-   完全不用網路。
-2. **跳過主機安裝**。實際跑掃描的是容器內的副本，
-   裝到主機上只是花幾分鐘在沒人會執行的檔案上。
-3. **重建並切換**（`scripts/deploy.sh`）：拉原始碼、
-   在舊容器繼續服務的同時建新映像、切換、等健康檢查通過，
-   並把舊映像標記起來以便回退。
+所有 `POST` 端點的參數都以**表單**傳送（`-F` 或 `-d`），`/mcp` 例外（JSON-RPC）。
 
-如果是主機安裝（沒有容器在跑），它改成把工具裝到主機上就結束，
-因為沒有映像要重建。
+### 權限圖例
 
-兩個退出口，當你只想做其中一部分：
+- 🌐 **公開**：不需登入
+- 👤 **使用者**：任何已登入帳號或權杖
+- 🔑 **管理員**：需管理員角色
 
-```bash
-SKIP_DEPLOY=1 ./setup.sh --update    # 只更新下載，不重建
-SKIP_VENDOR=1 ./setup.sh --update    # 重建，不碰快取
+### 掃描
+
+| 方法與路徑 | 權限 | 用途 |
+|---|---|---|
+| `GET /api/tools` | 👤 | 六個工具是否可用、版本、安裝指引、支援語言；另附上傳上限等設定（結果快取 5 分鐘） |
+| `GET /api/rulesets` | 👤 | 可選的 Semgrep 官方規則集與目前預設 |
+| `POST /api/inspect` | 🔑 | 盤點本機路徑（檔案數、大小、語言）＋每個工具是否適用及原因 |
+| `POST /api/scans` | 👤 | 建立掃描（見下方參數） |
+| `GET /api/scans` | 👤 | 掃描清單（只列自己的；管理員看全部） |
+| `GET /api/scans/{id}` | 👤 | 單次掃描完整狀態、進度、各工具結果、所有發現、判定 |
+| `POST /api/scans/{id}/confirm` | 👤 | 執行一個「等待確認」的掃描 |
+| `POST /api/scans/{id}/cancel` | 👤 | 放棄一個「等待確認」的掃描並清掉暫存工作區 |
+| `POST /api/scans/{id}/reevaluate` | 👤 | 依目前的人工標記重新計算判定 |
+| `GET /api/scans/{id}/export.csv` | 👤 | 下載發現清單 CSV（UTF-8 BOM，Excel 直接開；已防公式注入） |
+| `GET /api/scans/{id}/packages.csv` | 👤 | 下載套件與授權清單 CSV |
+| `GET /api/policies` | 👤 | 固定判定規則的內容（僅供顯示） |
+
+#### `POST /api/scans` 參數
+
+| 參數 | 必填 | 說明 |
+|---|---|---|
+| `source_kind` | ✅ | `upload`、`git` 或 `path` |
+| `file` | `upload` 時 | zip 檔（上限 `SAST_MAX_UPLOAD_BYTES`，預設 200 MB） |
+| `git_url` | `git` 時 | 只接受 `http`/`https` |
+| `local_path` | `path` 時 | 伺服器上的目錄（需 `SAST_ALLOW_LOCAL_PATH=true`） |
+| `tools` | | 逗號分隔：`semgrep,bearer,trivy,npm_audit,osv_scanner,gitleaks`；留空＝全部 |
+| `rulesets` | | JSON，例如 `{"semgrep":["p/default","p/owasp-top-ten"]}`；只接受 `/api/rulesets` 列出的 ID |
+| `custom_rules` | | JSON，例如 `{"semgrep":["my-rule"],"trivy":["no-root"]}` |
+| `confirm` | | `true`＝抓取完先暫停等確認。`upload`/`git` 預設 `true`；腳本通常傳 `false` 直接跑 |
+| `full_inventory` | | `true`＝另外產出完整套件與授權清單（會查詢 deps.dev） |
+
+回應：`201 {"id": "4d7f84789495", "status": "running"}`
+
+#### 掃描狀態（`status`）
+
+| 值 | 意義 |
+|---|---|
+| `queued` / `running` | 排隊中／執行中 |
+| `awaiting_confirmation` | 已抓取並盤點，等待 `confirm` 或 `cancel` |
+| `done` | 完成，判定為**通過** |
+| `policy_review` | 完成，判定為**需人員審查** |
+| `blocked` | 完成，判定為**不可上線** |
+| `error` / `cancelled` | 失敗／已取消 |
+
+#### `GET /api/scans/{id}` 回應重點欄位
+
+```jsonc
+{
+  "id": "4d7f84789495",
+  "status": "blocked",
+  "target": {"kind": "path", "display": "/tmp/demo-app"},
+  "progress": {"total": 6, "finished": 6, "running": 0, "pending": 0, "percent": 100},
+  "summary": {"critical": 7, "high": 37, "medium": 75, "low": 5, "info": 0, "total": 124, "tools_run": 6},
+  "inventory": {"total_files": 6, "total_bytes": 1654, "languages": {"python": 1, "json": 2, "other": 3}},
+  "policy_evaluation": {"decision": "blocked", "counts": {}, "blocking_findings": [], "manual_review_findings": []},
+  "results": {
+    "semgrep": {
+      "status": "ok", "version": "1.177.0", "duration_ms": 6700,
+      "findings": [{
+        "tool": "semgrep",
+        "rule_id": "python.sqlalchemy.security.sqlalchemy-execute-raw-query...",
+        "severity": "high",
+        "title": "sqlalchemy-execute-raw-query",
+        "message": "Avoiding SQL string concatenation: ...",
+        "file": "app.py", "start_line": 8, "end_line": 8,
+        "cwe": ["CWE-89: Improper Neutralization of Special Elements used in an SQL Command"],
+        "owasp": ["A03:2021 - Injection", "A05:2025 - Injection"],
+        "references": ["https://..."],
+        "extra": {"snippet": "..."}
+      }]
+    }
+  }
+}
 ```
 
-### 更新不會動到的東西
+嚴重度 `severity` 統一為 `critical`、`high`、`medium`、`low`、`info`、`unknown`。
+相依套件類發現的 `extra` 另有 `package`、`installed_version`、`fixed_version`。
 
-帳號、自訂規則、工作目錄存在 Docker 具名 volume
-（`sast-accounts`、`sast-rules`、`sast-workspaces`），重建不會重建它們。
-**更新不會讓你損失密碼、規則或登入狀態。**
-掃描記錄是刻意不同的：它存在記憶體裡，重啟就會消失。
-
-### 出問題的時候
-
-每次部署前都會先標記舊映像，所以回退只要一行：
+#### 範例：CI 裡掃一個 Git 倉庫並依判定決定成敗
 
 ```bash
-./scripts/deploy.sh --rollback
+BASE=http://你的主機:8080
+AUTH="Authorization: Bearer $SAST_STUDIO_TOKEN"
+
+ID=$(curl -s -H "$AUTH" -X POST "$BASE/api/scans" \
+       -F source_kind=git -F git_url=https://github.com/you/app.git \
+       -F confirm=false | jq -r .id)
+
+while :; do
+  STATUS=$(curl -s -H "$AUTH" "$BASE/api/scans/$ID" | jq -r .status)
+  case "$STATUS" in queued|running) sleep 10 ;; *) break ;; esac
+done
+
+curl -s -H "$AUTH" -o findings.csv "$BASE/api/scans/$ID/export.csv"
+echo "判定：$STATUS"
+[ "$STATUS" = "blocked" ] && exit 1 || exit 0
 ```
 
-建置是在舊容器繼續服務的情況下進行的，所以建置失敗不會改變任何事情。
-健康檢查沒過的部署會直接告訴你要回退，而不是留下一個壞掉的容器。
+上傳 zip：`-F source_kind=upload -F file=@project.zip -F confirm=false`
 
-## 帳號與 API
+### 人工判定標記
 
-部署預設需要登入。第一次啟動會建立一個管理員並把密碼印在日誌裡一次，
-`scripts/deploy.sh` 會在首次部署結束時把它顯示出來。密碼不會以可讀形式保存，
-請當下記下來，登入後到**設定**分頁更改。也可以用 `SAST_ADMIN_USER`／
-`SAST_ADMIN_PASSWORD` 指定，或設 `SAST_REQUIRE_AUTH=false` 完全不啟用帳號。
+| 方法與路徑 | 權限 | 用途 |
+|---|---|---|
+| `GET /api/triage` | 👤 | 所有標記（全站共用） |
+| `POST /api/triage` | 👤 | 新增／清除標記：`finding_key`、`verdict`（`real`／`false_positive`／`accepted`，空字串＝清除）、`note` |
 
-密碼以標準函式庫的 scrypt 雜湊（記憶體密集型，資料庫外洩時破解成本高），
-且雜湊參數與雜湊值一起保存，日後要提高成本不會讓既有帳號失效。
+`finding_key` 的格式是 `工具|rule_id|檔案|起始行`，例如 `semgrep|python.lang.security.audit.eval|app.py|12`。
+標完後呼叫 `POST /api/scans/{id}/reevaluate` 立即看到判定變化。
 
-只有兩種角色：管理員與一般使用者。管理員可管理帳號；**最後一位管理員無法被刪除、
-停用或降級**——那一下點擊會把所有人鎖在門外。
+### 自訂規則
 
-### 忘記密碼
+| 方法與路徑 | 權限 | 用途 |
+|---|---|---|
+| `GET /api/rules?engine=semgrep` | 👤 | 自訂規則與內建範本清單（`engine` 可省略） |
+| `GET /api/rules/{engine}/{name}` | 👤 | 讀取單一規則內容 |
+| `POST /api/rules/validate` | 👤 | 只檢查能否編譯、不存檔：`engine`、`content` |
+| `POST /api/rules/{engine}/{name}` | 🔑 | 儲存規則（先驗證才寫入）：`content` |
+| `DELETE /api/rules/{engine}/{name}` | 🔑 | 刪除規則 |
 
-登入頁沒有「忘記密碼」連結：寄送重設信需要郵件服務，而自助式重設本身就是
-每個帳號的第二條入口。恢復改在主機上執行——能登入主機的人，權限本來就比
-網頁登入還大。
+`engine` 為 `semgrep`（`.yaml`）或 `trivy`（`.rego`）。
 
-```bash
-./scripts/reset-password.sh                  # 重設 admin，會要求輸入兩次
-./scripts/reset-password.sh alice            # 重設指定帳號
-./scripts/reset-password.sh admin --generate # 自動產生並顯示一次
-./scripts/reset-password.sh --list           # 看這台有哪些帳號
-```
+### 登入與帳號
 
-它會自己找到運行中的容器，沒有就回頭用本地的程式碼。密碼是提示輸入或自動產生，
-**不會放在參數裡**——放在參數會出現在 `ps` 與 shell 歷史紀錄中。
+| 方法與路徑 | 權限 | 用途 |
+|---|---|---|
+| `POST /api/auth/login` | 🌐 | 登入：`username`、`password`；成功設定 Session Cookie |
+| `POST /api/auth/logout` | 👤 | 登出 |
+| `GET /api/auth/whoami` | 🌐 | 目前身分、是否需要登入、密碼是否過期 |
+| `POST /api/auth/password` | 👤 | 改自己的密碼：`current`、`new_password`（會結束該帳號所有 Session） |
+| `POST /api/auth/change-expired` | 🌐 | 密碼過期時在登入頁直接改：`username`、`current`、`new_password` |
+| `GET /api/auth/policy` | 🌐 | 目前密碼原則 |
+| `POST /api/auth/policy` | 🔑 | 修改密碼原則：`min_length`、`require_upper/lower/digit/symbol`、`reject_common`、`history_count`、`max_age_days`、`idle_minutes`、`max_attempts`、`lockout_minutes`、`token_days` |
+| `GET /api/auth/logins?limit=50` | 👤 | 登入紀錄（自己的；管理員看全部） |
+| `GET /api/users` | 🔑 | 帳號清單 |
+| `POST /api/users` | 🔑 | 新增帳號：`username`、`password`、`is_admin` |
+| `POST /api/users/{id}/password` | 🔑 | 重設某帳號密碼：`password` |
+| `POST /api/users/{id}/state` | 🔑 | 停用／啟用、升降管理員：`disabled`、`is_admin` |
+| `DELETE /api/users/{id}` | 🔑 | 刪除帳號（不能刪自己、不能刪最後一位管理員） |
+| `GET /api/tokens` | 👤 | 自己的 API 權杖（管理員看全部，只顯示前綴） |
+| `POST /api/tokens` | 👤 | 建立權杖：`name`；回應中的 `token` 只出現這一次 |
+| `DELETE /api/tokens/{id}` | 👤 | 撤銷權杖（一般使用者只能撤銷自己的） |
 
-密碼原則依然有效，只有一個例外：「不可重複使用舊密碼」這條被放寬，因為如果
-連他記得的密碼都拒絕，被鎖在外面的管理者就真的進不來了。重設同時會撤銷該帳號
-的所有 session 與 API token（會被重設的密碼，有可能是外洩的密碼），
-帳號若被停用也會一併重新啟用。
+### 活動紀錄、監控與維護
 
-### API 權杖
+| 方法與路徑 | 權限 | 用途 |
+|---|---|---|
+| `GET /api/logs` | 👤 | 活動紀錄；可用 `categories`（`scan,auth,service,docker,api`，分別對應掃描／登入／服務／容器／API）、`level`、`actor`、`text`、`since`、`limit`、`offset` 篩選 |
+| `POST /api/logs/retention` | 🔑 | 設定保留天數：`days`（1～3650） |
+| `GET /api/system` | 👤 | Docker 容器 CPU／記憶體／網路與資源評估 |
+| `GET /api/admin/status?check_upstream=true` | 🔑 | 維護工作狀態、可更新的工具；`check_upstream` 會向 GitHub 查新版 |
+| `POST /api/admin/update-tools` | 🔑 | 就地更新掃描器（`tools` 逗號分隔，可省略）；回 `202`，用 status 輪詢 |
+| `POST /api/admin/restart` | 🔑 | 重啟應用程式（每分鐘最多一次；會清空記憶體中的掃描記錄） |
+| `GET /api/mcp/config` | 👤 | 產生可直接貼上的 MCP 用戶端設定與 `.env` 範本 |
+| `GET /api/health` | 🌐 | 健康檢查，回 `{"status":"ok"}`（nginx 另提供 `/healthz`） |
 
-在**設定**分頁建立權杖，讓腳本或 AI 助理呼叫 API。
-**權杖屬於建立它的人**，所以它做的事就是那個人做的；停用該帳號，權杖同時失效。
-密碼串只在建立當下顯示一次，系統只保存雜湊值。
+---
 
-```bash
-curl -H "Authorization: Bearer sast_..." http://你的主機:8080/api/tools
-```
+## MCP（讓 AI 助理呼叫）
 
-### MCP
-
-同一個權杖可讓 AI 助理透過 [MCP](https://modelcontextprotocol.io) 使用三個工具：
-`scan_git_repository`、`get_scan_result`、`list_scanners`。
-端點是 `POST /mcp`，Streamable HTTP，回傳純 JSON——
-一次掃描就是一問一答，沒有需要串流的東西。
+同一個 API 權杖可讓 AI 助理透過 [MCP](https://modelcontextprotocol.io) 使用 SAST Studio。
+端點是 `POST /mcp`（Streamable HTTP，回傳純 JSON；`GET /mcp` 回 405，因為不需要伺服器推播）。
 
 ```json
 {
@@ -435,73 +609,116 @@ curl -H "Authorization: Bearer sast_..." http://你的主機:8080/api/tools
 }
 ```
 
-這樣發起的掃描會歸屬到權杖擁有者，並和其他掃描一樣出現在報告分頁。
-發現項目會附上比對到的程式碼——掃描器回報的是樣式，
-助理和人一樣需要證據才能判斷那是不是真的問題。
+| 工具 | 參數 | 用途 |
+|---|---|---|
+| `scan_git_repository` | `git_url`（必填）、`tools`（陣列，可省略＝全部） | clone 並掃描一個 Git 倉庫，回傳 `scan_id` |
+| `get_scan_result` | `scan_id`（必填）、`severity`（只回傳該等級以上） | 讀取掃描狀態、判定、各工具結果與發現（含比對到的程式碼） |
+| `list_scanners` | 無 | 已安裝的掃描器與各自檢查什麼 |
 
-端點會驗證 `Origin`，這是防止網頁從別人的瀏覽器操控它（DNS rebinding）的機制。
-同主機自動允許，其他來源用 `SAST_MCP_ORIGINS` 指定。
+直接用 curl 測試：
 
-## 後續怎麼更新這些掃描工具
-
-- **弱點資料庫會自動更新**：Trivy 會拉自己的 DB、OSV-Scanner 查 OSV.dev、npm audit 查
-  npm registry，都在掃描時即時更新，所以 CVE／情資的新鮮度是自動的——只有工具**本體二進位**
-  需要管理版本。
-- **二進位版本固定**：`scripts/install-tools.sh` 與 `Dockerfile` 對 Trivy／OSV／Gitleaks
-  釘住版本，讓建置可重現。要升版就刻意改那些版本號；也可用 Renovate／Dependabot 自動開 PR 升版。
-- **就地更新**：`./setup.sh --update`（用 pip 更新 Semgrep、並重裝釘住版本的二進位），或重建 Docker 映像檔。
-- **隨時查看已安裝版本**：到**監控**分頁，或 `GET /api/tools`。
-
-## 監控
-
-**監控**分頁會顯示每個掃描器的已安裝版本、Docker 佈署中每個容器的**即時效能**
-（CPU／記憶體／網路），以及下方的維護動作。
-
-`docker-compose.yml` 已**預設開啟**容器效能。讀取它需要把 Docker daemon 的 socket
-掛進容器，即使唯讀也屬高權限能力，因此容器清單會依 label **限縮在本 compose 專案**，
-不會列出主機上其他不相關的容器。要關閉請設 `SAST_ENABLE_DOCKER_STATS=false`
-並移除 socket 掛載。
-
-### 維護動作與權限說明
-
-監控分頁可以更新「能就地更新」的掃描器，以及重啟應用程式。
-
-> **這些動作沒有登入保護。** 本專案刻意不做帳號系統，因此**任何能開啟這個網頁的人
-> 都能更新掃描器、重啟服務**。請只在信任的內網使用，不要把 8080 埠暴露到公網。
-
-在「不加帳號系統」的前提下，程式本身做了這些防護：
-
-- 每個指令都是**固定參數陣列**搭配 `shell=False`，工具名稱一律比對內建清單，
-  請求無法注入任何指令；
-- 同時間只允許一個維護工作；重啟**每分鐘最多一次**，避免服務被反覆重啟弄垮；
-- 指令輸出在存入前會**遮罩憑證與絕對路徑**，因為那份日誌任何人都讀得到。
-
-重啟會清空掃描紀錄（紀錄本來就設計成放在記憶體）。
-
-若想在不引入帳號系統的情況下再加一層防護，可在反向代理限制 `/api/admin/`，
-例如在 `nginx/nginx.conf`：
-
-```nginx
-location /api/admin/ {
-    allow 192.168.0.0/16;   # 你的管理網段
-    deny all;
-    proxy_pass http://sast-studio:8000;
-}
+```bash
+curl -s -H "Authorization: Bearer sast_..." -H "Content-Type: application/json" \
+  http://你的主機:8080/mcp \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
+       "params":{"name":"get_scan_result","arguments":{"scan_id":"4d7f84789495","severity":"high"}}}'
 ```
 
-以二進位釘版打包在映像裡的掃描器（Bearer、Gitleaks、OSV-Scanner、npm）**無法**從網頁更換版本，
-要改請調整 `Dockerfile` 的版本再重建。面板上會標示哪些是哪一類。
+- MCP 發起的掃描歸屬到權杖擁有者，和其他掃描一樣出現在報告分頁。
+- 端點會驗證 `Origin` 以防 DNS rebinding：同主機自動允許，其他來源用 `SAST_MCP_ORIGINS` 指定。
+- 正式部署請設定 `SAST_PUBLIC_URL`，讓**設定 → MCP** 產生的設定檔指向正確位址。
 
-## 開發
+---
+
+## 帳號與權限
+
+Docker 部署預設**啟用登入**（`SAST_REQUIRE_AUTH=true`）。
+
+- **第一次啟動**會建立管理員並把密碼印在日誌一次（`deploy.sh` 會幫你顯示）；也可用
+  `SAST_ADMIN_USER`／`SAST_ADMIN_PASSWORD` 預先指定。
+- **兩種角色**：管理員與一般使用者。
+
+  | 動作 | 一般使用者 | 管理員 |
+  |---|---|---|
+  | 上傳 zip／Git 網址掃描、看自己的報告 | ✅ | ✅ |
+  | 看別人的掃描報告 | ❌ | ✅ |
+  | 本機路徑掃描與「檢查專案」 | ❌ | ✅ |
+  | 儲存／刪除自訂規則 | ❌ | ✅ |
+  | 帳號管理、密碼原則、Log 保留天數 | ❌ | ✅ |
+  | 更新掃描器、重啟服務 | ❌ | ✅ |
+
+- **最後一位管理員無法被刪除、停用或降級**，避免把所有人鎖在門外。
+- 密碼以標準函式庫的 **scrypt** 雜湊（記憶體密集型），參數與雜湊一起保存，日後可提高成本而不讓舊帳號失效。
+- 密碼最短 12 字元；登入連續失敗會暫時鎖定；可設定密碼到期、閒置登出、權杖有效天數（**設定 → 帳號**）。
+
+---
+
+## 設定（環境變數）
+
+全部可選，可寫在 `.env`（範本見 `.env.example`）或 `docker-compose.yml` 的 `environment`。
+
+| 變數 | 預設 | 說明 |
+|---|---|---|
+| `SAST_REQUIRE_AUTH` | `false`（compose 設為 `true`） | 是否需要登入 |
+| `SAST_ADMIN_USER` / `SAST_ADMIN_PASSWORD` | `admin` / 自動產生 | 首次建立的管理員 |
+| `SAST_PUBLIC_URL` | 空 | 對外網址，例如 `https://sast.example.com`；用於產生 MCP 設定 |
+| `SAST_ALLOWED_HOSTS` | 空 | 未設 `SAST_PUBLIC_URL` 時允許的主機名稱（逗號分隔） |
+| `SAST_MCP_ORIGINS` | 空 | 額外允許呼叫 `/mcp` 的 Origin（`*`＝全部） |
+| `SAST_COOKIE_SECURE` | 自動 | 強制 Cookie 的 `Secure` 旗標（HTTPS 時自動開） |
+| `SAST_ALLOW_LOCAL_PATH` | `true` | 是否允許掃描伺服器本機路徑 |
+| `SAST_GIT_SCHEMES` | `http,https` | 允許 clone 的 Git scheme |
+| `SAST_ALLOW_INTERNAL_GIT_HOSTS` | `false` | 是否允許 clone 內網位址 |
+| `SAST_SEMGREP_RULESETS` | `p/default,p/owasp-top-ten,p/security-audit,p/python,p/javascript,p/java,p/golang,p/secrets` | 預設 Semgrep 規則集，逗號分隔（`auto` 會被忽略，因為一律 `--metrics=off`） |
+| `SAST_SEMGREP_RULES` | `p/default` | 舊設定，目前掃描已改讀 `SAST_SEMGREP_RULESETS`，保留僅為相容 |
+| `SAST_OSV_FULL_INVENTORY` | `false` | 每次都產出完整套件與授權清單 |
+| `SAST_TOOL_TIMEOUT` | `900` | 每個工具的執行上限（秒） |
+| `SAST_GIT_TIMEOUT` | `300` | git clone 上限（秒） |
+| `SAST_MAX_WORKERS` | `4` | 同時執行的工具數 |
+| `SAST_MAX_UPLOAD_BYTES` | `209715200`（200 MB） | 上傳上限 |
+| `SAST_MAX_UNCOMPRESSED_BYTES` / `SAST_MAX_FILES` | 2 GB / 200000 | 解壓縮上限（防 Zip Bomb） |
+| `SAST_MAX_JOBS` | `100` | 記憶體中保留的掃描記錄數 |
+| `SAST_KEEP_WORKSPACES` | `false` | 掃完保留工作區（除錯用） |
+| `SAST_WORKSPACE` / `SAST_RULES_DIR` / `SAST_ACCOUNTS_DB` | `/tmp/...` | 工作區、規則、帳號資料庫位置（compose 指到 `/data/...` volume） |
+| `SAST_ENABLE_DOCKER_STATS` | `false`（compose 設為 `true`） | 監控分頁的容器效能 |
+
+---
+
+## 工具本身的安全
+
+它會把別人的程式碼餵給掃描器，所以自身的加固很重要：
+
+- **不經 shell**：所有外部指令走單一 `run_command`：list 參數、`shell=False`、一律有 timeout，使用者輸入永不拼接進 shell。
+- **Zip Slip／Zip Bomb 防護**：逃出目的地的壓縮檔成員會被拒絕；解壓大小與檔案數有上限。
+- **Git clone 有界限**：只允許 `http`/`https`、預設拒絕內網位址、不互動、depth-1、有 timeout。
+- **密鑰遮罩**：Gitleaks／Trivy 的密鑰比對結果在送到 API／UI 前先遮罩。
+- **隔離工作區**：每次掃描在自己的目錄執行，結束後清理。
+- **CSV 防公式注入**：以 `=`、`+`、`-`、`@` 開頭的欄位自動加前綴。
+- **供應鏈**：建置時下載的掃描器二進位驗 SHA-256；CI 的 GitHub Actions 以 commit hash 釘版。
+- **維護動作**：限管理員、固定參數陣列、同時只允許一個維護工作、重啟每分鐘最多一次、輸出先遮罩憑證與絕對路徑。
+
+> 監控分頁需要把 Docker socket 掛進容器，即使唯讀也屬高權限能力。本系統請部署在**信任的內網**，
+> 不要把 8080 埠直接暴露到公網；對外請在前面加 HTTPS。
+> 想再加一層防護，可在 `nginx/nginx.conf` 限制管理端點的來源網段：
+>
+> ```nginx
+> location /api/admin/ {
+>     allow 192.168.0.0/16;   # 你的管理網段
+>     deny all;
+>     proxy_pass http://sast_backend;
+> }
+> ```
+
+---
+
+## 開發與測試
 
 ```bash
 pip install -r requirements.txt pytest
 pytest -q          # 測試在未安裝任何掃描器下也能跑
 ```
 
-測試會把 subprocess 層造假、並直接測純解析函式，所以又快又不依賴環境。API 測試會啟動真正的 app。
+測試會把 subprocess 層造假、並直接測純解析函式，所以又快又不依賴環境；API 測試會啟動真正的 app。
+CI（`.github/workflows/ci.yml`）在每次 push／PR 執行測試，並用本專案整合的掃描器掃描自己。
 
-## 專案文件
-
-`CoreMain.md`（專案中心思想）、`待修改.md`（當前計畫／關卡狀態）與 `lessons.md`（每輪輪結）
-記錄了產生本專案的 secure-SDLC 流程。
+專案文件：`CoreMain.md`（專案中心思想）、`待修改.md`（計畫與關卡狀態）、`lessons.md`（每輪紀錄與教訓）
+記錄了產生本專案的 Secure SDLC 流程。
