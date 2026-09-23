@@ -1,6 +1,9 @@
 # SAST Studio
 
-> [中文說明 (Chinese README)](README.zh.md)
+> **[繁體中文完整說明 (full Traditional Chinese README)](README.zh.md)** — screenshots, the data each
+> scanner sends off the host, step-by-step deploy/update scripts, and the complete API reference.
+
+![Scan report: severity breakdown, per-tool results and verdict](docs/images/report.png)
 
 One web page, six free security scanners. Point it at some code and it runs
 **Semgrep**, **Bearer**, **Trivy**, **npm audit**, **OSV-Scanner** and
@@ -312,8 +315,8 @@ The UI is a thin client over a small JSON API — handy for scripting/CI:
 | `POST /api/scans` | start a scan (`source_kind`=`upload`/`git`/`path`, `tools`, …) |
 | `GET /api/scans/{id}` | scan status, progress, results |
 | `GET /api/scans/{id}/export.csv` | download that scan's findings as CSV |
-| `POST /api/scans/{id}/review` | approve or reject a scan awaiting review |
-| `POST /api/scans/{id}/exceptions` | add a time-limited false-positive exception |
+| `GET/POST /api/triage` | read or set a finding's mark (`real` / `false_positive` / `accepted`) |
+| `POST /api/scans/{id}/reevaluate` | re-judge a scan against the current marks |
 | `POST /api/scans/{id}/confirm` \| `/cancel` | run or discard a scan awaiting confirmation |
 | `GET /api/health` | health check |
 
