@@ -4650,3 +4650,50 @@ def test_the_log_records_who_and_from_where(tmp_path, monkeypatch):
     assert row["actor"] == "bot"
     assert row["source"] == "192.168.1.50"
     assert row["target"] == "GET /api/scans"
+
+
+def test_container_state_is_sampled_without_a_watcher(tmp_path, monkeypatch):
+    """A crash at 3am must be logged whether or not a tab is open.
+
+    The transition logic was only reached from /api/system, which the Monitor
+    tab polls, so an unattended restart left no trace at all.
+    """
+    from app import docker_stats
+    events = _fresh_events(tmp_path, monkeypatch)
+    docker_stats._seen.clear()
+
+    states = [
+        [{"name": "web", "state": "running", "capacity": {"level": "ok"}}],
+        [{"name": "web", "state": "exited", "capacity": {"level": "idle"}}],
+    ]
+    calls = {"n": 0}
+
+    def fake_collect():
+        i = min(calls["n"], len(states) - 1)
+        calls["n"] += 1
+        docker_stats._log_changes(states[i])
+        return {"available": True, "containers": states[i]}
+
+    monkeypatch.setattr(docker_stats, "collect", fake_collect)
+    monkeypatch.setattr(docker_stats, "availability", lambda: (True, ""))
+    monkeypatch.setattr(docker_stats, "SAMPLE_SECONDS", 0.05)
+    monkeypatch.setattr(docker_stats, "_sampler", None)
+
+    assert docker_stats.start_sampler() is True
+    try:
+        import time
+        for _ in range(60):
+            if events.query(categories=["docker"])["total"]:
+                break
+            time.sleep(0.05)
+    finally:
+        docker_stats.stop_sampler()
+        docker_stats._sampler = None
+
+    assert events.query(categories=["docker"])["total"] == 1,         "nothing sampled the container state on its own"
+
+
+def test_the_sampler_is_started_at_boot():
+    """A sampler nothing starts is the same as no sampler."""
+    main = _read("app/main.py")
+    assert "docker_stats.start_sampler()" in main

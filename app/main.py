@@ -43,7 +43,17 @@ async def _lifespan(_app: FastAPI):
         events.record("service", "start", detail=f"SAST Studio {app.version}")
     except Exception:  # noqa: BLE001 - never block startup on the log
         pass
+    try:
+        from . import docker_stats
+        docker_stats.start_sampler()
+    except Exception:  # noqa: BLE001 - monitoring is not worth a failed start
+        pass
     yield
+    try:
+        from . import docker_stats
+        docker_stats.stop_sampler()
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from . import events
         events.record("service", "stop", detail="shutting down")

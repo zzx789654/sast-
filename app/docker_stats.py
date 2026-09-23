@@ -276,3 +276,51 @@ def _network(s: dict) -> dict:
         rx += net.get("rx_bytes", 0)
         tx += net.get("tx_bytes", 0)
     return {"net_rx": rx, "net_tx": tx}
+
+
+# --------------------------------------------------------------- background
+#: Seconds between samples. Long enough to be cheap (two API calls per
+#: container), short enough that a restart is noticed while the cause is still
+#: findable in the surrounding rows.
+SAMPLE_SECONDS = 60
+
+_sampler = None
+_stop = None
+
+
+def start_sampler() -> bool:
+    """Watch container state in the background. Returns whether it started.
+
+    Without this the state transitions are only seen when the Monitor tab is
+    polled, so "the container restarted" is recorded only if somebody was
+    looking. A daemon thread rather than a scheduler: it has one job, it holds
+    no state worth draining, and the process exiting is a fine way to stop it.
+    """
+    global _sampler, _stop
+    ok, _ = availability()
+    if not ok or _sampler is not None:
+        return False
+    import threading
+    _stop = threading.Event()
+
+    def loop() -> None:
+        # Sample once up front so the first real transition has something to
+        # compare against, rather than being swallowed as a first sighting.
+        while True:
+            try:
+                collect()
+            except Exception:  # noqa: BLE001 - a sampler must not die of one bad read
+                pass
+            if _stop.wait(SAMPLE_SECONDS):
+                return
+
+    _sampler = threading.Thread(target=loop, name="docker-sampler", daemon=True)
+    _sampler.start()
+    return True
+
+
+def stop_sampler() -> None:
+    global _sampler, _stop
+    if _stop is not None:
+        _stop.set()
+    _sampler = None
