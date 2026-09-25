@@ -596,9 +596,9 @@ curl -H "Authorization: Bearer sast_..." http://your-host:8080/api/tools
 
 ### MCP
 
-The same token gives an AI assistant three tools over
+The same token gives an AI assistant four tools over
 [MCP](https://modelcontextprotocol.io): `scan_git_repository`,
-`get_scan_result` and `list_scanners`. The endpoint is `POST /mcp`, Streamable
+`create_upload_scan`, `get_scan_result` and `list_scanners`. The endpoint is `POST /mcp`, Streamable
 HTTP, JSON responses -- a scan is a request and an answer, so there is nothing
 for an event stream to carry.
 
@@ -617,6 +617,24 @@ A scan started this way is attributed to the token's owner and appears in the
 Reports tab like any other. Findings carry the matched code, because a scanner
 reports a pattern and an assistant needs the same evidence a person does to
 judge whether it matters.
+
+To scan local files -- code that is not in a public repository, or not pushed
+yet -- call `create_upload_scan`, then PUT the ZIP to the `upload_url` it
+returns:
+
+```bash
+curl -T project.zip -H "Authorization: Bearer sastup_..." http://your-host:8080/api/mcp/upload
+# -> {"scan_id": "...", ...}; poll get_scan_result as usual
+```
+
+The upload ticket (`sastup_...`) works **once, within 10 minutes**, and belongs
+to the account that asked for it: disabling the account or letting its password
+expire stops it too. An account holds at most 5 unused tickets. The ticket goes
+in the `Authorization` header rather than the URL so it never lands in an
+access log, and it is not an API token (nor the other way round). The archive
+goes through exactly the web upload's path and limits (`SAST_MAX_UPLOAD_BYTES`,
+zip-slip guard, extracted file-count and size caps), so an assistant can do
+nothing the upload form cannot.
 
 The endpoint validates `Origin`, which is what stops a web page driving it from
 someone's browser (DNS rebinding). Same-host is allowed automatically; set

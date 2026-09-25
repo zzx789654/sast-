@@ -648,6 +648,7 @@ echo "判定：$STATUS"
 | 工具 | 參數 | 用途 |
 |---|---|---|
 | `scan_git_repository` | `git_url`（必填）、`tools`（陣列，可省略＝全部） | clone 並掃描一個 Git 倉庫，回傳 `scan_id` |
+| `create_upload_scan` | `filename`（顯示名稱）、`tools`（陣列，可省略＝全部） | 掃描地端檔案：回傳一次性上傳票證與 `upload_url`，把 ZIP 以 `PUT` 上傳後取得 `scan_id` |
 | `get_scan_result` | `scan_id`（必填）、`severity`（只回傳該等級以上） | 讀取掃描狀態、判定、各工具結果與發現（含比對到的程式碼） |
 | `list_scanners` | 無 | 已安裝的掃描器與各自檢查什麼 |
 
@@ -660,6 +661,16 @@ curl -s -H "Authorization: Bearer sast_..." -H "Content-Type: application/json" 
        "params":{"name":"get_scan_result","arguments":{"scan_id":"4d7f84789495","severity":"high"}}}'
 ```
 
+掃描地端檔案（未推送的程式碼）：先呼叫 `create_upload_scan`，再把 ZIP 上傳到回傳的 `upload_url`：
+
+```bash
+curl -T project.zip -H "Authorization: Bearer sastup_..." http://你的主機:8080/api/mcp/upload
+# → {"scan_id": "...", ...}，之後照常用 get_scan_result 輪詢
+```
+
+- 上傳票證（`sastup_` 開頭）**只能用一次、10 分鐘內有效**，綁定發出它的帳號；帳號停用或密碼過期時票證同時失效。每個帳號同時最多 5 張未使用的票證。
+- 票證放在 `Authorization` 標頭而不是網址，因此不會出現在存取日誌；它也不能當 API 權杖使用，反之亦然。
+- ZIP 走和網頁上傳完全相同的流程與限制（`SAST_MAX_UPLOAD_BYTES`、zip-slip 防護、解壓後檔數／大小上限），助理不會比網頁使用者多任何能力。
 - MCP 發起的掃描歸屬到權杖擁有者，和其他掃描一樣出現在報告分頁。
 - 端點會驗證 `Origin` 以防 DNS rebinding：同主機自動允許，其他來源用 `SAST_MCP_ORIGINS` 指定。
 - 正式部署請設定 `SAST_PUBLIC_URL`，讓**設定 → MCP** 產生的設定檔指向正確位址。

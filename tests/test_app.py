@@ -4864,3 +4864,267 @@ def test_every_styled_class_the_ui_uses_exists_in_the_css():
     for cls in ("dk-in", "dk-warn", "dk-actions", "dk-fragment",
                 "log-chip", "log-table", "log-cat", "log-wrap"):
         assert "." + cls in css, f".{cls} is used but never defined"
+
+
+# ------------------------------------------------- MCP: scan an uploaded ZIP
+# create_upload_scan hands out a one-time ticket; the ZIP goes over HTTP into
+# the same pipeline as the web form's upload. These pin the ticket's limits:
+# one use, short life, tied to an active account, never interchangeable with
+# an API token, and no more than the upload form itself allows.
+@pytest.fixture()
+def mcp_upload_env(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    from app import accounts, mcp
+    from app.config import config
+    from app.main import app
+
+    monkeypatch.setattr(config, "ACCOUNTS_DB", tmp_path / "accounts.db")
+    monkeypatch.setattr(config, "REQUIRE_AUTH", True)
+    monkeypatch.setattr(config, "WORKSPACE_DIR", tmp_path / "ws")
+    monkeypatch.setattr(mcp, "_tickets", {})
+    # No scanners installed: a scan runs through the pipeline and ends at once.
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    accounts.init_db()
+    # An administrator besides the two, so either of them may be disabled.
+    accounts.create_user("admin", "admin-password-1234", is_admin=True)
+    alice = accounts.create_user("alice", "alice-password-1234")
+    bob = accounts.create_user("bob", "bob-password-123456")
+    _, alice_token = accounts.create_token(alice.id, "assistant")
+    _, bob_token = accounts.create_token(bob.id, "assistant")
+    return SimpleNamespace(client=TestClient(app), accounts=accounts, mcp=mcp,
+                           config=config, alice=alice, alice_token=alice_token,
+                           bob_token=bob_token, ws=tmp_path / "ws")
+
+
+def _mcp_tool(client, token, name, arguments=None):
+    res = client.post("/mcp", headers={"Authorization": f"Bearer {token}"},
+                      json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                            "params": {"name": name, "arguments": arguments or {}}})
+    assert res.status_code == 200, res.text
+    result = res.json()["result"]
+    text = result["content"][0]["text"]
+    if result.get("isError"):
+        return None, text
+    return json.loads(text), text
+
+
+def _zip_bytes(files):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for name, body in files.items():
+            z.writestr(name, body)
+    return buf.getvalue()
+
+
+def _put_upload(client, ticket, body, **headers):
+    return client.put("/api/mcp/upload", content=body,
+                      headers={"Authorization": f"Bearer {ticket}", **headers})
+
+
+def _wait_for_scan(client, token, scan_id):
+    import time
+
+    for _ in range(200):
+        data, _ = _mcp_tool(client, token, "get_scan_result", {"scan_id": scan_id})
+        if data["status"] in ("done", "blocked", "policy_review", "error"):
+            return data
+        time.sleep(0.05)
+    raise AssertionError("scan did not finish")
+
+
+def test_mcp_upload_scan_runs_end_to_end(mcp_upload_env):
+    env = mcp_upload_env
+    grant, _ = _mcp_tool(env.client, env.alice_token, "create_upload_scan",
+                         {"filename": "local-project.zip", "tools": ["semgrep"]})
+    assert grant["method"] == "PUT"
+    assert grant["upload_url"] == "http://testserver/api/mcp/upload"
+    assert grant["tools"] == ["semgrep"]
+    assert grant["ticket"].startswith(env.mcp.UPLOAD_TICKET_PREFIX)
+
+    res = _put_upload(env.client, grant["ticket"],
+                      _zip_bytes({"src/app.py": "print('hi')\n"}))
+    assert res.status_code == 201, res.text
+    scan_id = res.json()["scan_id"]
+
+    result = _wait_for_scan(env.client, env.alice_token, scan_id)
+    assert result["status"] == "done", result
+    assert result["target"] == "local-project.zip"
+    assert env.mcp.manager.get(scan_id).owner == "alice"
+    # The temporary copy was moved into the job, not left behind.
+    assert list((env.ws / "_incoming").iterdir()) == []
+
+
+def test_mcp_upload_scan_is_listed_as_a_tool():
+    from app import mcp
+
+    reply = mcp.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, None)
+    names = {t["name"] for t in reply["result"]["tools"]}
+    assert "create_upload_scan" in names
+
+
+def test_mcp_upload_ticket_works_once(mcp_upload_env):
+    env = mcp_upload_env
+    grant, _ = _mcp_tool(env.client, env.alice_token, "create_upload_scan")
+    body = _zip_bytes({"a.py": "x = 1\n"})
+    assert _put_upload(env.client, grant["ticket"], body).status_code == 201
+    assert _put_upload(env.client, grant["ticket"], body).status_code == 401
+
+
+@pytest.mark.parametrize("header", [
+    None,                                   # no credentials at all
+    "Bearer ",                              # empty ticket
+    "Bearer sastup_not-a-real-ticket",      # right shape, never issued
+    "Basic YWxpY2U6cGFzcw==",               # wrong scheme
+])
+def test_mcp_upload_refuses_without_a_valid_ticket(mcp_upload_env, header):
+    env = mcp_upload_env
+    headers = {"Authorization": header} if header is not None else {}
+    before = len(env.mcp.manager.list_jobs())
+    res = env.client.put("/api/mcp/upload", content=_zip_bytes({"a.py": "1"}),
+                         headers=headers)
+    assert res.status_code == 401
+    assert len(env.mcp.manager.list_jobs()) == before
+
+
+def test_mcp_upload_does_not_accept_an_api_token(mcp_upload_env):
+    """An API token is not an upload ticket, however valid it is."""
+    env = mcp_upload_env
+    res = _put_upload(env.client, env.alice_token, _zip_bytes({"a.py": "1"}))
+    assert res.status_code == 401
+
+
+def test_mcp_upload_ticket_expires(mcp_upload_env):
+    env = mcp_upload_env
+    grant, _ = _mcp_tool(env.client, env.alice_token, "create_upload_scan")
+    for t in env.mcp._tickets.values():
+        t.expires = 0
+    res = _put_upload(env.client, grant["ticket"], _zip_bytes({"a.py": "1"}))
+    assert res.status_code == 401
+
+
+def test_mcp_upload_ticket_dies_with_the_account(mcp_upload_env):
+    """Disabling an account stops its tickets as it stops its tokens."""
+    env = mcp_upload_env
+    grant, _ = _mcp_tool(env.client, env.alice_token, "create_upload_scan")
+    env.accounts.set_disabled(env.alice.id, True)
+    res = _put_upload(env.client, grant["ticket"], _zip_bytes({"a.py": "1"}))
+    assert res.status_code == 401
+
+
+def test_mcp_upload_tickets_are_stored_hashed(mcp_upload_env):
+    env = mcp_upload_env
+    grant, _ = _mcp_tool(env.client, env.alice_token, "create_upload_scan")
+    assert grant["ticket"] not in env.mcp._tickets
+    assert all(not k.startswith(env.mcp.UPLOAD_TICKET_PREFIX) for k in env.mcp._tickets)
+
+
+def test_mcp_upload_tickets_per_account_are_capped(mcp_upload_env):
+    env = mcp_upload_env
+    for _ in range(env.mcp.UPLOAD_TICKETS_PER_USER):
+        grant, _ = _mcp_tool(env.client, env.alice_token, "create_upload_scan")
+        assert grant is not None
+    grant, message = _mcp_tool(env.client, env.alice_token, "create_upload_scan")
+    assert grant is None and "unused" in message
+    # Someone else's allowance is their own.
+    grant, _ = _mcp_tool(env.client, env.bob_token, "create_upload_scan")
+    assert grant is not None
+
+
+@pytest.mark.parametrize("chunked", [False, True],
+                         ids=["declared-length", "streamed-without-length"])
+def test_mcp_upload_over_the_size_limit_leaves_nothing(mcp_upload_env, monkeypatch,
+                                                       chunked):
+    """Refused whether the size is declared up front or only found mid-stream."""
+    env = mcp_upload_env
+    monkeypatch.setattr(env.config, "MAX_UPLOAD_BYTES", 64)
+    grant, _ = _mcp_tool(env.client, env.alice_token, "create_upload_scan")
+    before = len(env.mcp.manager.list_jobs())
+    body = iter([b"x" * 50, b"x" * 50]) if chunked else b"x" * 1000
+    res = _put_upload(env.client, grant["ticket"], body)
+    assert res.status_code == 413
+    assert len(env.mcp.manager.list_jobs()) == before
+    incoming = env.ws / "_incoming"
+    assert not incoming.exists() or list(incoming.iterdir()) == []
+
+
+def test_mcp_upload_refuses_an_empty_body(mcp_upload_env):
+    env = mcp_upload_env
+    grant, _ = _mcp_tool(env.client, env.alice_token, "create_upload_scan")
+    assert _put_upload(env.client, grant["ticket"], b"").status_code == 400
+
+
+def test_mcp_upload_keeps_the_zip_slip_guard(mcp_upload_env):
+    """The same extraction as the web upload, so a hostile archive fails."""
+    env = mcp_upload_env
+    grant, _ = _mcp_tool(env.client, env.alice_token, "create_upload_scan")
+    res = _put_upload(env.client, grant["ticket"],
+                      _zip_bytes({"../../escape.py": "print('out')\n"}))
+    assert res.status_code == 201
+    result = _wait_for_scan(env.client, env.alice_token, res.json()["scan_id"])
+    assert result["status"] == "error"
+    assert not (env.ws.parent / "escape.py").exists()
+
+
+def test_mcp_upload_rejects_a_foreign_origin(mcp_upload_env):
+    env = mcp_upload_env
+    grant, _ = _mcp_tool(env.client, env.alice_token, "create_upload_scan")
+    res = _put_upload(env.client, grant["ticket"], _zip_bytes({"a.py": "1"}),
+                      Origin="http://evil.example")
+    assert res.status_code == 403
+
+
+def test_mcp_uploaded_scan_is_not_readable_by_another_account(mcp_upload_env):
+    env = mcp_upload_env
+    grant, _ = _mcp_tool(env.client, env.alice_token, "create_upload_scan")
+    scan_id = _put_upload(env.client, grant["ticket"],
+                          _zip_bytes({"a.py": "1"})).json()["scan_id"]
+    data, message = _mcp_tool(env.client, env.bob_token, "get_scan_result",
+                              {"scan_id": scan_id})
+    assert data is None and "no scan" in message
+
+
+def test_mcp_upload_filename_is_a_single_short_line(mcp_upload_env):
+    env = mcp_upload_env
+    grant, _ = _mcp_tool(env.client, env.alice_token, "create_upload_scan",
+                         {"filename": "evil\nname\r" + "x" * 500})
+    ticket = next(iter(env.mcp._tickets.values()))
+    assert "\n" not in ticket.filename and "\r" not in ticket.filename
+    assert len(ticket.filename) <= 120
+
+
+def test_mcp_upload_tickets_without_accounts_are_not_one_shared_bucket(monkeypatch):
+    """With auth off every caller is anonymous; five unused tickets must not
+    lock everyone else out. A total cap still bounds the table."""
+    from app import mcp
+
+    monkeypatch.setattr(mcp, "_tickets", {})
+    for _ in range(mcp.UPLOAD_TICKETS_PER_USER + 1):
+        mcp.issue_upload_ticket(None, ["semgrep"], "a.zip")
+    for _ in range(mcp.UPLOAD_TICKETS_TOTAL - len(mcp._tickets)):
+        mcp.issue_upload_ticket(None, ["semgrep"], "a.zip")
+    with pytest.raises(ValueError, match="too many"):
+        mcp.issue_upload_ticket("someone", ["semgrep"], "a.zip")
+
+
+def test_mcp_upload_clears_stale_leftovers(mcp_upload_env):
+    """A process stopped mid-upload leaves a file only the next upload can remove."""
+    import os
+    import time
+
+    env = mcp_upload_env
+    incoming = env.ws / "_incoming"
+    incoming.mkdir(parents=True)
+    stale, fresh = incoming / "stale.zip", incoming / "fresh.zip"
+    stale.write_bytes(b"x")
+    fresh.write_bytes(b"x")
+    old = time.time() - 2 * 3600
+    os.utime(stale, (old, old))
+
+    grant, _ = _mcp_tool(env.client, env.alice_token, "create_upload_scan")
+    assert _put_upload(env.client, grant["ticket"],
+                       _zip_bytes({"a.py": "1"})).status_code == 201
+    assert not stale.exists()
+    assert fresh.exists()     # may be another upload still in progress

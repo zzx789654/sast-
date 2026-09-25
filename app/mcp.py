@@ -15,7 +15,12 @@ started from an assistant is attributable to the person whose token it is.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import secrets
+import threading
+import time
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from .config import config
@@ -34,6 +39,18 @@ INVALID_REQUEST = -32600
 METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
+
+#: Where create_upload_scan sends the archive.
+UPLOAD_PATH = "/api/mcp/upload"
+#: A ticket is for "upload the thing you are about to zip", not for later.
+UPLOAD_TICKET_TTL = 600
+#: Unused tickets one account may hold, so a loop cannot grow the table.
+UPLOAD_TICKETS_PER_USER = 5
+#: Unused tickets in all. Without accounts every caller is anonymous, and a
+#: per-account cap would be one shared bucket anyone could empty.
+UPLOAD_TICKETS_TOTAL = 50
+#: Distinct from API tokens, so neither can be mistaken for the other.
+UPLOAD_TICKET_PREFIX = "sastup_"
 
 TOOLS = [
     {
@@ -64,6 +81,35 @@ TOOLS = [
         },
     },
     {
+        "name": "create_upload_scan",
+        "title": "Scan local files (upload a ZIP)",
+        "description": (
+            "Scan code that is not in a public repository. Returns a one-time "
+            "upload ticket: PUT the ZIP archive's bytes to upload_url with the "
+            "header 'Authorization: Bearer <ticket>' (for example curl -T "
+            "project.zip). The upload answers with a scan_id; then poll "
+            "get_scan_result. The ticket works once and expires in "
+            f"{UPLOAD_TICKET_TTL // 60} minutes."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": "Name shown for this scan, e.g. my-project.zip.",
+                },
+                "tools": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Which scanners to run. Omit for all of them: semgrep, "
+                        "bearer, trivy, npm_audit, osv_scanner, gitleaks."
+                    ),
+                },
+            },
+        },
+    },
+    {
         "name": "get_scan_result",
         "title": "Read a scan's result",
         "description": (
@@ -74,7 +120,8 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "scan_id": {"type": "string", "description": "Id from scan_git_repository."},
+                "scan_id": {"type": "string",
+                            "description": "Id from scan_git_repository or from the upload."},
                 "severity": {
                     "type": "string",
                     "enum": ["critical", "high", "medium", "low", "info"],
@@ -111,8 +158,12 @@ def _text(payload: Any) -> dict:
     return {"content": [{"type": "text", "text": body}]}
 
 
-def handle(message: dict, user) -> Optional[dict]:
-    """Handle one JSON-RPC message. None means "nothing to send back"."""
+def handle(message: dict, user, base_url: Optional[str] = None) -> Optional[dict]:
+    """Handle one JSON-RPC message. None means "nothing to send back".
+
+    base_url is this deployment's public address, used to tell the caller
+    where to upload; without it the upload location is given as a path.
+    """
     if message.get("jsonrpc") != "2.0":
         return _error(message.get("id"), INVALID_REQUEST,
                       "jsonrpc must be \"2.0\"")
@@ -139,7 +190,7 @@ def handle(message: dict, user) -> Optional[dict]:
         name = params.get("name")
         args = params.get("arguments") or {}
         try:
-            return _result(req_id, _call_tool(name, args, user))
+            return _result(req_id, _call_tool(name, args, user, base_url))
         except ValueError as exc:
             # A bad argument is the caller's problem, and saying which one
             # saves a round trip.
@@ -156,7 +207,7 @@ def handle(message: dict, user) -> Optional[dict]:
     return _error(req_id, METHOD_NOT_FOUND, f"unknown method '{method}'")
 
 
-def _call_tool(name: str, args: dict, user) -> dict:
+def _call_tool(name: str, args: dict, user, base_url: Optional[str] = None) -> dict:
     if name == "list_scanners":
         from .adapters import ADAPTERS
         return _text([
@@ -167,15 +218,106 @@ def _call_tool(name: str, args: dict, user) -> dict:
     if name == "scan_git_repository":
         return _start_git_scan(args, user)
 
+    if name == "create_upload_scan":
+        return _create_upload_ticket(args, user, base_url)
+
     if name == "get_scan_result":
         return _read_scan(args, user)
 
     raise ValueError(f"unknown tool '{name}'")
 
 
-def _start_git_scan(args: dict, user) -> dict:
+def _requested_tools(args: dict) -> list[str]:
     from .adapters import ADAPTERS
 
+    known = {a.name for a in ADAPTERS}
+    requested = [t for t in (args.get("tools") or []) if t in known]
+    return requested or sorted(known)
+
+
+# ------------------------------------------------------------ upload tickets
+# A tool call is JSON, so an archive cannot travel in one without being
+# base64'd through the assistant's own output. Instead the call hands out a
+# ticket and the bytes go over plain HTTP, into the same ZIP path the web
+# form uses -- same size cap, same zip-slip and file-count checks. An
+# assistant gets what a person with the upload form gets, and no more.
+#
+# Held in memory: the server is one process, and a ticket that dies with a
+# restart costs the caller one more tool call.
+@dataclass
+class UploadTicket:
+    username: Optional[str]
+    tools: list[str]
+    filename: str
+    expires: float
+
+
+_tickets: dict[str, UploadTicket] = {}   # sha256(ticket) -> ticket
+_tickets_lock = threading.Lock()
+
+
+def _ticket_key(ticket: str) -> str:
+    # Stored hashed, like API tokens: a dump of this table is not a way in.
+    return hashlib.sha256(ticket.encode()).hexdigest()
+
+
+def _drop_expired_locked(now: float) -> None:
+    for key in [k for k, t in _tickets.items() if t.expires <= now]:
+        del _tickets[key]
+
+
+def issue_upload_ticket(username: Optional[str], tools: list[str],
+                        filename: str) -> str:
+    now = time.time()
+    with _tickets_lock:
+        _drop_expired_locked(now)
+        wait = f"use one or wait up to {UPLOAD_TICKET_TTL // 60} minutes for them to expire"
+        if len(_tickets) >= UPLOAD_TICKETS_TOTAL:
+            raise ValueError(f"too many upload tickets are unused; {wait}")
+        held = sum(1 for t in _tickets.values() if t.username == username)
+        if username is not None and held >= UPLOAD_TICKETS_PER_USER:
+            raise ValueError(f"{held} upload tickets are still unused; {wait}")
+        ticket = UPLOAD_TICKET_PREFIX + secrets.token_urlsafe(32)
+        _tickets[_ticket_key(ticket)] = UploadTicket(
+            username=username, tools=tools, filename=filename,
+            expires=now + UPLOAD_TICKET_TTL)
+    return ticket
+
+
+def claim_upload_ticket(ticket: str) -> Optional[UploadTicket]:
+    """The ticket's grant, removed so it cannot be used twice; None if invalid."""
+    if not ticket or not ticket.startswith(UPLOAD_TICKET_PREFIX):
+        return None
+    with _tickets_lock:
+        grant = _tickets.pop(_ticket_key(ticket), None)
+    if grant is None or grant.expires <= time.time():
+        return None
+    return grant
+
+
+def _create_upload_ticket(args: dict, user, base_url: Optional[str]) -> dict:
+    filename = (args.get("filename") or "upload.zip").strip()
+    # A label only -- the archive is saved under a fixed name -- but it is
+    # shown in the UI and the event log, so keep it short and one line.
+    filename = "".join(c for c in filename if c.isprintable())[:120] or "upload.zip"
+    tools = _requested_tools(args)
+    username = getattr(user, "username", None)
+    ticket = issue_upload_ticket(username, tools, filename)
+    upload_url = (base_url.rstrip("/") if base_url else "") + UPLOAD_PATH
+    return _text({
+        "upload_url": upload_url,
+        "method": "PUT",
+        "header": "Authorization: Bearer <ticket>",
+        "ticket": ticket,
+        "expires_in_seconds": UPLOAD_TICKET_TTL,
+        "tools": tools,
+        "max_bytes": config.MAX_UPLOAD_BYTES,
+        "example": f'curl -T project.zip -H "Authorization: Bearer {ticket}" {upload_url}',
+        "next": "the upload answers with scan_id; poll get_scan_result with it",
+    })
+
+
+def _start_git_scan(args: dict, user) -> dict:
     git_url = (args.get("git_url") or "").strip()
     if not git_url:
         raise ValueError("git_url is required")
@@ -186,10 +328,7 @@ def _start_git_scan(args: dict, user) -> dict:
     except SourceError as exc:
         raise ValueError(str(exc)) from exc
 
-    known = {a.name for a in ADAPTERS}
-    requested = [t for t in (args.get("tools") or []) if t in known]
-    if not requested:
-        requested = sorted(known)
+    requested = _requested_tools(args)
 
     target = ScanTarget(kind="git", display=git_url)
     job = manager.new_job(target, requested,

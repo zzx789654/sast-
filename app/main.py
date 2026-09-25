@@ -291,6 +291,7 @@ async def _auth_gate(request: Request, call_next):
     path = request.url.path
     public = (path in _PUBLIC_PATHS
               or path == "/mcp"          # answers 401 itself, in JSON-RPC
+              or path == "/api/mcp/upload"  # authenticated by its upload ticket
               or path == "/login"
               or path.startswith("/static/")
               or path in {"/i18n.js", "/app.js", "/style.css", "/login.js"})
@@ -664,8 +665,13 @@ async def mcp_endpoint(request: Request) -> Response:
 
     # A batch is a list. Notifications inside it produce no reply, which is
     # why the responses are filtered rather than mapped one-to-one.
+    # Where this deployment answers, for tools that tell the caller where to
+    # send something. The same guarded origin the settings page hands out.
+    scheme, host = _public_origin(request)
+    base_url = f"{scheme}://{host}"
+
     if isinstance(message, list):
-        replies = [r for r in (await run_in_threadpool(mcp.handle, m, user)
+        replies = [r for r in (await run_in_threadpool(mcp.handle, m, user, base_url)
                                for m in message) if r is not None]
         if not replies:
             return Response(status_code=202)
@@ -678,7 +684,7 @@ async def mcp_endpoint(request: Request) -> Response:
                        "message": "expected a JSON-RPC object"}},
             status_code=400)
 
-    reply = await run_in_threadpool(mcp.handle, message, user)
+    reply = await run_in_threadpool(mcp.handle, message, user, base_url)
     if reply is None:
         # A notification: accepted, nothing to say back.
         return Response(status_code=202)
@@ -693,6 +699,104 @@ async def mcp_stream() -> Response:
     to the client, which is our case: every answer belongs to a request.
     """
     return Response(status_code=405, headers={"Allow": "POST"})
+
+
+#: An upload in progress is minutes at most; anything older in _incoming was
+#: left by a process that stopped mid-upload and nothing else will remove it.
+_INCOMING_MAX_AGE = 3600
+
+
+def _drop_stale_incoming(incoming: Path) -> None:
+    cutoff = time.time() - _INCOMING_MAX_AGE
+    for leftover in incoming.glob("*.zip"):
+        try:
+            if leftover.stat().st_mtime < cutoff:
+                leftover.unlink()
+        except OSError:
+            pass    # another upload's cleanup got there first
+
+
+@app.put("/api/mcp/upload")
+async def mcp_upload(request: Request) -> JSONResponse:
+    """Receive the ZIP for a ticket issued by the create_upload_scan tool.
+
+    The ticket rides in the Authorization header, not the URL, so it never
+    lands in an access log. It works once: claimed before the body is read,
+    so a second upload with it fails even if the first one is still running.
+    """
+    from . import accounts, mcp
+
+    origin = request.headers.get("origin")
+    if origin and not _origin_allowed(origin, request):
+        raise HTTPException(403, "origin not allowed")
+
+    auth = request.headers.get("authorization", "")
+    ticket = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    grant = mcp.claim_upload_ticket(ticket)
+    if grant is None:
+        events.record("api", "mcp-upload", level="warn", source=_client_ip(request),
+                      target="/api/mcp/upload", detail="invalid or used ticket")
+        return JSONResponse(
+            {"detail": "upload ticket is missing, expired or already used; "
+                       "call create_upload_scan for a new one"},
+            status_code=401, headers={"WWW-Authenticate": "Bearer"})
+
+    if config.REQUIRE_AUTH:
+        # The account may have been disabled, or its password may have expired,
+        # since the ticket was issued. The ticket carries its rights, not more.
+        user = await run_in_threadpool(accounts.get_user, grant.username or "")
+        if user is None or user.disabled:
+            return JSONResponse({"detail": "the account for this ticket is not active"},
+                                status_code=401)
+        if await run_in_threadpool(accounts.password_expired, user):
+            return JSONResponse({"detail": "password expired; change it to continue",
+                                 "reason": "password_expired"}, status_code=403)
+
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > config.MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "upload exceeds size limit")
+
+    # Written aside first, so a refused upload leaves no half-made job behind.
+    incoming = config.WORKSPACE_DIR / "_incoming"
+    incoming.mkdir(parents=True, exist_ok=True)
+    _drop_stale_incoming(incoming)
+    tmp = incoming / f"{os.urandom(8).hex()}.zip"
+    written = 0
+    try:
+        with open(tmp, "wb") as out:
+            async for chunk in request.stream():
+                written += len(chunk)
+                if written > config.MAX_UPLOAD_BYTES:
+                    raise HTTPException(413, "upload exceeds size limit")
+                out.write(chunk)
+        if written == 0:
+            raise HTTPException(400, "empty upload; send the ZIP archive as the body")
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+    target = ScanTarget(kind="upload", display=grant.filename)
+    try:
+        job = manager.new_job(target, grant.tools, owner=grant.username)
+        zip_path = manager.job_dir(job.id) / "upload.zip"
+        os.replace(tmp, zip_path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    # confirm=False, as for git scans from MCP: nobody is there to click it.
+    manager.start(job.id, {"kind": "upload", "zip_path": str(zip_path)},
+                  confirm=False)
+
+    events.record("scan", "start", actor=grant.username or "",
+                  source=_client_ip(request), target=target.display,
+                  detail=f"mcp upload: {', '.join(grant.tools)}")
+    return JSONResponse({
+        "scan_id": job.id,
+        "status": job.status.value,
+        "tools": grant.tools,
+        "next": "poll get_scan_result with this scan_id until status is done, "
+                "blocked, policy_review or error",
+    }, status_code=201)
 
 
 def _origin_allowed(origin: str, request: Request) -> bool:
