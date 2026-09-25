@@ -250,3 +250,5 @@
 - **使用者指令（提示詞原意）**：#018 的後續 1～3 都做：commit 並 push（跑 CI）、重建映像部署到 MCP 主機、部署後用新工具掃 nessus-report 未推送的修補。
 - **對照既有決議**：延續 #018；沿用專案慣例（推 main、VM 以 sast 身分 `./setup.sh --update`、不用 sudo）。
 - **決議回應**：依序執行，每步驗證後才進下一步。
+- **後續動作（#019 完成）**：1a712fe 推送、CI 綠燈並逐項判讀報表、部署 .145 healthy；以新工具上傳 nessus-report 工作目錄 ZIP 重掃成功（原 High 關閉；bearer 另報既有誤報型發現）、同票證重用 401。
+- **重掃時發現的工具問題（待後續一輪）**：同一份 nessus-report origin/main，git URL 掃描時 bearer 只報 1 項，ZIP 掃描報 10 項；ZIP 內檔案放在子目錄時 bearer 報 0 且狀態 ok。bearer 會在不告知的情況下少報，與第 15 輪「工具 ok 不等於有分析」同型。
