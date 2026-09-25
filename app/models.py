@@ -62,6 +62,12 @@ class ToolStatus(str, enum.Enum):
     NOT_APPLICABLE = "not_applicable"    # nothing for this tool to scan
     ERROR = "error"
     TIMEOUT = "timeout"
+    # Ran and reported, but said itself that part of the input went
+    # unanalysed (a file hit the tool's own deadline, a lockfile would not
+    # parse). Not OK: every one of these tools exits 0 in that state, and
+    # "ok, 0 findings" for a file nobody looked at is the most dangerous
+    # answer a scanner can give.
+    INCOMPLETE = "incomplete"
 
 
 class ToolPhase(str, enum.Enum):
@@ -103,6 +109,8 @@ class ToolResult(BaseModel):
     findings: list[Finding] = Field(default_factory=list)
     error: str = ""
     message: str = ""            # non-error note, e.g. why it was not applicable
+    # What the tool said it could not analyse, as "path: reason".
+    skipped: list[str] = Field(default_factory=list)
     install_hint: str = ""
     summary: dict[str, int] = Field(default_factory=dict)
 
@@ -191,6 +199,11 @@ class Job(BaseModel):
         counts["total"] = total
         counts["tools_run"] = sum(
             1 for r in self.results.values() if r.status == ToolStatus.OK
+        )
+        # Ran but left part of the input unread; counted apart so a scan
+        # where one looks complete and one does not never share a number.
+        counts["tools_incomplete"] = sum(
+            1 for r in self.results.values() if r.status == ToolStatus.INCOMPLETE
         )
         self.summary = counts
         return self

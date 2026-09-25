@@ -5128,3 +5128,302 @@ def test_mcp_upload_clears_stale_leftovers(mcp_upload_env):
                        _zip_bytes({"a.py": "1"})).status_code == 201
     assert not stale.exists()
     assert fresh.exists()     # may be another upload still in progress
+
+
+# ------------------------------------------ a scanner that skipped is not "ok"
+# Every case below exits 0 (or with an exit code the adapter treated as
+# success) while leaving input unread. The stderr and JSON shapes are the
+# ones measured on the deployment, not invented: see talk.md #020.
+def _pretend_available(monkeypatch, adapter_cls):
+    monkeypatch.setattr(adapter_cls, "probe", lambda self: (True, "test"))
+    monkeypatch.setattr(adapter_cls, "applicability", lambda self, d: (True, ""))
+
+
+_BEARER_DEADLINE = (
+    " └  96% [=============> ] (27/28) [6s:0s]2026-09-25 12:58:48 DBG failed "
+    "to scan file renderer/app.js: javascript scan failed: context deadline "
+    "exceeded process=worker-0\n")
+
+_BEARER_ONE_FINDING = json.dumps({"high": [{
+    "id": "javascript_lang_manual_html_sanitization", "title": "t",
+    "filename": "renderer/core.js", "line_number": 20}]})
+
+
+def test_bearer_file_past_its_deadline_is_incomplete_not_ok(monkeypatch, tmp_path):
+    """The run that made a 10-finding project report 1 finding as "ok"."""
+    from app.adapters import bearer
+
+    calls = []
+
+    def fake_run(args, **kw):
+        calls.append(args)
+        return CommandResult(0, _BEARER_ONE_FINDING, _BEARER_DEADLINE)
+
+    _pretend_available(monkeypatch, bearer.BearerAdapter)
+    monkeypatch.setattr(bearer, "run_command", fake_run)
+    result = bearer.BearerAdapter().scan(tmp_path)
+
+    assert result.status == ToolStatus.INCOMPLETE
+    assert result.skipped == [
+        "renderer/app.js: javascript scan failed: context deadline exceeded"]
+    assert len(result.findings) == 1          # what it did find still counts
+    assert len(calls) == 2                    # retried once, not in a loop
+    # The failure is only logged at debug level.
+    assert calls[0][calls[0].index("--log-level") + 1] == "debug"
+
+
+def test_bearer_retry_that_reads_everything_is_ok(monkeypatch, tmp_path):
+    from app.adapters import bearer
+
+    outputs = iter([
+        CommandResult(0, _BEARER_ONE_FINDING, _BEARER_DEADLINE),
+        CommandResult(0, json.dumps({"high": [
+            {"id": "a", "filename": "renderer/core.js", "line_number": 20},
+            {"id": "b", "filename": "renderer/app.js", "line_number": 815}]}), ""),
+    ])
+    _pretend_available(monkeypatch, bearer.BearerAdapter)
+    monkeypatch.setattr(bearer, "run_command", lambda args, **kw: next(outputs))
+    result = bearer.BearerAdapter().scan(tmp_path)
+
+    assert result.status == ToolStatus.OK
+    assert len(result.findings) == 2 and result.skipped == []
+
+
+def test_bearer_clean_run_is_not_retried(monkeypatch, tmp_path):
+    from app.adapters import bearer
+
+    calls = []
+
+    def fake_run(args, **kw):
+        calls.append(args)
+        return CommandResult(0, _BEARER_ONE_FINDING, "DBG something routine\n")
+
+    _pretend_available(monkeypatch, bearer.BearerAdapter)
+    monkeypatch.setattr(bearer, "run_command", fake_run)
+    assert bearer.BearerAdapter().scan(tmp_path).status == ToolStatus.OK
+    assert len(calls) == 1
+
+
+def test_bearer_failed_file_names_may_contain_spaces():
+    from app.adapters.bearer import _failed_files
+
+    line = "DBG failed to scan file src/my file.js: parse error: x process=worker-1"
+    assert _failed_files(line) == ["src/my file.js: parse error: x"]
+
+
+def test_semgrep_rule_timeout_is_incomplete_not_ok(monkeypatch, tmp_path):
+    """Measured: rc 0, no results, one Timeout error -- same as a clean file."""
+    from app.adapters import semgrep
+
+    target = tmp_path / "renderer" / "app.js"
+    output = {"results": [], "errors": [{
+        "code": 2, "level": "warn", "type": "Timeout",
+        "rule_id": "javascript.express.security.audit.express-ssrf.express-ssrf",
+        "message": "Timeout when running ... on app.js", "path": str(target)}],
+        "paths": {"scanned": [str(target)]}}
+    _pretend_available(monkeypatch, semgrep.SemgrepAdapter)
+    monkeypatch.setattr(semgrep, "run_command",
+                        lambda args, **kw: CommandResult(0, json.dumps(output), ""))
+    result = semgrep.SemgrepAdapter().scan(tmp_path)
+
+    assert result.status == ToolStatus.INCOMPLETE
+    # _relpath gives the platform's separator, as for every other finding.
+    assert result.skipped == [f"{Path('renderer/app.js')}: Timeout"]
+
+
+@pytest.mark.parametrize("error, skipped", [
+    # A rule that failed to load is not a file left unread.
+    ({"level": "warn", "type": "Rule parse error", "message": "bad rule"}, None),
+    # The list form of `type` semgrep uses for some errors.
+    ({"level": "warn", "type": ["PartialParsing", [{"line": 3}]],
+      "path": "{root}/a.js"}, "a.js: PartialParsing"),
+])
+def test_semgrep_error_shapes(monkeypatch, tmp_path, error, skipped):
+    from app.adapters import semgrep
+
+    error = {k: (v.replace("{root}", str(tmp_path)) if isinstance(v, str) else v)
+             for k, v in error.items()}
+    output = {"results": [], "errors": [error]}
+    _pretend_available(monkeypatch, semgrep.SemgrepAdapter)
+    monkeypatch.setattr(semgrep, "run_command",
+                        lambda args, **kw: CommandResult(0, json.dumps(output), ""))
+    result = semgrep.SemgrepAdapter().scan(tmp_path)
+    if skipped is None:
+        assert result.status == ToolStatus.OK
+    else:
+        assert result.status == ToolStatus.INCOMPLETE
+        assert result.skipped == [skipped]
+
+
+def test_semgrep_oversized_file_is_incomplete(monkeypatch, tmp_path):
+    from app.adapters import semgrep
+
+    output = {"results": [], "errors": [], "paths": {"skipped": [
+        {"path": str(tmp_path / "big.js"), "reason": "exceeded_size_limit"},
+        {"path": str(tmp_path / "vendor.min.js"), "reason": "minified"}]}}
+    _pretend_available(monkeypatch, semgrep.SemgrepAdapter)
+    monkeypatch.setattr(semgrep, "run_command",
+                        lambda args, **kw: CommandResult(0, json.dumps(output), ""))
+    result = semgrep.SemgrepAdapter().scan(tmp_path)
+    # Too big to scan is a gap; minified is a deliberate choice.
+    assert result.skipped == ["big.js: exceeded_size_limit"]
+
+
+def test_gitleaks_failure_without_a_report_is_an_error(monkeypatch, tmp_path):
+    """Measured: an unreadable source exits 1 with no report; it read as clean."""
+    from app.adapters import gitleaks
+
+    stderr = ("\x1b[90m1:00PM\x1b[0m \x1b[31mFTL\x1b[0m \x1b[1mstat /tmp/exp/nope: "
+              "no such file or directory\x1b[0m\n")
+    _pretend_available(monkeypatch, gitleaks.GitleaksAdapter)
+    monkeypatch.setattr(gitleaks, "run_command",
+                        lambda args, **kw: CommandResult(1, "", stderr))
+    result = gitleaks.GitleaksAdapter().scan(tmp_path)
+
+    assert result.status == ToolStatus.ERROR
+    assert "no such file or directory" in result.error
+    assert "\x1b" not in result.error
+
+
+def test_gitleaks_clean_run_without_a_report_is_ok(monkeypatch, tmp_path):
+    from app.adapters import gitleaks
+
+    _pretend_available(monkeypatch, gitleaks.GitleaksAdapter)
+    monkeypatch.setattr(gitleaks, "run_command",
+                        lambda args, **kw: CommandResult(0, "", ""))
+    assert gitleaks.GitleaksAdapter().scan(tmp_path).status == ToolStatus.OK
+
+
+def test_osv_lockfile_it_could_not_read_is_incomplete(monkeypatch, tmp_path):
+    """Measured: one good and one malformed lockfile -> exit 127, JSON for the
+    good one, the other named only on stderr."""
+    from app.adapters import osv_scanner
+
+    root = str(tmp_path).strip("/")
+    stderr = (
+        "End status: 1 dirs visited, 3 inodes visited\n"
+        f"Error during extraction: (extracting as javascript/packagelockjson) "
+        f"{root}/b/package-lock.json: could not extract: invalid character 'n' "
+        "looking for beginning of object key string\n")
+    _pretend_available(monkeypatch, osv_scanner.OsvScannerAdapter)
+    monkeypatch.setattr(osv_scanner, "run_command",
+                        lambda args, **kw: CommandResult(127, '{"results": []}', stderr))
+    result = osv_scanner.OsvScannerAdapter().scan(tmp_path)
+
+    assert result.status == ToolStatus.INCOMPLETE
+    assert len(result.skipped) == 1
+    assert result.skipped[0].startswith("b/package-lock.json: could not extract")
+
+
+def test_osv_with_no_readable_lockfile_stays_not_applicable(monkeypatch, tmp_path):
+    """The existing decision stands: nothing readable is 'nothing to scan',
+    explained by the hint, not an incomplete scan."""
+    from app.adapters import osv_scanner
+
+    (tmp_path / "package-lock.json").write_text("{ not json")
+    _pretend_available(monkeypatch, osv_scanner.OsvScannerAdapter)
+    monkeypatch.setattr(osv_scanner, "run_command",
+                        lambda args, **kw: CommandResult(128, "", "No package sources found"))
+    assert osv_scanner.OsvScannerAdapter().scan(tmp_path).status == ToolStatus.NOT_APPLICABLE
+
+
+def test_trivy_file_it_could_not_parse_is_incomplete(monkeypatch, tmp_path):
+    """Measured: rc 0, no results, and with --quiet not a word on stderr."""
+    from app.adapters import trivy
+
+    calls = []
+    stderr = (
+        "2026-09-25T13:01:44Z\tDEBUG\tParsed severities\n"
+        '2026-09-25T13:01:45Z\tDEBUG\tWalk error\tfile_path="package-lock.json" '
+        'err="parse error: failed to parse package-lock.json: decode error"\n')
+
+    def fake_run(args, **kw):
+        calls.append(args)
+        return CommandResult(0, "", stderr)
+
+    _pretend_available(monkeypatch, trivy.TrivyAdapter)
+    monkeypatch.setattr(trivy, "run_command", fake_run)
+    result = trivy.TrivyAdapter().scan(tmp_path)
+
+    assert result.status == ToolStatus.INCOMPLETE
+    assert result.skipped == [
+        "package-lock.json: parse error: failed to parse package-lock.json: decode error"]
+    # --quiet silences the only signal there is.
+    assert "--debug" in calls[0] and "--quiet" not in calls[0]
+
+
+def test_trivy_failure_reports_the_real_reason_not_debug_noise(monkeypatch, tmp_path):
+    from app.adapters import trivy
+
+    stderr = ("2026-09-25T13:01:44Z\tDEBUG\tcache dir\n"
+              "2026-09-25T13:01:45Z\tFATAL\tinit error: DB error: failed to download\n")
+    _pretend_available(monkeypatch, trivy.TrivyAdapter)
+    monkeypatch.setattr(trivy, "run_command",
+                        lambda args, **kw: CommandResult(1, "", stderr))
+    result = trivy.TrivyAdapter().scan(tmp_path)
+    assert result.status == ToolStatus.ERROR
+    assert "failed to download" in result.error
+
+
+def test_skipped_list_is_bounded(monkeypatch, tmp_path):
+    from app.adapters import base, bearer
+
+    stderr = "".join(f"DBG failed to scan file f{i}.js: deadline process=w\n"
+                     for i in range(500))
+    _pretend_available(monkeypatch, bearer.BearerAdapter)
+    monkeypatch.setattr(bearer, "run_command",
+                        lambda args, **kw: CommandResult(0, "{}", stderr))
+    result = bearer.BearerAdapter().scan(tmp_path)
+    assert len(result.skipped) == base.MAX_SKIPPED
+    assert "500 item(s)" in result.message
+
+
+def test_mcp_does_not_report_an_unfinished_tool_as_ok():
+    """Placeholders are seeded with status ok; reported raw, a queued scanner
+    read as a clean one."""
+    from app import mcp
+    from app.models import ToolPhase, ToolResult
+
+    pending = ToolResult(tool="bearer", kind=ToolKind.SAST,
+                         status=ToolStatus.OK, phase=ToolPhase.PENDING)
+    running = pending.model_copy(update={"phase": ToolPhase.RUNNING})
+    done = pending.model_copy(update={"phase": ToolPhase.FINISHED})
+    assert mcp._tool_state(pending)["status"] == "pending"
+    assert mcp._tool_state(running)["status"] == "running"
+    assert mcp._tool_state(done)["status"] == "ok"
+
+
+def test_mcp_shows_what_an_incomplete_tool_left_unread():
+    from app import mcp
+    from app.models import ToolPhase, ToolResult
+
+    r = ToolResult(tool="bearer", kind=ToolKind.SAST, status=ToolStatus.INCOMPLETE,
+                   phase=ToolPhase.FINISHED, skipped=["renderer/app.js: deadline"],
+                   message="1 item(s) were not fully analysed")
+    state = mcp._tool_state(r)
+    assert state["status"] == "incomplete"
+    assert state["not_analysed"] == ["renderer/app.js: deadline"]
+
+
+def test_job_summary_counts_incomplete_tools_apart():
+    from app.models import Job, ScanTarget, ToolResult
+
+    job = Job(id="x", target=ScanTarget(kind="upload", display="x.zip"))
+    job.results = {
+        "semgrep": ToolResult(tool="semgrep", kind=ToolKind.SAST, status=ToolStatus.OK),
+        "bearer": ToolResult(tool="bearer", kind=ToolKind.SAST,
+                             status=ToolStatus.INCOMPLETE),
+    }
+    job.compute_summary()
+    assert job.summary["tools_run"] == 1
+    assert job.summary["tools_incomplete"] == 1
+
+
+def test_ui_knows_the_incomplete_status():
+    app_js = _read("app/static/app.js")
+    i18n = _read("app/static/i18n.js")
+    css = _read("app/static/style.css")
+    assert 'incomplete: "tstat.incomplete"' in app_js
+    assert i18n.count('"tstat.incomplete":') == 2          # both languages
+    assert i18n.count('"tstat.incompleteHint":') == 2
+    assert ".tstat.incomplete" in css

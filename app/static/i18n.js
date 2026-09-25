@@ -69,6 +69,8 @@ const DICT = {
     "tstat.unavailable": "未安裝",
     "tstat.not_applicable": "不適用",
     "tstat.ok": "完成",
+    "tstat.incomplete": "未完整",
+    "tstat.incompleteHint": "{n} 個檔案未分析完（{first}），這些檔案中的問題可能未被找出",
     "tstat.notApplicableFallback": "此工具在這個專案沒有可掃描的內容",
     "findings.count": "{n} 個發現",
 
@@ -519,6 +521,8 @@ const DICT = {
     "tstat.unavailable": "unavailable",
     "tstat.not_applicable": "not applicable",
     "tstat.ok": "ok",
+    "tstat.incomplete": "incomplete",
+    "tstat.incompleteHint": "{n} file(s) not fully analysed ({first}); problems in them may be missing",
     "tstat.notApplicableFallback": "nothing to scan for this tool",
     "findings.count": "{n} findings",
 

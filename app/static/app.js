@@ -41,7 +41,8 @@ function localReason(name, fallback) {
 }
 function statusLabel(s) {
   const known = { ok: "tstat.ok", unavailable: "tstat.unavailable",
-                  not_applicable: "tstat.not_applicable" };
+                  not_applicable: "tstat.not_applicable",
+                  incomplete: "tstat.incomplete" };
   return known[s] ? t(known[s]) : s;
 }
 
@@ -2197,6 +2198,12 @@ function renderToolRows(results) {
     row.appendChild(el("span", "tstat " + r.status, statusLabel(r.status)));
     if (r.status === "ok") {
       row.appendChild(el("span", "thint", t("findings.count", { n: r.summary.total || 0 })));
+      row.appendChild(el("span", "telapsed", elapsed(r.duration_ms || 0)));
+    } else if (r.status === "incomplete") {
+      // Findings still count; the hint says what they cannot vouch for.
+      const skipped = r.skipped || [];
+      row.appendChild(el("span", "thint",
+        t("tstat.incompleteHint", { n: skipped.length, first: skipped[0] || "" })));
       row.appendChild(el("span", "telapsed", elapsed(r.duration_ms || 0)));
     } else if (r.status === "unavailable") {
       row.appendChild(el("span", "thint", r.install_hint || ""));

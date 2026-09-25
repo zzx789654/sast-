@@ -1,5 +1,13 @@
 # lessons — SAST Studio
 
+## [2026-09-25] 第 41 輪 — 掃描器「沒分析卻回報 ok」
+
+- **根因**：bearer 單檔分析超時會略過該檔，只寫在 debug log，rc 0。99 KB 的 app.js 在 2 核 VM 上卡在期限邊緣，所以結果時有時無。
+- **擴大檢查**：六個工具實測，五個都有同類行為：semgrep 的 errors、trivy 的 debug Walk error、osv 的 stderr 解析錯誤、gitleaks 把 rc 1 當沒洩漏。
+- **修法**：新增 incomplete 狀態，由各 adapter 讀工具自己的訊號；MCP 不再把未完成的工具報成 ok。
+- **教訓**：exit code 0 只代表程式正常結束，不代表輸入都被分析了。每個掃描器都要問「它略過東西時會在哪裡說」，而答案常常是 debug log。第一次懷疑是 git 與 ZIP 的差異，實驗三種配置結果都一樣才排除——先重現再下結論。
+- **教訓**：`--quiet` 關掉的可能正是唯一的失敗訊號（trivy）。
+
 ## [2026-09-25] 第 40 輪 — MCP 掃描地端檔案（兩段式 ZIP 上傳）
 
 - **需求**：MCP 只能掃公開 git URL，未推送的修補無法重掃。

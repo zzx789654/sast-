@@ -8,12 +8,13 @@ keyed by severity, each holding a list of findings.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from ..config import config
 from ..inventory import has_language
 from ..models import Finding, Severity, ToolKind
-from .base import BaseAdapter, run_command
+from .base import BaseAdapter, Partial, run_command
 
 _SEVERITY_KEYS = {
     "critical": Severity.CRITICAL,
@@ -50,7 +51,19 @@ class BearerAdapter(BaseAdapter):
             return False, ""
         return True, "bearer " + (res.stdout or res.stderr).strip().splitlines()[0]
 
-    def _execute(self, target_dir: Path) -> list[Finding]:
+    def _execute(self, target_dir: Path) -> Partial:
+        findings, failed = self._run_once(target_dir)
+        if failed:
+            # Measured: a file that misses Bearer's per-file deadline on a
+            # busy host (six scanners on two CPUs) is analysed fine once the
+            # load has moved on. One retry, not a loop.
+            self.report_stage("retrying skipped files")
+            retry_findings, retry_failed = self._run_once(target_dir)
+            if len(retry_failed) < len(failed):
+                findings, failed = retry_findings, retry_failed
+        return Partial(findings, failed)
+
+    def _run_once(self, target_dir: Path) -> tuple[list[Finding], list[str]]:
         res = run_command(
             [
                 self.binary, "scan", str(target_dir),
@@ -58,25 +71,49 @@ class BearerAdapter(BaseAdapter):
                 "--quiet",
                 "--exit-code", "0",
                 "--force",
+                # A file Bearer gives up on is reported only at debug level;
+                # at the default level the run exits 0 as if it were clean.
+                "--log-level", "debug",
             ],
             timeout=config.TOOL_TIMEOUT,
         )
         if res.timed_out:
             raise TimeoutError("bearer timed out")
+        failed = _failed_files(res.stderr)
         if not res.stdout.strip():
             # No findings at all prints nothing on some versions.
             if res.returncode == 0:
-                return []
-            raise RuntimeError(res.stderr.strip()[:500] or "no output from bearer")
+                return [], failed
+            raise RuntimeError(_last_error(res.stderr) or "no output from bearer")
         try:
             data = json.loads(res.stdout)
         except json.JSONDecodeError:
             # locate the JSON object if the CLI prefixes progress text
             start = res.stdout.find("{")
             if start < 0:
-                return []
+                return [], failed
             data = json.loads(res.stdout[start:])
-        return _parse(data, target_dir)
+        return _parse(data, target_dir), failed
+
+
+# "DBG failed to scan file renderer/app.js: javascript scan failed: context
+# deadline exceeded process=worker-0" -- the progress bar shares the line.
+_FAILED_FILE = re.compile(r"failed to scan file (.+?): (.+?)(?: process=\S+)?\s*$")
+
+
+def _failed_files(stderr: str) -> list[str]:
+    seen: dict[str, str] = {}
+    for line in stderr.splitlines():
+        m = _FAILED_FILE.search(line)
+        if m:
+            seen.setdefault(m.group(1), m.group(2).strip())
+    return [f"{path}: {reason}" for path, reason in seen.items()]
+
+
+def _last_error(stderr: str) -> str:
+    """The last non-debug line: with debug on, the reason is not the first line."""
+    lines = [l for l in stderr.strip().splitlines() if l.strip() and " DBG " not in l]
+    return (lines[-1] if lines else "")[:500]
 
 
 def _parse(data: dict, target_dir: Path) -> list[Finding]:

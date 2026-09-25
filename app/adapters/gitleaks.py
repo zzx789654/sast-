@@ -6,6 +6,7 @@ web UI can show "a secret was found here" without re-leaking it.
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 from pathlib import Path
 
@@ -51,10 +52,12 @@ class GitleaksAdapter(BaseAdapter):
             if res.timed_out:
                 raise TimeoutError("gitleaks timed out")
             if not report.exists():
-                # older/newer CLIs differ; treat a clean run with no report as no leaks
-                if res.returncode in (0, 1):
+                # --exit-code 0 makes leaks exit 0, so any other code here is
+                # gitleaks failing. Measured: a source it cannot read exits 1
+                # with no report, which used to read as "no leaks".
+                if res.returncode == 0:
                     return []
-                raise RuntimeError(res.stderr.strip()[:500] or "gitleaks failed")
+                raise RuntimeError(_plain(res.stderr)[:500] or "gitleaks failed")
             raw = report.read_text(encoding="utf-8").strip()
             if not raw:
                 return []
@@ -98,3 +101,11 @@ def _rel(path: str, target_dir: Path) -> str:
         return str(Path(path).resolve().relative_to(target_dir.resolve()))
     except (ValueError, OSError):
         return path
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """gitleaks colours its log; the colour codes are noise in an error message."""
+    return _ANSI.sub("", text).strip()

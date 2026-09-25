@@ -27,6 +27,22 @@ class NotApplicableError(Exception):
 
 
 @dataclass
+class Partial:
+    """What `_execute` returns when the tool itself reported gaps.
+
+    Returned rather than stored on the adapter: adapters are shared by every
+    scan in flight, so anything kept on `self` belongs to whichever scan wrote
+    it last.
+    """
+    findings: list[Finding]
+    skipped: list[str]           # "path: reason", in the tool's own words
+
+
+#: Enough to see which files and why; a pathological run can report thousands.
+MAX_SKIPPED = 50
+
+
+@dataclass
 class CommandResult:
     returncode: int
     stdout: str
@@ -116,7 +132,7 @@ class BaseAdapter:
         return True, ""
 
     # ---- execution (implemented per tool) -----------------------------
-    def _execute(self, target_dir: Path) -> list[Finding]:
+    def _execute(self, target_dir: Path) -> "list[Finding] | Partial":
         raise NotImplementedError
 
     # ---- progress reporting --------------------------------------------
@@ -164,7 +180,18 @@ class BaseAdapter:
         start = time.monotonic()
         self.report_stage(self.first_stage)
         try:
-            result.findings = self._execute(target_dir)
+            out = self._execute(target_dir)
+            if isinstance(out, Partial):
+                result.findings = out.findings
+                if out.skipped:
+                    # The findings stand; what is missing is the rest.
+                    result.status = ToolStatus.INCOMPLETE
+                    result.skipped = out.skipped[:MAX_SKIPPED]
+                    result.message = (
+                        f"{len(out.skipped)} item(s) were not fully analysed, "
+                        "so findings in them may be missing")
+            else:
+                result.findings = out
         except NotApplicableError as exc:
             # Nothing to scan is not a failure; it is the same outcome as
             # applicability() returning False, just discovered later.

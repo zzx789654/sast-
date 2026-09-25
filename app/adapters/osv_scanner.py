@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from ..config import config
 from ..models import Finding, Severity, ToolKind
-from .base import (BaseAdapter, NotApplicableError, run_command,
+from .base import (BaseAdapter, NotApplicableError, Partial, run_command,
                    severity_from_cvss)
 
 # Lockfiles OSV-Scanner understands; presence of any makes it applicable.
@@ -50,7 +51,7 @@ class OsvScannerAdapter(BaseAdapter):
     #: scanner broke; what it means is that there was nothing to scan.
     _NO_SOURCES = 128
 
-    def _execute(self, target_dir: Path) -> list[Finding]:
+    def _execute(self, target_dir: Path) -> "list[Finding] | Partial":
         # The findings here are vulnerabilities; a package with no advisory
         # never becomes one. The full inventory with licences is a different
         # question, answered in app/sbom.py, so the extra flags belong there
@@ -69,7 +70,32 @@ class OsvScannerAdapter(BaseAdapter):
             if res.returncode == self._NO_SOURCES:
                 raise NotApplicableError(_no_sources_hint(target_dir))
             raise RuntimeError(res.stderr.strip()[:500] or "no output from osv-scanner")
-        return _parse(json.loads(res.stdout), target_dir)
+        # Some lockfiles read, others did not: osv-scanner prints results for
+        # the ones it read and names the rest only on stderr. Measured with
+        # one good and one malformed package-lock.json: exit 127, JSON for the
+        # good one, and nothing in the output about the other.
+        return Partial(_parse(json.loads(res.stdout), target_dir),
+                       _unread_lockfiles(res.stderr, target_dir))
+
+
+# "Error during extraction: (extracting as javascript/packagelockjson)
+# tmp/exp/b/package-lock.json: could not extract: invalid character ..."
+_EXTRACT_ERROR = re.compile(
+    r"Error during extraction: \(extracting as [^)]*\) (.+?): (.+)$")
+
+
+def _unread_lockfiles(stderr: str, target_dir: Path) -> list[str]:
+    root = str(target_dir).strip("/")
+    out = []
+    for line in stderr.splitlines():
+        m = _EXTRACT_ERROR.search(line.strip())
+        if m:
+            # osv-scanner prints the path without its leading slash.
+            path = m.group(1).strip("/")
+            if path.startswith(root + "/"):
+                path = path[len(root) + 1:]
+            out.append(f"{path}: {m.group(2)[:200]}")
+    return out
 
 
 def _no_sources_hint(target_dir: Path) -> str:

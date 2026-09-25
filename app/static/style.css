@@ -246,6 +246,8 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 .tstat.ok { background: rgba(47,143,91,.15); color: var(--ok); }
 .tstat.unavailable, .tstat.not_applicable { background: rgba(138,145,156,.18); color: var(--unknown); }
 .tstat.error, .tstat.timeout { background: rgba(179,18,58,.15); color: var(--bad); }
+/* Ran, but left some input unread: not a failure, not a clean bill either. */
+.tstat.incomplete { background: rgba(201,138,0,.16); color: var(--med); }
 .tool-row .thint { color: var(--muted); font-size: .78rem; }
 
 .filters { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: .7rem; }

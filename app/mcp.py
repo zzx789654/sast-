@@ -358,6 +358,26 @@ def _may_read(job, user) -> bool:
     return job.owner == user.username
 
 
+def _tool_state(result) -> dict:
+    """One tool's state as a caller should read it.
+
+    A tool that has not finished is seeded with status "ok" so the UI can
+    lay out its row; reported as-is, a queued scanner read as a clean one.
+    """
+    from .models import ToolPhase
+
+    finished = result.phase == ToolPhase.FINISHED
+    state = {
+        "status": result.status.value if finished else result.phase.value,
+        "findings": len(result.findings),
+        "error": result.error or None,
+    }
+    if result.skipped:
+        state["message"] = result.message
+        state["not_analysed"] = result.skipped
+    return state
+
+
 def _read_scan(args: dict, user=None) -> dict:
     scan_id = (args.get("scan_id") or "").strip()
     if not scan_id:
@@ -404,9 +424,7 @@ def _read_scan(args: dict, user=None) -> dict:
         "progress": job.progress,
         "verdict": evaluation.get("decision"),
         "summary": job.summary,
-        "tools": {n: {"status": r.status.value, "findings": len(r.findings),
-                      "error": r.error or None}
-                  for n, r in job.results.items()},
+        "tools": {n: _tool_state(r) for n, r in job.results.items()},
         "findings": findings,
         "note": ("a verdict labels this scan; it does not block anything. "
                  "Scanners report patterns, so check the code before acting."),

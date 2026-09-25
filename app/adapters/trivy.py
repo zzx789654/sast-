@@ -7,11 +7,12 @@ lineup — Infrastructure-as-Code misconfigurations (Dockerfile/K8s/Terraform).
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from ..config import config
 from ..models import Finding, Severity, ToolKind
-from .base import BaseAdapter, run_command
+from .base import BaseAdapter, Partial, run_command
 
 _SEVERITY_MAP = {
     "CRITICAL": Severity.CRITICAL,
@@ -33,11 +34,14 @@ class TrivyAdapter(BaseAdapter):
     first_stage = "vulndb"         # may download the vulnerability DB
     requirement = "any project (deps, secrets, IaC configs)"
 
-    def _execute(self, target_dir: Path) -> list[Finding]:
+    def _execute(self, target_dir: Path) -> Partial:
         args = [
             self.binary, "fs",
             "--format", "json",
-            "--quiet",
+            # Not --quiet: a file trivy cannot parse (a malformed lockfile)
+            # is reported only as a debug-level "Walk error", and --quiet
+            # silences even that. Measured: rc 0, no results, empty stderr.
+            "--debug",
             "--scanners", "vuln,secret,misconfig",
         ]
         # Custom Rego checks live in one directory; trivy needs the directory
@@ -50,11 +54,32 @@ class TrivyAdapter(BaseAdapter):
         res = run_command(args, timeout=config.TOOL_TIMEOUT)
         if res.timed_out:
             raise TimeoutError("trivy timed out")
+        unread = _walk_errors(res.stderr)
         if not res.stdout.strip():
             if res.returncode == 0:
-                return []
-            raise RuntimeError(res.stderr.strip()[:500] or "no output from trivy")
-        return _parse(json.loads(res.stdout), target_dir)
+                return Partial([], unread)
+            raise RuntimeError(_last_error(res.stderr) or "no output from trivy")
+        return Partial(_parse(json.loads(res.stdout), target_dir), unread)
+
+
+# 2026-09-25T13:01:45Z  DEBUG  Walk error  file_path="package-lock.json" err="parse error: ..."
+_WALK_ERROR = re.compile(r'Walk error\s+file_path="([^"]*)"\s+err="(.*)"\s*$')
+
+
+def _walk_errors(stderr: str) -> list[str]:
+    out = []
+    for line in stderr.splitlines():
+        m = _WALK_ERROR.search(line)
+        if m:
+            out.append(f"{m.group(1)}: {m.group(2)[:200]}")
+    return out
+
+
+def _last_error(stderr: str) -> str:
+    """With --debug on, the reason is among the last non-debug lines."""
+    lines = [l for l in stderr.strip().splitlines()
+             if l.strip() and "\tDEBUG\t" not in l]
+    return (lines[-1] if lines else "")[:500]
 
 
 def _parse(data: dict, target_dir: Path) -> list[Finding]:

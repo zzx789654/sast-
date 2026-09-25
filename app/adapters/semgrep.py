@@ -6,7 +6,7 @@ from pathlib import Path
 
 from ..config import config
 from ..models import Finding, Severity, ToolKind
-from .base import BaseAdapter, run_command
+from .base import BaseAdapter, Partial, run_command
 
 _SEVERITY_MAP = {
     "ERROR": Severity.HIGH,
@@ -30,7 +30,7 @@ class SemgrepAdapter(BaseAdapter):
             return False, ""
         return True, (res.stdout or res.stderr).strip().splitlines()[0]
 
-    def _execute(self, target_dir: Path) -> list[Finding]:
+    def _execute(self, target_dir: Path) -> Partial:
         args = [self.binary, "scan"]
         # One --config per ruleset: semgrep unions them, so picking OWASP on
         # top of the default set adds rules rather than swapping them.
@@ -64,6 +64,7 @@ class SemgrepAdapter(BaseAdapter):
 
         data = json.loads(res.stdout)
         findings: list[Finding] = []
+        skipped = _coverage_gaps(data, target_dir)
         for item in data.get("results", []):
             extra = item.get("extra", {})
             meta = extra.get("metadata", {}) or {}
@@ -87,7 +88,36 @@ class SemgrepAdapter(BaseAdapter):
                            "snippet": _snippet(extra.get("lines"))},
                 )
             )
-        return findings
+        return Partial(findings, skipped)
+
+
+#: Skip reasons that mean "this file was meant to be scanned and was not".
+#: The rest (gitignore, .semgrepignore, binary, minified) are choices.
+_COVERAGE_SKIPS = {"exceeded_size_limit", "too_big",
+                   "analysis_failed_parser_or_internal_error"}
+
+
+def _coverage_gaps(data: dict, target_dir: Path) -> list[str]:
+    """Files semgrep says it did not fully analyse.
+
+    A rule that times out on a file (and, past --timeout-threshold, every
+    remaining rule on it) is reported only in `errors`, with exit code 0.
+    Measured: forcing a 1s timeout on a 100 KB file gave rc 0, zero results
+    and one Timeout error -- the same output as a clean file.
+    """
+    gaps: dict[str, set] = {}
+    for err in data.get("errors") or []:
+        path = err.get("path") or ((err.get("spans") or [{}])[0] or {}).get("file")
+        if not path:
+            continue            # a rule/config problem, not a file left unread
+        kind = err.get("type")
+        if isinstance(kind, list):
+            kind = kind[0] if kind else ""
+        gaps.setdefault(_relpath(path, target_dir), set()).add(str(kind or "error"))
+    for item in (data.get("paths") or {}).get("skipped") or []:
+        if isinstance(item, dict) and item.get("reason") in _COVERAGE_SKIPS:
+            gaps.setdefault(_relpath(item.get("path", ""), target_dir), set()).add(item["reason"])
+    return [f"{path}: {', '.join(sorted(kinds))}" for path, kinds in gaps.items()]
 
 
 def _as_list(value) -> list[str]:
