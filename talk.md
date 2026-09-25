@@ -266,3 +266,4 @@
 - **對照既有決議**：修改第 17 輪使用者定的固定判定規則——本次經使用者明確同意。High／密鑰→blocked、Medium→人工審查不變；新增一條。
 - **決議回應**：任一被要求的工具為 error／timeout／incomplete 時，原本會是 passed 的判定改為 manual_review（人工審查），並列出是哪個工具、為什麼；blocked 維持 blocked。unavailable（未安裝）與 not_applicable（無可掃內容）不算缺口。
 - **理由**：「沒有發現」只有在每個工具都看完時才代表「乾淨」；工具沒看完時交給人判斷。
+- **後續動作（#021 完成）**：d49d845、e8a3ff3 推送，CI 綠燈，部署 .145 healthy。上線實測：nessus-report 掃描判定 manual_review，並指出 bearer 未分析 renderer/app.js；修正前會是 passed、0 項。
