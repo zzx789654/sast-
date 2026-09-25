@@ -5427,3 +5427,86 @@ def test_ui_knows_the_incomplete_status():
     assert i18n.count('"tstat.incomplete":') == 2          # both languages
     assert i18n.count('"tstat.incompleteHint":') == 2
     assert ".tstat.incomplete" in css
+
+
+# ------------------------------------- a tool that did not finish is not a pass
+# User decision (talk.md #021): "nothing found" is clean only when every tool
+# looked at everything.
+def _job_with_statuses(statuses, severities=()):
+    from app.models import Job, ScanTarget, ToolResult
+
+    results = {}
+    for i, status in enumerate(statuses):
+        name = f"tool{i}"
+        results[name] = ToolResult(
+            tool=name, kind=ToolKind.SAST, status=status,
+            error="boom" if status == ToolStatus.ERROR else "",
+            message="1 item(s) were not fully analysed"
+                    if status == ToolStatus.INCOMPLETE else "",
+            skipped=["renderer/app.js: deadline"]
+                    if status == ToolStatus.INCOMPLETE else [])
+    results["tool0"].findings = [Finding(tool="tool0", rule_id=f"r{i}", severity=s)
+                                 for i, s in enumerate(severities)]
+    return Job(id="cov", target=ScanTarget(kind="upload", display="x.zip"),
+               results=results)
+
+
+@pytest.mark.parametrize("statuses,severities,expected", [
+    # Nothing found, but one tool did not finish -> a person decides.
+    ([ToolStatus.OK, ToolStatus.INCOMPLETE], [], "manual_review"),
+    ([ToolStatus.OK, ToolStatus.ERROR], [], "manual_review"),
+    ([ToolStatus.OK, ToolStatus.TIMEOUT], [Severity.LOW], "manual_review"),
+    # Every tool failed: this used to pass.
+    ([ToolStatus.ERROR, ToolStatus.ERROR], [], "manual_review"),
+    # A High still blocks; a gap does not soften it.
+    ([ToolStatus.OK, ToolStatus.INCOMPLETE], [Severity.HIGH], "blocked"),
+    # Not installed / nothing to scan are stated facts, not gaps.
+    ([ToolStatus.OK, ToolStatus.UNAVAILABLE], [], "passed"),
+    ([ToolStatus.OK, ToolStatus.NOT_APPLICABLE], [], "passed"),
+    ([ToolStatus.OK, ToolStatus.OK], [Severity.LOW], "passed"),
+])
+def test_verdict_accounts_for_tools_that_did_not_finish(statuses, severities, expected):
+    from app.policies import evaluate_policy
+
+    assert evaluate_policy(_job_with_statuses(statuses, severities))["decision"] == expected
+
+
+def test_verdict_names_the_tools_that_did_not_finish():
+    from app.policies import evaluate_policy
+
+    ev = evaluate_policy(_job_with_statuses([ToolStatus.OK, ToolStatus.INCOMPLETE,
+                                    ToolStatus.ERROR], [Severity.HIGH]))
+    gaps = {g["tool"]: g for g in ev["coverage_gaps"]}
+    assert set(gaps) == {"tool1", "tool2"}
+    assert gaps["tool1"]["status"] == "incomplete"
+    assert gaps["tool1"]["not_analysed"] == ["renderer/app.js: deadline"]
+    assert gaps["tool2"]["reason"] == "boom"
+    assert ev["counts"]["coverage_gaps"] == 2
+    # Blocked scans list them too: there may be more to find than is shown.
+    assert ev["decision"] == "blocked"
+
+
+def test_rule_catalog_states_the_coverage_rule(client):
+    ids = [r["id"] for r in client.get("/api/policies").json()["rules"]]
+    assert "incomplete_coverage_review" in ids
+
+
+def test_mcp_result_carries_the_coverage_gaps(monkeypatch):
+    from app import mcp, orchestrator
+    from app.policies import evaluate_policy
+
+    mgr = orchestrator.JobManager()
+    monkeypatch.setattr(mcp, "manager", mgr)
+    job = _job_with_statuses([ToolStatus.OK, ToolStatus.INCOMPLETE])
+    job.policy_evaluation = evaluate_policy(job)
+    mgr._jobs[job.id] = job
+    data = json.loads(mcp._read_scan({"scan_id": job.id})["content"][0]["text"])
+    assert data["verdict"] == "manual_review"
+    assert data["coverage_gaps"][0]["tool"] == "tool1"
+
+
+def test_ui_explains_a_review_caused_by_coverage():
+    app_js = _read("app/static/app.js")
+    i18n = _read("app/static/i18n.js")
+    assert "coverage_gaps" in app_js
+    assert i18n.count('"verdict.coverageGaps":') == 2

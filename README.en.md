@@ -265,7 +265,13 @@ rule is stated above the scan button rather than hidden in a settings panel.
 | Critical or High severity | **must not go live** |
 | A leaked secret, at any severity | **must not go live** |
 | Medium severity | **needs a reviewer** |
-| Low, informational, or nothing | **passes** |
+| A tool failed, timed out or **left files unread** (`incomplete`) | **needs a reviewer**, with the tool and the files named |
+| Low, informational, or nothing -- **and every tool finished** | **passes** |
+
+"Incomplete" means the tool ran but said itself that some input went unanalysed
+(bearer giving up on a file at its deadline, trivy unable to parse a lockfile).
+Each of those tools exits normally when it happens, which used to read as "0
+findings" and pass. Not installed and nothing-to-scan are not gaps.
 
 Two things about this rule are easy to misread, so they are worth stating
 plainly:

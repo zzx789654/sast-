@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .models import Finding, Job, Severity
+from .models import Finding, Job, Severity, ToolStatus
 
 # Severity is judged on the combined findings of every tool that ran, never on
 # one tool in particular. A single High from any of them fails the scan.
@@ -21,11 +21,19 @@ from .models import Finding, Job, Severity
 #   critical / high  -> blocked        (must not go live)
 #   medium           -> manual_review  (a person decides)
 #   low / info / none-> passed
+#   ...unless a tool did not finish looking -> manual_review
 #
 # Secrets are treated as blocking whatever severity the tool gave them: a
 # leaked credential is already public, and grading it does not change that.
 BLOCKING = (Severity.CRITICAL, Severity.HIGH)
 REVIEW = (Severity.MEDIUM,)
+
+# "No findings" means clean only if every tool looked at everything. A tool
+# that failed, ran out of time or left files unread cannot vouch for what it
+# did not see, so a verdict that would pass goes to a person instead. Not
+# installed and nothing-to-scan are not gaps: both are facts about the setup
+# or the project, and the tool said so plainly. (User decision, talk.md #021.)
+COVERAGE_GAPS = (ToolStatus.ERROR, ToolStatus.TIMEOUT, ToolStatus.INCOMPLETE)
 
 # Which tools can produce each kind of finding. Shown in the UI so it is clear
 # the rule spans all tools rather than belonging to one of them.
@@ -49,6 +57,12 @@ RULE_CATALOG = [
      "effect": "manual_review",
      "sources": SEVERITY_SOURCES,
      "counter": "medium"},
+    {"id": "incomplete_coverage_review",
+     "trigger": "tools:incomplete",
+     "effect": "manual_review",
+     "sources": ["semgrep", "bearer", "trivy", "npm_audit", "osv_scanner",
+                 "gitleaks"],
+     "counter": "coverage_gaps"},
     {"id": "low_passes",
      "trigger": "severity:low_or_none",
      "effect": "passed",
@@ -108,13 +122,16 @@ def evaluate_policy(job: Job, triage: "dict | None" = None) -> dict[str, Any]:
     blocking = list(blocking_sev)
     blocking.extend(f for f in secrets if f not in blocking)
 
+    gaps = [r for r in job.results.values() if r.status in COVERAGE_GAPS]
+
     if blocking:
         decision = "blocked"
-    elif medium:
+    elif medium or gaps:
         decision = "manual_review"
     else:
-        # Low, info or nothing at all. Zero findings passes: a clean project is
-        # not less safe than one with a single low-severity note.
+        # Low, info or nothing at all, from tools that all finished. Zero
+        # findings passes: a clean project is not less safe than one with a
+        # single low-severity note.
         decision = "passed"
 
     return {
@@ -122,6 +139,14 @@ def evaluate_policy(job: Job, triage: "dict | None" = None) -> dict[str, Any]:
         "blocking_findings": [_finding_ref(f) for f in blocking],
         "manual_review_findings": [_finding_ref(f) for f in medium]
                                   if decision == "manual_review" else [],
+        # Listed whatever the decision: a blocked scan with a tool that did
+        # not finish may have more to find than it shows.
+        "coverage_gaps": [
+            {"tool": r.tool, "status": r.status.value,
+             "reason": (r.error or r.message)[:200],
+             "not_analysed": r.skipped[:5]}
+            for r in gaps
+        ],
         "counts": {
             "critical": sum(1 for f in findings if f.severity == Severity.CRITICAL),
             "high": sum(1 for f in findings if f.severity == Severity.HIGH),
@@ -129,6 +154,7 @@ def evaluate_policy(job: Job, triage: "dict | None" = None) -> dict[str, Any]:
             "medium": len(medium),
             "low": len(low),
             "secrets": len(secrets),
+            "coverage_gaps": len(gaps),
             "total": len(findings),
             # Both numbers, always: a verdict reached by setting findings
             # aside should never look like a verdict reached by having none.

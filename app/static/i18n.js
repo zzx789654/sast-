@@ -50,7 +50,7 @@ const DICT = {
     "status.cancelled": "已取消",
 
     // scan policy (掃描政策)
-    "verdict.rule": "判定規則（固定）：任一工具發現「高」以上風險或外洩密鑰 → 不可上線；「中」風險 → 需人員審查；僅「低」或無發現 → 通過。判定是這次掃描的結論標記，不會中止掃描或阻擋部署。",
+    "verdict.rule": "判定規則（固定）：任一工具發現「高」以上風險或外洩密鑰 → 不可上線；「中」風險，或任一工具失敗、逾時、未完整分析 → 需人員審查；僅「低」或無發現且每個工具都完整跑完 → 通過。判定是這次掃描的結論標記，不會中止掃描或阻擋部署。",
     "policy.gate": "判定：{decision}",
     "policy.decision.passed": "通過",
     "policy.decision.manual_review": "需人工審查",
@@ -299,6 +299,7 @@ const DICT = {
     "policy.f.lockout": "鎖定持續分鐘",
     "policy.f.tokenDays": "API 權杖有效天數（0 = 不過期）",
     "verdict.dismissed": "已排除 {n} 項（共 {total} 項）",
+    "verdict.coverageGaps": "{n} 個工具未完整分析：{tools}",
     "triage.unset": "未判定",
     "triage.real": "確認為問題",
     "triage.falsePositive": "誤報",
@@ -505,7 +506,7 @@ const DICT = {
     "status.error": "error",
     "status.cancelled": "cancelled",
 
-    "verdict.rule": "Fixed rule: a High or Critical finding from any tool, or a leaked secret, means this must not go live. A Medium finding needs a reviewer. Low findings, or none, pass. The verdict labels this scan; it does not stop a build or a deployment.",
+    "verdict.rule": "Fixed rule: a High or Critical finding from any tool, or a leaked secret, means this must not go live. A Medium finding, or a tool that failed, timed out or left files unread, needs a reviewer. Low findings, or none, pass only when every tool finished. The verdict labels this scan; it does not stop a build or a deployment.",
     "policy.gate": "Gate: {decision}",
     "policy.decision.passed": "passed",
     "policy.decision.manual_review": "manual review",
@@ -750,6 +751,7 @@ const DICT = {
     "policy.f.lockout": "Lockout lasts (minutes)",
     "policy.f.tokenDays": "API tokens expire after (days, 0 = never)",
     "verdict.dismissed": "{n} of {total} findings set aside",
+    "verdict.coverageGaps": "{n} tool(s) did not finish: {tools}",
     "triage.unset": "not judged",
     "triage.real": "real issue",
     "triage.falsePositive": "false positive",

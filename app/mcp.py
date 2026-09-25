@@ -423,6 +423,9 @@ def _read_scan(args: dict, user=None) -> dict:
         "target": job.target.display,
         "progress": job.progress,
         "verdict": evaluation.get("decision"),
+        # Tools that did not finish looking; why a clean-looking scan is
+        # "manual_review" rather than "passed".
+        "coverage_gaps": evaluation.get("coverage_gaps") or [],
         "summary": job.summary,
         "tools": {n: _tool_state(r) for n, r in job.results.items()},
         "findings": findings,

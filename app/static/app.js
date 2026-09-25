@@ -1892,6 +1892,14 @@ function renderJob(job) {
         t("verdict.dismissed", { n: counts.dismissed,
                                  total: counts.total_before_triage })));
     }
+    // Why a scan with nothing to show is not a pass: say which tool did not
+    // finish, so "review" does not read as a finding nobody can see.
+    const gaps = job.policy_evaluation.coverage_gaps || [];
+    if (gaps.length) {
+      meta.appendChild(el("span", "dismissed-note",
+        t("verdict.coverageGaps", { n: gaps.length,
+          tools: gaps.map((g) => g.tool + " (" + statusLabel(g.status) + ")").join(", ") })));
+    }
   }
   const inv = job.inventory;
   if (inv && inv.total_files) {
