@@ -30,9 +30,8 @@ class NotApplicableError(Exception):
 class Partial:
     """What `_execute` returns when the tool itself reported gaps.
 
-    Returned rather than stored on the adapter: adapters are shared by every
-    scan in flight, so anything kept on `self` belongs to whichever scan wrote
-    it last.
+    Returned rather than stored on the adapter, so the result travels with the
+    call that produced it and not with whatever instance happened to run it.
     """
     findings: list[Finding]
     skipped: list[str]           # "path: reason", in the tool's own words
@@ -154,8 +153,8 @@ class BaseAdapter:
     def scan(self, target_dir: Path,
              custom_rules: "list[Path] | None" = None,
              rulesets: "list[str] | None" = None) -> ToolResult:
-        # Passed down rather than read from config: adapters run concurrently,
-        # so a shared field would let one scan's rules affect another.
+        # Passed down rather than read from config, and safe to keep on self
+        # only because get_adapters() hands every scan its own instances.
         self.custom_rules = list(custom_rules or [])
         self.rulesets = list(rulesets or [])
         result = ToolResult(tool=self.name, kind=self.kind, status=ToolStatus.OK)

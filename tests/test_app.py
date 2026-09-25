@@ -5510,3 +5510,59 @@ def test_ui_explains_a_review_caused_by_coverage():
     i18n = _read("app/static/i18n.js")
     assert "coverage_gaps" in app_js
     assert i18n.count('"verdict.coverageGaps":') == 2
+
+
+# ------------------------------------- each scan runs its own adapter objects
+def test_get_adapters_hands_out_fresh_instances():
+    from app.adapters import ADAPTERS, get_adapters
+
+    first, second = get_adapters(["semgrep"]), get_adapters(["semgrep"])
+    assert first[0] is not second[0]
+    assert all(a is not b for a, b in zip(get_adapters(), ADAPTERS))
+    assert [a.name for a in get_adapters()] == [a.name for a in ADAPTERS]
+
+
+def test_concurrent_scans_keep_their_own_custom_rules(monkeypatch, tmp_path):
+    """Scan A sets its rules, then probes the tool; scan B starts and
+    finishes meanwhile with other rules. A must still run its own.
+
+    With one shared instance B's rules replaced A's between the two steps:
+    A ran without its rule (or with B's, possibly already deleted).
+    """
+    import threading
+
+    from app.adapters import get_adapters, semgrep
+
+    rule_a, rule_b = tmp_path / "a.yml", tmp_path / "b.yml"
+    a_probing, b_done = threading.Event(), threading.Event()
+
+    def probe(self):
+        if [p.name for p in self.custom_rules] == ["a.yml"]:
+            a_probing.set()
+            assert b_done.wait(5)
+        return True, "test"
+
+    executed = []
+
+    def fake_run(args, **kw):
+        executed.append(args)
+        return CommandResult(0, '{"results": []}', "")
+
+    monkeypatch.setattr(semgrep.SemgrepAdapter, "probe", probe)
+    monkeypatch.setattr(semgrep.SemgrepAdapter, "applicability", lambda self, d: (True, ""))
+    monkeypatch.setattr(semgrep, "run_command", fake_run)
+
+    (scan_a,) = get_adapters(["semgrep"])
+    (scan_b,) = get_adapters(["semgrep"])
+    thread = threading.Thread(
+        target=lambda: scan_a.scan(tmp_path, [rule_a], ["p/owasp-top-ten"]))
+    thread.start()
+    assert a_probing.wait(5)
+    scan_b.scan(tmp_path, [rule_b], ["p/default"])
+    b_done.set()
+    thread.join(5)
+
+    b_args, a_args = executed          # B ran first, A after it
+    assert str(rule_b) in b_args and str(rule_a) not in b_args
+    assert str(rule_a) in a_args and str(rule_b) not in a_args
+    assert "p/owasp-top-ten" in a_args and "p/default" not in a_args
