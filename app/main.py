@@ -26,6 +26,7 @@ from .config import config
 from . import events
 from .inventory import inventory
 from .models import JobStatus, ScanTarget
+from .attack_surface import NOTE as ATTACK_SURFACE_NOTE
 from .orchestrator import manager
 from .source import SourceError, resolve_local_path, validate_git_url
 
@@ -1549,6 +1550,24 @@ async def export_packages_csv(request: Request, job_id: str) -> Response:
         headers={"Content-Disposition":
                  f'attachment; filename="sast-packages-{job.id}.csv"'},
     )
+
+
+@app.get("/api/scans/{job_id}/attack-surface.json")
+async def export_attack_surface(request: Request, job_id: str) -> JSONResponse:
+    """The attack surface map as a file, for whoever keeps the inventory."""
+    job = manager.get(job_id)
+    if job is None or not _may_see_scan(request, job):
+        raise HTTPException(404, "scan not found")
+    body = {
+        "scan_id": job.id,
+        "scanned_at": job.finished_at or job.created_at,
+        "target": job.target.display,
+        "note": ATTACK_SURFACE_NOTE,
+        **(job.attack_surface or {}),
+    }
+    return JSONResponse(body, headers={
+        "Content-Disposition":
+            f'attachment; filename="sast-attack-surface-{job.id}.json"'})
 
 
 @app.get("/api/scans/{job_id}")

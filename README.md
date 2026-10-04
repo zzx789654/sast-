@@ -42,11 +42,14 @@ SAST Studio 會同時跑 **Semgrep、Bearer、Trivy、npm audit、OSV-Scanner、
 | ![發現卡片：嚴重度、位置、CWE/OWASP、人工標記](docs/images/findings.png) | ![監控：掃描器版本與維護動作](docs/images/monitor.png) |
 | **設定 → Log（活動紀錄）** | **設定 → MCP** |
 | ![活動紀錄](docs/images/logs.png) | ![API 與 MCP 設定](docs/images/mcp.png) |
+| **攻擊面分頁：關聯圖** | **攻擊面分頁：心智圖** |
+| ![攻擊面關聯圖：前端檔案 → 端點 → 後端檔案 → 外部連線](docs/images/attack-surface.png) | ![攻擊面心智圖](docs/images/attack-surface-mind.png) |
 
 | 分頁 | 功能 |
 |---|---|
 | **掃描** | 選來源（上傳 zip／Git 網址／本機路徑）、勾選工具與 Semgrep 規則集、撰寫自訂規則，按下開始掃描 |
 | **報告** | 左邊是歷次掃描清單，右邊是選中那份的判定、嚴重度分佈、各工具結果、每筆發現卡片；可匯出 CSV 與 PDF |
+| **攻擊面** | 這份程式對外開了哪些端點、前端呼叫了什麼、連到哪些外部主機；以關聯圖／心智圖呈現，標出未偵測到認證、無人呼叫的端點與前端直連內網等風險（靜態推論，不影響判定） |
 | **監控** | 掃描器版本、Docker 容器效能與資源評估、維護動作（更新掃描器、重啟服務） |
 | **設定** | 帳號、API 權杖、密碼原則、MCP 設定、活動紀錄（Log）、掃描工具說明 |
 
@@ -337,6 +340,26 @@ docker compose up --build            # http://localhost:8080（nginx → FastAPI
 
 > 發現的內文來自掃描工具本身，多為英文原文；介面會補一行中文嚴重度說明。
 
+### 攻擊面（靜態盤點）
+
+每次掃描都會一併產生「攻擊面」：這份程式**對外開了哪些門、連去哪裡**。它和掃描器回答的是不同的問題——掃描器找「哪裡寫錯」，攻擊面列出「有哪些入口和連線」，讓審查者先看清全貌。
+
+| 盤點項目 | 來源 |
+|---|---|
+| 後端路由 | Python（FastAPI、Flask、Django，以 `ast` 解析，含 `APIRouter(prefix=)`、`include_router`、`Blueprint`、Django `include()`）、Express（含 `app.use('/prefix', router)` 跨檔）、Spring（類別層 `@RequestMapping` 前綴）、Laravel（`Route::prefix()->group`、`routes/api.php` 自動 `/api`） |
+| 認證偵測 | `Depends(get_current_user)`、`@login_required`、`@PreAuthorize`、`->middleware('auth')`、Express 中介層等；只回報「偵測到／未偵測到」 |
+| 前端呼叫 | `fetch`、`axios`、jQuery、`XMLHttpRequest`、`WebSocket`、`EventSource`、`/api/` 開頭的字串 |
+| 對外連線 | 程式碼與設定檔中的網址、內網 IP、雲端中繼資料位址、雲端儲存、資料庫連線字串（**帳密遮罩為 `***`**） |
+| 密鑰 | 沿用 Gitleaks 的結果（已遮罩），標出位於前端檔案的密鑰 |
+
+**標記**：未偵測到認證、無人呼叫（後端有但前端沒呼叫；專案沒有前端呼叫時不判斷）、未列於 API 文件（專案有 OpenAPI/Swagger 檔時）、後端找不到（前端呼叫的路徑在後端沒有對應）。**風險**：前端直連內網、雲端中繼資料、資料庫，或前端檔案含密鑰。
+
+**畫面**：上方是限制說明與數字卡片（點卡片可篩選），中間是**關聯圖**（前端檔案 → 端點 → 後端檔案 → 外部連線；點方塊只留下與它相連的線，沒有線連進來的端點就是沒人呼叫的端點；端點超過 60 個會依路徑前綴分組，點分組展開）或**心智圖**，下方是風險、端點與對外連線明細。報告頁另有「攻擊面摘要」卡片，所以匯出 PDF 會帶到。
+
+> **這是靜態分析的限制**：只讀程式碼、不執行系統、不發任何網路請求。偵測不到執行時才組出的網址（字串拼接、設定檔或環境變數）、第三方套件內部的連線、反射或動態註冊的路由、反向代理或 API Gateway 加上的路徑，以及實際流量。所有標記都是推論，請人工確認；**攻擊面不影響判定**。
+
+安全與上限：不跟隨 symlink、單檔 2 MB、最多 20,000 個檔案、整體 60 秒；有檔案沒分析到時狀態會是「未完整」並列出原因，不會假裝看完。
+
 ### 判定規則
 
 規則固定不可調整，寫在「開始掃描」按鈕上方。
@@ -489,6 +512,7 @@ socket 呼叫 `/containers/update`——`:ro` 讓 socket 檔案唯讀，但**不
 | `POST /api/scans/{id}/reevaluate` | 👤 | 依目前的人工標記重新計算判定 |
 | `GET /api/scans/{id}/export.csv` | 👤 | 下載發現清單 CSV（UTF-8 BOM，Excel 直接開；已防公式注入） |
 | `GET /api/scans/{id}/packages.csv` | 👤 | 下載套件與授權清單 CSV |
+| `GET /api/scans/{id}/attack-surface.json` | 👤 | 下載攻擊面盤點 JSON（端點、對外連線、風險，附靜態分析限制說明） |
 | `GET /api/policies` | 👤 | 固定判定規則的內容（僅供顯示） |
 
 #### `POST /api/scans` 參數
@@ -652,7 +676,7 @@ echo "判定：$STATUS"
 |---|---|---|
 | `scan_git_repository` | `git_url`（必填）、`tools`（陣列，可省略＝全部） | clone 並掃描一個 Git 倉庫，回傳 `scan_id` |
 | `create_upload_scan` | `filename`（顯示名稱）、`tools`（陣列，可省略＝全部） | 掃描地端檔案：回傳一次性上傳票證與 `upload_url`，把 ZIP 以 `PUT` 上傳後取得 `scan_id` |
-| `get_scan_result` | `scan_id`（必填）、`severity`（只回傳該等級以上） | 讀取掃描狀態、判定、各工具結果與發現（含比對到的程式碼） |
+| `get_scan_result` | `scan_id`（必填）、`severity`（只回傳該等級以上） | 讀取掃描狀態、判定、各工具結果與發現（含比對到的程式碼），以及攻擊面摘要（數量、風險、未偵測到認證的端點各前 50 筆，附限制說明） |
 | `list_scanners` | 無 | 已安裝的掃描器與各自檢查什麼 |
 
 直接用 curl 測試：

@@ -2852,6 +2852,34 @@ def test_the_package_csv_is_not_readable_by_another_account(two_users):
     assert admin.get(f"/api/scans/{job.id}/packages.csv").status_code == 200
 
 
+# ------------------------------------------------------------ attack surface
+def test_the_attack_surface_downloads_as_json_with_its_caveat(client):
+    from app.main import manager
+    from app.models import ScanTarget
+
+    job = manager.new_job(ScanTarget(kind="path", display="demo"), [])
+    job.attack_surface = {"status": "ok", "summary": {"endpoints": 1},
+                          "endpoints": [{"method": "GET", "path": "/x"}]}
+    res = client.get(f"/api/scans/{job.id}/attack-surface.json")
+    assert res.status_code == 200
+    assert 'attachment; filename="sast-attack-surface-' in res.headers["content-disposition"]
+    body = res.json()
+    assert body["target"] == "demo" and body["summary"] == {"endpoints": 1}
+    assert "not run" in body["note"]          # the static-analysis caveat travels with it
+
+
+def test_the_attack_surface_is_not_readable_by_another_account(two_users):
+    admin, bob = two_users
+    from app.main import manager
+    from app.models import ScanTarget
+
+    job = manager.new_job(ScanTarget(kind="path", display="secret"), [], owner="admin")
+    job.attack_surface = {"status": "ok"}
+    assert bob.get(f"/api/scans/{job.id}/attack-surface.json").status_code == 404
+    assert admin.get(f"/api/scans/{job.id}/attack-surface.json").status_code == 200
+    assert bob.get("/api/scans/nope/attack-surface.json").status_code == 404
+
+
 # ------------------------------------------------- the user behind a token
 def test_a_token_resolves_to_the_right_user(accounts_env):
     """row["id"] was the TOKEN's id, not the user's.
@@ -5566,3 +5594,31 @@ def test_concurrent_scans_keep_their_own_custom_rules(monkeypatch, tmp_path):
     assert str(rule_b) in b_args and str(rule_a) not in b_args
     assert str(rule_a) in a_args and str(rule_b) not in a_args
     assert "p/owasp-top-ten" in a_args and "p/default" not in a_args
+
+
+def test_mcp_scan_result_carries_the_attack_surface(mcp_upload_env):
+    """An assistant gets the headline and the caveat, not the whole map."""
+    env = mcp_upload_env
+    grant, _ = _mcp_tool(env.client, env.alice_token, "create_upload_scan",
+                         {"filename": "p.zip", "tools": ["semgrep"]})
+    body = _zip_bytes({
+        "app.py": "from flask import Flask\napp = Flask(1)\n"
+                  "@app.route('/admin/wipe')\ndef wipe(): ...\n",
+        "public/a.js": "fetch('http://10.0.0.5/api');\n",
+    })
+    scan_id = _put_upload(env.client, grant["ticket"], body).json()["scan_id"]
+    result = _wait_for_scan(env.client, env.alice_token, scan_id)
+    surface = result["attack_surface"]
+    assert surface["status"] == "ok"
+    assert surface["summary"]["no_auth"] == 1
+    assert surface["no_auth_detected"] == [
+        {"method": "GET", "path": "/admin/wipe", "file": "app.py", "line": 3}]
+    assert surface["risks"][0]["kind"] == "frontend_private_host"
+    assert "not run" in surface["note"]
+    assert result["verdict"] != "blocked"     # information only
+
+
+def test_mcp_attack_surface_brief_before_the_scan_finishes():
+    from app import mcp
+
+    assert mcp._attack_surface_brief({}) == {"status": "pending"}

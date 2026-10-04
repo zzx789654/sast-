@@ -429,6 +429,32 @@ def _read_scan(args: dict, user=None) -> dict:
         "summary": job.summary,
         "tools": {n: _tool_state(r) for n, r in job.results.items()},
         "findings": findings,
+        "attack_surface": _attack_surface_brief(job.attack_surface or {}),
         "note": ("a verdict labels this scan; it does not block anything. "
                  "Scanners report patterns, so check the code before acting."),
     })
+
+
+def _attack_surface_brief(surface: dict) -> dict:
+    """The map's headline for an assistant: counts, risks, routes without auth.
+
+    Not the whole map -- a project can have thousands of routes, and the
+    download (/api/scans/{id}/attack-surface.json) carries all of them.
+    """
+    from .attack_surface import NOTE
+
+    if not surface:
+        return {"status": "pending"}
+    no_auth = [
+        {"method": e["method"], "path": e["path"], "file": e["file"], "line": e["line"]}
+        for e in surface.get("endpoints", [])
+        if "no_auth_detected" in e.get("flags", [])
+    ]
+    return {
+        "status": surface.get("status"),
+        "reason": surface.get("reason") or None,
+        "summary": surface.get("summary", {}),
+        "risks": surface.get("risks", [])[:50],
+        "no_auth_detected": no_auth[:50],
+        "note": NOTE,
+    }

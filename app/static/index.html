@@ -26,6 +26,7 @@
   <nav class="viewnav" role="tablist">
     <button class="viewtab active" data-view="scan" data-i18n="nav.scan">掃描</button>
     <button class="viewtab" data-view="report" data-i18n="nav.report">報告</button>
+    <button class="viewtab" data-view="surface" data-i18n="nav.surface">攻擊面</button>
     <button class="viewtab" data-view="monitor" data-i18n="nav.monitor">監控</button>
     <button class="viewtab hidden" id="tab-settings" data-view="settings"
             data-i18n="nav.settings">設定</button>
@@ -184,6 +185,18 @@
       <div id="summary" class="summary"></div>
       <div id="tool-results" class="tool-results"></div>
 
+      <!-- Attack surface headline. Lives on the report so the PDF carries it;
+           the full map is its own tab. -->
+      <section id="surface-card" class="surface-card hidden" aria-labelledby="surface-card-h">
+        <div class="results-head">
+          <h3 id="surface-card-h" data-i18n="surface.cardTitle">攻擊面摘要</h3>
+          <button id="surface-card-open" class="linkbtn" data-i18n="surface.cardOpen">查看攻擊面分頁</button>
+        </div>
+        <p class="surface-card-limit" data-i18n="surface.cardLimit"></p>
+        <div id="surface-card-counts" class="surface-card-counts"></div>
+        <ul id="surface-card-risks" class="surface-card-risks"></ul>
+      </section>
+
       <!-- The package inventory. Collapsed by default: it answers a
            different question from the findings, and on a real project it is
            long enough to bury them. -->
@@ -217,6 +230,75 @@
 
       <div id="findings" class="findings"></div>
     </section>
+  </section>
+
+  <!-- ---- attack surface view ---------------------------------- -->
+  <section id="view-surface" class="monitor-wrap hidden" aria-labelledby="surface-h">
+    <div class="panel">
+      <div class="results-head">
+        <h2 id="surface-h" data-i18n="surface.title">攻擊面</h2>
+        <div class="surface-head-actions">
+          <label class="sr-only" for="surface-scan" data-i18n="surface.scanLabel">掃描</label>
+          <select id="surface-scan"></select>
+          <button id="surface-export" class="linkbtn" data-i18n="surface.export">下載 JSON</button>
+        </div>
+      </div>
+      <div class="surface-limit" role="note">
+        <strong data-i18n="surface.limitTitle">這是靜態分析：只讀程式碼，沒有執行系統，以下資訊偵測不到</strong>
+        <ul>
+          <li data-i18n="surface.limit1"></li>
+          <li data-i18n="surface.limit2"></li>
+          <li data-i18n="surface.limit3"></li>
+          <li data-i18n="surface.limit4"></li>
+        </ul>
+        <p data-i18n="surface.limitNote"></p>
+      </div>
+      <div id="surface-state" class="surface-state hidden"></div>
+      <div id="surface-tiles" class="surface-tiles"></div>
+    </div>
+
+    <div id="surface-body" class="surface-body hidden">
+      <div class="panel">
+        <div class="results-head">
+          <h2 data-i18n="surface.chartTitle">關係圖</h2>
+          <div class="surface-seg" role="group" id="surface-chart-seg">
+            <button type="button" id="surface-btn-graph" aria-pressed="true" data-i18n="surface.graph">關聯圖</button>
+            <button type="button" id="surface-btn-mind" aria-pressed="false" data-i18n="surface.mind">心智圖</button>
+          </div>
+        </div>
+        <div id="surface-chart" class="surface-chart"></div>
+        <div id="surface-legend" class="surface-legend"></div>
+        <p id="surface-hint" class="mon-subnote"></p>
+      </div>
+
+      <div class="panel" id="surface-risks-panel">
+        <h2 data-i18n="surface.risksTitle">風險：前端直連不該連的服務</h2>
+        <div id="surface-risks"></div>
+      </div>
+
+      <div class="panel" id="surface-endpoints-panel">
+        <div class="results-head">
+          <h2 data-i18n="surface.endpointsTitle">端點</h2>
+          <div class="surface-filters">
+            <div class="surface-seg" role="group" id="surface-side">
+              <button type="button" data-side="all" aria-pressed="true" data-i18n="surface.side.all">全部</button>
+              <button type="button" data-side="backend" aria-pressed="false" data-i18n="surface.side.backend">後端</button>
+              <button type="button" data-side="frontend" aria-pressed="false" data-i18n="surface.side.frontend">前端</button>
+            </div>
+            <input type="text" id="surface-filter" data-i18n-ph="surface.filterPh" placeholder="依路徑或檔名篩選…">
+          </div>
+        </div>
+        <div id="surface-flag-filter" class="surface-flag-filter hidden"></div>
+        <p id="surface-endpoints-note" class="mon-subnote"></p>
+        <div class="matrix-wrap"><table id="surface-endpoints" class="mon-table"></table></div>
+      </div>
+
+      <div class="panel" id="surface-hosts-panel">
+        <h2 data-i18n="surface.hostsTitle">對外連線</h2>
+        <p class="mon-subnote" data-i18n="surface.hostsNote"></p>
+        <div class="matrix-wrap"><table id="surface-hosts" class="mon-table"></table></div>
+      </div>
+    </div>
   </section>
 
   <!-- ---- monitor view ------------------------------------------- -->

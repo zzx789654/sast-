@@ -15,7 +15,7 @@ from pathlib import Path
 from .adapters import get_adapters
 from .config import config
 from .inventory import inventory
-from . import sbom
+from . import attack_surface, sbom
 from .models import (
     Job, JobStatus, ScanTarget, ToolPhase, ToolResult, ToolStatus,
 )
@@ -170,6 +170,13 @@ class JobManager:
             job.stage = "listing packages"
             job.sbom = sbom.collect(Path(scan_root),
                                     full_inventory=job.full_inventory)
+
+            # Also before cleanup. Reuses gitleaks' findings (already masked)
+            # rather than looking for secrets a second time.
+            job.stage = "mapping attack surface"
+            leaks = job.results.get("gitleaks")
+            job.attack_surface = attack_surface.safe_collect(
+                Path(scan_root), leaks.findings if leaks else [])
 
             job.compute_summary().compute_progress()
             job.policy_evaluation = evaluate_policy(job, _triage_marks())

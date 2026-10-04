@@ -176,6 +176,9 @@ Any tool you don't install simply shows as unavailable.
 * **Reports** — scan history on the left, the selected report on the right,
   with a severity breakdown bar, CSV export and PDF export (the browser's own
   print-to-PDF, styled for print).
+* **Attack surface** — which endpoints the project exposes, what its front
+  end calls and which outside hosts it talks to, drawn as a relationship graph
+  or a mind map (static inference; see below).
 * **Monitor** — scanner versions plus Docker container performance and a
   capacity verdict (see below).
 * **Settings -> Log** — one activity log covering scans, sign-ins, service
@@ -321,6 +324,7 @@ The UI is a thin client over a small JSON API — handy for scripting/CI:
 | `POST /api/scans` | start a scan (`source_kind`=`upload`/`git`/`path`, `tools`, …) |
 | `GET /api/scans/{id}` | scan status, progress, results |
 | `GET /api/scans/{id}/export.csv` | download that scan's findings as CSV |
+| `GET /api/scans/{id}/attack-surface.json` | download that scan's attack surface map |
 | `GET/POST /api/triage` | read or set a finding's mark (`real` / `false_positive` / `accepted`) |
 | `POST /api/scans/{id}/reevaluate` | re-judge a scan against the current marks |
 | `POST /api/scans/{id}/confirm` \| `/cancel` | run or discard a scan awaiting confirmation |
@@ -400,6 +404,36 @@ Measured rather than assumed: the same project resolves 12 packages online
 and 1 with `--offline`, and the difference is entirely what deps.dev
 resolved from the range. That is fine for your own code and not obviously
 fine for a client's, so the scan does not do it unless asked.
+
+### Attack surface
+
+Every scan also maps what the code exposes and where it connects: back-end
+routes (FastAPI, Flask, Django via Python's `ast`; Express, Spring and Laravel
+by pattern, with router prefixes joined across files), front-end calls
+(`fetch`, `axios`, jQuery, XHR, WebSocket, EventSource), and outside hosts in
+code and config files (private addresses, cloud metadata, cloud storage,
+database connection strings with the credentials masked). Secrets come from
+gitleaks' already-masked findings.
+
+Routes are flagged *no auth detected*, *unreferenced* (no front-end call
+matches it; only judged when the project has front-end calls),
+*not in API docs* (when an OpenAPI/Swagger file exists) and
+*no matching route* (a front-end call with no back-end route). Risks are front
+-end code connecting to a private address, cloud metadata or a database, or a
+secret in a front-end file.
+
+The tab shows a relationship graph (front-end files -> endpoints -> back-end
+files -> hosts; click a box to keep only its lines) or a mind map, then the
+tables. The report page carries a summary card, so the PDF includes it, and
+MCP's `get_scan_result` returns the headline.
+
+This is static analysis and says so on every view: the code is read, never
+run, and no request is sent. URLs built at run time, connections inside
+third-party packages, dynamically registered routes, paths a reverse proxy
+adds and real traffic are all invisible to it. The flags are inferences. The
+map never changes the verdict. Limits: symlinks are not followed; 2 MB per
+file, 20,000 files, 60 seconds; anything left unread marks the map
+"incomplete" with the reason.
 
 ### Packages and licences
 
