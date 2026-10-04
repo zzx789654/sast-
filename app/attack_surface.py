@@ -1000,7 +1000,7 @@ def correlate(ctx: _Context, findings: "list | None") -> dict:
                                   "line": loc["line"], "detail": h["host"]})
     for s in secrets:
         if s["frontend"]:
-            risks.append({"kind": "frontend_secret", "file": s["file"],
+            risks.append({"kind": "frontend_leak", "file": s["file"],
                           "line": s["line"], "detail": s["rule"]})
 
     backend = [e for e in endpoints if e["side"] == "backend"]

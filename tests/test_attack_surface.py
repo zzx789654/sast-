@@ -597,7 +597,7 @@ def test_gitleaks_findings_become_secrets_and_frontend_risks(tmp_path):
     r = asf.collect(tmp_path, findings)
     assert r["summary"]["secrets"] == 3
     assert [s["frontend"] for s in r["secrets"]] == [True, False, False]
-    assert r["risks"] == [{"kind": "frontend_secret", "file": "web/app.vue",
+    assert r["risks"] == [{"kind": "frontend_leak", "file": "web/app.vue",
                            "line": 3, "detail": "aws-access-key"}]
 
 

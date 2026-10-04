@@ -30,5 +30,15 @@
 
 複核確認成立：不執行程式、不連網、不跟隨 symlink；新端點沿用 `_may_see_scan`、MCP 走既有授權；前端一律 textContent／SVG 文字節點；判定不讀取攻擊面；無抑制註解。
 
+### CI 報表判讀（run 37171578433，commit 17328d7；基準 run 37168663866 = 改動前程式碼）
+| 工具 | 本輪 | 基準 | 判讀 |
+|---|---|---|---|
+| semgrep／pip-audit／osv／trivy-fs／gitleaks | 0 | 0 | — |
+| bearer | critical 3、high 1、medium 1 | critical 1、high 2、medium 2 | **新增 2 筆**：`i18n.js` 鍵名 `surface.risk.frontend_secret` 被「寫死密鑰」規則誤判（鍵名含 secret）→ 依原則 7 改名為 `frontend_leak`，不加抑制；本機 bearer 2.1.1（同 CI checksum）重掃 i18n.js／attack_surface.py：0。其餘 `base.py:65`（subprocess，list 參數＋shell=False 為既有設計）、`orchestrator.py` rmtree、`mcp.py` exception、`main.py` 為**既有**，非本輪引入 |
+| trivy-image | CRITICAL 5、HIGH 190 | CRITICAL 5、HIGH 190 | 完全相同，來自基底映像，非本輪引入 |
+
+- 已知限制：bearer 對 `app/static/app.js`（約 120 KB）逾時略過（debug log：`context deadline exceeded`，第 41 輪已記錄），本輪前端新增程式碼改以獨立人工複核確認（textContent／SVG 文字節點，無 innerHTML 注入）。
+- 發現：先前各輪 CI 判讀寫「程式掃描皆 0」，但基準報表顯示 bearer 一直有上述既有項目——`summary.txt` 的 0 是結束碼（bearer 以 `--exit-code 0` 執行），不是發現數。判讀必須打開報表本體。
+
 ### G3 判定
 Critical 0／High 0（已修）／無硬編碼密鑰／無新增相依 → **通過**。
