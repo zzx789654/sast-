@@ -1,0 +1,301 @@
+<title>攻擊面分頁草稿</title>
+<style>
+/* Layout: mirrors SAST Studio's existing tab — panel on a soft ground, summary tiles, then the chart, then detail. Tokens copied from app/static/style.css. */
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #1a1d24; --muted: #5c6470; --line: #e2e5ea;
+  --accent: #2f6feb; --crit: #b3123a; --high: #e2571e; --med: #c98a00; --ok: #2f8f5b;
+  --edge: #a9b0bb; --warnbg: #fff6e0; --warnline: #e8c66a;
+  --f-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans TC", sans-serif;
+  --f-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #14161b; --panel: #1c1f26; --ink: #e7e9ee; --muted: #9aa2af; --line: #2b2f38;
+  --accent: #5b8bff; --crit: #ff5c7a; --high: #ff9457; --med: #ffce54; --ok: #58d197;
+  --edge: #4d5562; --warnbg: #2e2614; --warnline: #7a6224; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #14161b; --panel: #1c1f26; --ink: #e7e9ee; --muted: #9aa2af; --line: #2b2f38;
+  --accent: #5b8bff; --crit: #ff5c7a; --high: #ff9457; --med: #ffce54; --ok: #58d197;
+  --edge: #4d5562; --warnbg: #2e2614; --warnline: #7a6224; color-scheme: dark; }
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.5 var(--f-ui); padding: 20px 16px 40px; }
+.wrap { max-width: 1180px; margin: 0 auto; display: grid; gap: 14px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; min-width: 0; }
+h1 { font-size: 1.15rem; margin: 0; text-wrap: balance; }
+h2 { font-size: 1rem; margin: 0 0 10px; }
+.head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
+.tag { font-size: .75rem; color: var(--muted); border: 1px dashed var(--line); padding: 2px 8px; border-radius: 999px; }
+.limit { background: var(--warnbg); border: 1px solid var(--warnline); border-radius: 10px; padding: 12px 16px; }
+.limit strong { display: block; margin-bottom: 4px; }
+.limit ul { margin: 6px 0 0; padding-left: 1.2em; display: grid; gap: 2px; font-size: .9rem; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.tile { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--panel); cursor: pointer; text-align: left; font: inherit; color: inherit; }
+.tile:hover, .tile:focus-visible { border-color: var(--accent); outline: none; }
+.tile .n { font-size: 1.5rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.tile .l { font-size: .8rem; color: var(--muted); }
+.tile.warn .n { color: var(--high); } .tile.bad .n { color: var(--crit); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { font: inherit; font-size: .85rem; padding: 5px 14px; border: 0; background: transparent; color: var(--ink); cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.chart { overflow-x: auto; border-top: 1px solid var(--line); margin-top: 12px; padding-top: 8px; }
+svg text { font-family: var(--f-ui); fill: var(--ink); }
+svg .mono { font-family: var(--f-mono); }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: .8rem; color: var(--muted); margin-top: 8px; }
+.legend i { display: inline-block; width: 18px; height: 0; border-top: 2px solid var(--edge); vertical-align: middle; margin-right: 5px; }
+.legend i.risk { border-top: 2px dashed var(--crit); } .legend i.def { border-top: 2px dotted var(--edge); }
+.note { font-size: .82rem; color: var(--muted); margin: 6px 0 0; }
+.node { cursor: pointer; }
+.node rect { stroke-width: 1.2; }
+.dim { opacity: .18; transition: opacity .15s; }
+@media (prefers-reduced-motion: reduce) { .dim { transition: none; } }
+</style>
+
+<div class="wrap">
+  <div class="head">
+    <h1>攻擊面　<span style="font-weight:400;color:var(--muted)">掃描：shop-demo · 2026-10-04</span></h1>
+    <span class="tag">草稿 · 範例資料，非實際掃描結果</span>
+  </div>
+
+  <div class="limit" role="note">
+    <strong>這是靜態分析：只讀程式碼，沒有執行系統，以下資訊偵測不到</strong>
+    <ul>
+      <li>執行時才組出的網址（字串拼接、從設定檔或環境變數讀入的位址）</li>
+      <li>第三方套件內部發出的連線、反射或動態註冊的路由</li>
+      <li>反向代理、API Gateway、伺服器設定另外加上的路徑</li>
+      <li>實際流量：哪些端點真的被呼叫、次數、帶了什麼參數</li>
+    </ul>
+    <p class="note" style="margin-top:6px">圖中的「未偵測到認證」「無人呼叫」是從程式碼推論，請人工確認。本頁不影響掃描判定。</p>
+  </div>
+
+  <div class="tiles" id="tiles"></div>
+
+  <section class="panel">
+    <div class="head">
+      <h2 style="margin:0">關係圖</h2>
+      <div class="seg" role="group" aria-label="圖表類型">
+        <button type="button" id="btn-graph" aria-pressed="true">關聯圖</button>
+        <button type="button" id="btn-mind" aria-pressed="false">心智圖</button>
+      </div>
+    </div>
+    <div class="chart" id="chart"></div>
+    <div class="legend" id="legend"></div>
+    <p class="note" id="hint"></p>
+  </section>
+</div>
+
+<script>
+// ---- sample data (example only) ----
+const FE = [
+  { id: "f1", label: "web/src/api/user.js" },
+  { id: "f2", label: "web/src/pages/Admin.vue" },
+  { id: "f3", label: "web/src/config.js" },
+];
+const EP = [
+  { id: "e1", m: "GET",  p: "/api/users/{id}", auth: "ok" },
+  { id: "e2", m: "POST", p: "/api/login",      auth: "na" },
+  { id: "e3", m: "GET",  p: "/api/reports",    auth: "ok" },
+  { id: "e4", m: "POST", p: "/admin/reset",    auth: "none", orphan: true },
+  { id: "e5", m: "GET",  p: "/internal/debug", auth: "none", orphan: true },
+  { id: "e6", m: "GET",  p: "/api/export",     auth: "na", missing: true },
+];
+const BE = [
+  { id: "b1", label: "app/routes/users.py", fw: "FastAPI" },
+  { id: "b2", label: "server/admin.js", fw: "Express" },
+  { id: "b3", label: "ReportController.java", fw: "Spring" },
+];
+const HO = [
+  { id: "h1", label: "10.0.3.15", cat: "內網位址", risk: true },
+  { id: "h2", label: "shop-assets.s3.amazonaws.com", cat: "雲端儲存" },
+  { id: "h3", label: "mongodb://app:***@db:27017", cat: "資料庫連線" },
+  { id: "h4", label: "api.stripe.com", cat: "第三方 API" },
+];
+// edges: [from, to, kind]  kind: call | def | conn | risk
+const ED = [
+  ["f1","e1","call"], ["f1","e2","call"], ["f2","e3","call"], ["f2","e6","call"],
+  ["e1","b1","def"], ["e2","b1","def"], ["e3","b3","def"], ["e4","b2","def"], ["e5","b2","def"],
+  ["f3","h1","risk"], ["f2","h2","conn"], ["b1","h3","conn"], ["b3","h4","conn"],
+];
+
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const NS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function text(parent, x, y, s, attrs = {}) {
+  const t = el("text", { x, y, "font-size": 12, ...attrs }, parent);
+  t.textContent = s; return t;
+}
+
+// ---- tiles ----
+const tiles = [
+  ["端點", EP.length, ""], ["未偵測到認證", EP.filter(e => e.auth === "none").length, "warn"],
+  ["無人呼叫", EP.filter(e => e.orphan).length, "warn"], ["後端找不到", EP.filter(e => e.missing).length, "warn"],
+  ["外部連線", HO.length, ""], ["風險", HO.filter(h => h.risk).length, "bad"],
+];
+const tw = document.getElementById("tiles");
+for (const [l, n, cls] of tiles) {
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "tile " + cls;
+  b.innerHTML = `<div class="n"></div><div class="l"></div>`;
+  b.querySelector(".n").textContent = n; b.querySelector(".l").textContent = l;
+  tw.appendChild(b);
+}
+
+// ---- relationship graph: four fixed columns, left to right ----
+function drawGraph() {
+  const cols = [
+    { title: "前端檔案", items: FE, x: 10 },
+    { title: "端點", items: EP, x: 290 },
+    { title: "後端檔案", items: BE, x: 560 },
+    { title: "外部連線", items: HO, x: 820 },
+  ];
+  const W = 1120, rowH = 46, top = 40, boxW = [230, 220, 210, 270];
+  const H = top + Math.max(...cols.map(c => c.items.length)) * rowH + 50;
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img",
+    "aria-label": "前端檔案、端點、後端檔案與外部連線的關聯圖" });
+  const pos = {};
+  cols.forEach((c, ci) => {
+    text(svg, c.x, 20, c.title, { "font-size": 12, "font-weight": 600, fill: css("--muted") });
+    const offset = (Math.max(...cols.map(k => k.items.length)) - c.items.length) * rowH / 2;
+    c.items.forEach((it, i) => {
+      pos[it.id] = { x: c.x, y: top + offset + i * rowH, w: boxW[ci], h: 34, ci };
+    });
+  });
+  const edgeG = el("g", {}, svg), nodeG = el("g", {}, svg);
+  const edgeEls = [];
+  for (const [a, b, kind] of ED) {
+    const A = pos[a], B = pos[b];
+    let x1 = A.x + A.w, y1 = A.y + 17, x2 = B.x, y2 = B.y + 17, d;
+    if (kind === "risk" || (kind === "conn" && A.ci === 0)) {
+      // front-end straight to a host: arc below the middle columns
+      // run down the gap after the first column, along the bottom, up the gap before the last
+      const yb = H - 14, gx1 = x1 + 25, gx2 = x2 - 25, r = 8;
+      d = `M${x1},${y1} H${gx1 - r} Q${gx1},${y1} ${gx1},${y1 + r} V${yb - r} Q${gx1},${yb} ${gx1 + r},${yb}` +
+          ` H${gx2 - r} Q${gx2},${yb} ${gx2},${yb - r} V${y2 + r} Q${gx2},${y2} ${gx2 + r},${y2} H${x2}`;
+    } else {
+      const mx = (x1 + x2) / 2;
+      d = `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`;
+    }
+    const color = kind === "risk" ? css("--crit") : css("--edge");
+    const p = el("path", { d, fill: "none", stroke: color, "stroke-width": kind === "risk" ? 2 : 1.4,
+      "stroke-dasharray": kind === "risk" ? "6 4" : kind === "def" ? "2 3" : "" }, edgeG);
+    edgeEls.push({ p, a, b });
+  }
+  const all = [...FE, ...EP, ...BE, ...HO];
+  const nodeEls = {};
+  for (const it of all) {
+    const P = pos[it.id];
+    const g = el("g", { class: "node", tabindex: 0, "data-id": it.id }, nodeG);
+    let stroke = css("--line"), mark = "";
+    if (it.auth === "none") { stroke = css("--high"); mark = "未偵測到認證"; }
+    if (it.orphan) mark += (mark ? "・" : "") + "無人呼叫";
+    if (it.missing) { stroke = css("--med"); mark = "後端找不到"; }
+    if (it.risk) { stroke = css("--crit"); mark = "前端直連"; }
+    el("rect", { x: P.x, y: P.y, width: P.w, height: P.h, rx: 6, fill: css("--panel"), stroke,
+      "stroke-dasharray": it.orphan ? "4 3" : "" }, g);
+    if (it.m) {
+      text(g, P.x + 8, P.y + 15, it.m, { "font-size": 10, "font-weight": 700, fill: css("--accent"), class: "mono" });
+      text(g, P.x + 46, P.y + 15, it.p, { class: "mono", "font-size": 11.5 });
+      text(g, P.x + 8, P.y + 28, mark || (it.auth === "ok" ? "✓ 偵測到認證" : "—"),
+        { "font-size": 10, fill: mark ? stroke : css("--muted") });
+    } else {
+      text(g, P.x + 8, P.y + 15, it.label, { class: "mono", "font-size": 11.5 });
+      text(g, P.x + 8, P.y + 28, it.fw || it.cat || "前端", { "font-size": 10, fill: mark ? stroke : css("--muted") });
+      if (mark) text(g, P.x + P.w - 8, P.y + 28, mark, { "font-size": 10, fill: stroke, "text-anchor": "end" });
+    }
+    nodeEls[it.id] = g;
+  }
+  // click a node: keep it and its neighbours lit, dim the rest
+  let active = null;
+  function focus(id) {
+    active = active === id ? null : id;
+    const keep = new Set([id]);
+    edgeEls.forEach(e => { if (e.a === id || e.b === id) { keep.add(e.a); keep.add(e.b); } });
+    for (const k in nodeEls) nodeEls[k].classList.toggle("dim", !!active && !keep.has(k));
+    edgeEls.forEach(e => e.p.classList.toggle("dim", !!active && e.a !== id && e.b !== id));
+  }
+  for (const k in nodeEls) {
+    nodeEls[k].addEventListener("click", () => focus(k));
+    nodeEls[k].addEventListener("keydown", ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); focus(k); } });
+  }
+  return svg;
+}
+
+// ---- mind map: root -> category -> group -> leaf, left to right ----
+function drawMind() {
+  const tree = { label: "shop-demo", kids: [
+    { label: "後端路由 (5)", kids: [
+      { label: "/api", kids: EP.filter(e => e.p.startsWith("/api") && !e.missing).map(e => ({ label: `${e.m} ${e.p}`, e })) },
+      { label: "/admin", kids: [{ label: "POST /admin/reset", e: EP[3] }] },
+      { label: "/internal", kids: [{ label: "GET /internal/debug", e: EP[4] }] },
+    ]},
+    { label: "前端呼叫 (4)", kids: [
+      { label: "user.js", kids: [{ label: "GET /api/users/{id}" }, { label: "POST /api/login" }] },
+      { label: "Admin.vue", kids: [{ label: "GET /api/reports" }, { label: "GET /api/export", e: EP[5] }] },
+    ]},
+    { label: "外部連線 (4)", kids: HO.map(h => ({ label: h.cat, kids: [{ label: h.label, h }] })) },
+    { label: "風險 (1)", risk: true, kids: [{ label: "前端直連內網 10.0.3.15", risk: true, sub: "web/src/config.js:3" }] },
+  ]};
+  const leafH = 26, colX = [10, 150, 330, 520], W = 900;
+  let leaves = 0;
+  (function count(n) { n.kids && n.kids.length ? n.kids.forEach(count) : leaves++; })(tree);
+  const H = leaves * leafH + 30;
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": "攻擊面心智圖" });
+  chart.replaceChildren(svg);
+  let cursor = 15;
+  function place(n, depth) {
+    n.depth = depth;
+    if (n.kids && n.kids.length) { n.kids.forEach(k => place(k, depth + 1)); n.y = (n.kids[0].y + n.kids[n.kids.length - 1].y) / 2; }
+    else { n.y = cursor + leafH / 2; cursor += leafH; }
+  }
+  place(tree, 0);
+  const eg = el("g", {}, svg), ng = el("g", {}, svg);
+  (function draw(n) {
+    const x = colX[n.depth];
+    let color = css("--ink"), weight = n.depth <= 1 ? 600 : 400, note = "";
+    if (n.e) {
+      if (n.e.auth === "none") { color = css("--high"); note = n.e.orphan ? "未偵測到認證・無人呼叫" : "未偵測到認證"; }
+      if (n.e.missing) { color = css("--med"); note = "後端找不到"; }
+    }
+    if (n.risk || (n.h && n.h.risk)) { color = css("--crit"); }
+    if (n.depth === 0) {
+      el("rect", { x: x - 4, y: n.y - 14, width: 110, height: 28, rx: 14, fill: css("--accent") }, ng);
+      text(ng, x + 51, n.y + 4, n.label, { "text-anchor": "middle", fill: "#fff", "font-weight": 600 });
+    } else {
+      const t = text(ng, x, n.y + 4, n.label, { fill: color, "font-weight": weight, class: n.depth === 3 ? "mono" : "" });
+      n.w = t.getComputedTextLength();
+      if (note) text(ng, x + n.w + 10, n.y + 4, note, { "font-size": 10.5, fill: color });
+      if (n.sub) text(ng, x + 190, n.y + 4, n.sub, { "font-size": 10.5, fill: css("--muted"), class: "mono" });
+    }
+    (n.kids || []).forEach(k => {
+      const x1 = n.depth === 0 ? x + 106 : x + n.w + 6;
+      const x2 = colX[k.depth] - 6, mx = (x1 + x2) / 2;
+      el("path", { d: `M${x1},${n.y} C${mx},${n.y} ${mx},${k.y} ${x2},${k.y}`, fill: "none",
+        stroke: (k.risk || (k.h && k.h.risk)) ? css("--crit") : css("--edge"), "stroke-width": 1.3 }, eg);
+      draw(k);
+    });
+  })(tree);
+  return svg;
+}
+
+const chart = document.getElementById("chart"), legend = document.getElementById("legend"), hint = document.getElementById("hint");
+function show(kind) {
+  if (kind === "graph") chart.replaceChildren(drawGraph()); else drawMind();
+  document.getElementById("btn-graph").setAttribute("aria-pressed", kind === "graph");
+  document.getElementById("btn-mind").setAttribute("aria-pressed", kind === "mind");
+  legend.innerHTML = kind === "graph"
+    ? `<span><i></i>前端呼叫端點／檔案連線</span><span><i class="def"></i>端點定義於</span><span><i class="risk"></i>前端直連（風險）</span><span>虛線框＝無人呼叫</span>`
+    : `<span>由左到右：專案 → 類別 → 分組 → 項目</span><span style="color:var(--high)">橘＝未偵測到認證</span><span style="color:var(--crit)">紅＝風險</span>`;
+  hint.textContent = kind === "graph"
+    ? "點一個方塊，只留下與它相連的線。沒有任何線連進來的端點，就是程式碼裡沒人呼叫的端點。"
+    : "適合一眼看出「有哪些東西」；要看「誰連到誰」請切到關聯圖。";
+}
+document.getElementById("btn-graph").addEventListener("click", () => show("graph"));
+document.getElementById("btn-mind").addEventListener("click", () => show("mind"));
+show("graph");
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () =>
+  show(document.getElementById("btn-mind").getAttribute("aria-pressed") === "true" ? "mind" : "graph"));
+</script>
