@@ -6,6 +6,8 @@ joined), file:line, whether an auth check was seen, and the flags.
 """
 from __future__ import annotations
 
+import itertools
+import json
 import os
 import time
 from pathlib import Path
@@ -50,9 +52,34 @@ def test_join_and_template():
     assert asf._template("/u/${id}/x") == "/u/{param}/x"
 
 
-def test_mask_credentials():
-    assert asf.mask_credentials("mongodb://app:s3cret@db:27017/x") == "mongodb://app:***@db:27017/x"
-    assert asf.mask_credentials("redis://db:6379") == "redis://db:6379"
+@pytest.mark.parametrize("raw,masked", [
+    ("mongodb://app:s3cret@db:27017/x", "mongodb://app:***@db:27017/x"),
+    ("redis://db:6379", "redis://db:6379"),
+    ("postgres://admin:pa/ssw0rd@db/x", "postgres://admin:***@db/x"),     # "/" in password
+    ("mysql://root:p@ssword@h:3306", "mysql://root:***@h:3306"),           # "@" in password
+    ("https://" + "u" * 150 + ":TopSecret@h3/x", "https://" + "u" * 150 + ":***@h3/x"),
+    ("https://ghp_tokenvalue@github.com/x", "https://***@github.com/x"),   # token only
+    ("https://registry.npmjs.org/@babel/core", "https://registry.npmjs.org/@babel/core"),
+    ("https://h/x?email=a@b.com", "https://h/x?email=a@b.com"),
+    ("no scheme at all", "no scheme at all"),
+])
+def test_mask_credentials(raw, masked):
+    assert asf.mask_credentials(raw) == masked
+
+
+def test_credentials_in_frontend_urls_never_leave_the_module(tmp_path):
+    write(tmp_path, {
+        "public/a.js": ("fetch('https://alice:Hunter2Secret@api.corp.io/v1/x');\n"
+                        "axios.get('https://bob:S3cr3t@svc.corp.io/y');\n"),
+        "srv/db.py": ("A = 'postgres://admin:pa/ssw0rd@db/x'\n"
+                      "B = 'mysql://root:p@ssword@h:3306/d'\n"),
+    })
+    r = asf.collect(tmp_path)
+    dump = json.dumps(r)
+    for secret in ("Hunter2Secret", "S3cr3t", "pa/ssw0rd", "ssw0rd", "p@ssword", "ssword"):
+        assert secret not in dump, secret
+    paths = {e["path"] for e in r["endpoints"]}
+    assert "https://alice:***@api.corp.io/v1/x" in paths
 
 
 @pytest.mark.parametrize("host,cat", [
@@ -441,9 +468,32 @@ def test_laravel_groups_prefixes_and_middleware(tmp_path):
     assert ("GET", "/home") in got          # web.php has no /api prefix
 
 
-def test_brace_span_without_braces():
-    assert asf._brace_span("no braces", 0) == len("no braces")
-    assert asf._brace_span("{ {", 0) == 3
+def test_brace_pairs():
+    ctx = asf._Context(set())
+    assert asf.brace_pairs("a{b{c}d}e}{", ctx) == {3: 6, 1: 8}
+
+
+def test_laravel_group_nesting_sweep(tmp_path):
+    """Routes after a closed group, in nested groups, and in a group with no brace."""
+    write(tmp_path, {"routes/web.php": (
+        "<?php\n"
+        "Route::prefix('a')->group(function () {\n"
+        "  Route::get('/one', 'X@y');\n"
+        "  Route::prefix('b')->middleware('auth')->group(function () {\n"
+        "    Route::get('/two', 'X@y');\n"
+        "  });\n"
+        "  Route::get('/three', 'X@y');\n"
+        "});\n"
+        "Route::prefix('gone')->group(function () { });\n"
+        "Route::prefix('c')->group(function () { });\n"
+        "Route::get('/four', 'X@y');\n"
+        "Route::prefix('nobrace')->group($callable);\n"
+        "Route::get('/five', 'X@y');\n")})
+    got = routes(asf.collect(tmp_path))
+    assert got[("GET", "/a/one")]["auth"] == "not_detected"
+    assert got[("GET", "/a/b/two")]["auth"] == "detected"
+    assert got[("GET", "/a/three")]["auth"] == "not_detected"
+    assert ("GET", "/four") in got and ("GET", "/five") in got
 
 
 # -------------------------------------------------------------------- hosts
@@ -564,13 +614,13 @@ def test_oversize_and_unreadable_files_make_it_incomplete(tmp_path, monkeypatch)
     assert any("big.js" in s for s in r["skipped"])
     assert "1 files could not be analysed" in r["reason"]
 
-    real = Path.read_bytes
+    real = asf.read_regular
 
-    def boom(self):
-        if self.name == "small.js":
+    def boom(path, limit):
+        if path.name == "small.js":
             raise PermissionError("no")
-        return real(self)
-    monkeypatch.setattr(Path, "read_bytes", boom)
+        return real(path, limit)
+    monkeypatch.setattr(asf, "read_regular", boom)
     monkeypatch.setattr(asf, "MAX_FILE_BYTES", 1000)
     r2 = asf.collect(tmp_path)
     assert any("small.js: unreadable" in s for s in r2["skipped"])
@@ -591,12 +641,35 @@ def test_file_count_limit(tmp_path, monkeypatch):
     assert "only the first 2 of 4 files" in r["reason"]
 
 
-def test_time_budget(tmp_path):
+def test_time_budget_between_files(tmp_path):
     write(tmp_path, {"a.js": "", "b.js": ""})
-    ticks = iter([0.0, 0.0, 999.0, 999.0, 999.0])
+    ticks = itertools.chain([0.0, 0.0], itertools.repeat(999.0))
     r = asf.collect(tmp_path, clock=lambda: next(ticks))
     assert r["status"] == "incomplete"
-    assert "time limit" in r["reason"]
+    assert "1 files not read" in r["reason"]
+
+
+def test_time_budget_inside_a_file(tmp_path):
+    """The budget is checked inside the per-match loops, not only between files."""
+    # Root files are read before subdirectories: a.js first, then sub/z.js.
+    write(tmp_path, {"a.js": "window.x=1;" + "".join(f"fetch('/api/{i}');" for i in range(2000)),
+                     "sub/z.js": ""})
+    ticks = itertools.chain([0.0, 0.0], itertools.repeat(999.0))
+    r = asf.collect(tmp_path, clock=lambda: next(ticks))
+    assert r["status"] == "incomplete"
+    assert "while reading a.js; 1 files not read" in r["reason"]
+
+
+def test_time_budget_while_matching(tmp_path):
+    ctx = asf._Context(set(), clock=lambda: 999.0, deadline=0.0)
+    ctx.add_route("GET", "/api/x", "flask", "a.py", 1, False)
+    for i in range(600):
+        ctx.add_call("GET", f"/api/{i}", "web/a.js", i, "fetch", True)
+    r = asf.correlate(ctx, [])
+    assert any("matching" in x for x in ctx.reasons)
+    # Not judged rather than mislabelled.
+    assert all("unreferenced" not in e["flags"] and "unknown_backend" not in e["flags"]
+               for e in r["endpoints"])
 
 
 def test_deep_nesting_is_skipped_not_fatal(tmp_path, monkeypatch):
@@ -701,3 +774,56 @@ def test_called_from_is_capped(tmp_path):
     })
     e = routes(asf.collect(tmp_path))[("GET", "/api/x")]
     assert len(e["called_from"]) == asf.MAX_LOCATIONS
+
+
+def test_fifo_is_skipped_without_blocking(tmp_path):
+    write(tmp_path, {"ok.js": "fetch('/api/x')"})
+    os.mkfifo(tmp_path / "pipe.js")
+    r = asf.collect(tmp_path)
+    assert r["status"] == "ok" and r["stats"]["files_scanned"] == 1
+
+
+def test_read_regular_refuses_a_symlink(tmp_path):
+    (tmp_path / "real.js").write_text("x")
+    os.symlink(tmp_path / "real.js", tmp_path / "link.js")
+    with pytest.raises(OSError):
+        asf.read_regular(tmp_path / "link.js", 100)
+    assert asf.read_regular(tmp_path / "real.js", 100) == b"x"
+
+
+# Each input below reproduces a case the independent review measured as
+# super-linear (200 KB took 23-229 s). Now each must finish quickly.
+@pytest.mark.parametrize("name,unit", [
+    ("openapi.yaml", "\n "),
+    ("Ctrl.java", "@GetMapping "),
+    ("routes/web.php", "Route::prefix('a')->group(function(){ "),
+    ("routes/api.php", "Route::get('/x', 'A@b'); "),
+    ("Ctrl2.java", "@GetMapping(\"/x\")" + " " * 50 + "x class "),
+])
+def test_adversarial_inputs_stay_linear(tmp_path, name, unit):
+    write(tmp_path, {name: unit * (400_000 // len(unit))})
+    started = time.monotonic()
+    r = asf.collect(tmp_path)
+    assert time.monotonic() - started < 10, name
+    assert r["status"] in ("ok", "incomplete")
+
+
+def test_matching_many_calls_and_routes_is_fast(tmp_path):
+    """5k routes x 12.5k calls took 23 s comparing every pair."""
+    ctx = asf._Context(set())
+    for i in range(5000):
+        ctx.add_route("GET", f"/api/r{i}/{{id}}", "flask", "a.py", i, True)
+    for i in range(12500):
+        ctx.add_call("GET", f"/api/c{i}/1", "web/a.js", i, "fetch", True)
+    started = time.monotonic()
+    asf.correlate(ctx, [])
+    assert time.monotonic() - started < 5
+
+
+def test_same_path_other_method_is_not_a_match():
+    ctx = asf._Context(set())
+    ctx.add_route("POST", "/api/x", "flask", "a.py", 1, True)
+    ctx.add_call("GET", "/api/x", "web/a.js", 1, "fetch", True)
+    r = asf.correlate(ctx, [])
+    front = [e for e in r["endpoints"] if e["side"] == "frontend"]
+    assert front[0]["flags"] == ["unknown_backend"]

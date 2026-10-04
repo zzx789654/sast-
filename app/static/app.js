@@ -2810,7 +2810,13 @@ function renderSurface(job) {
   renderSurfaceHosts(surf);
 }
 
-// ---- relationship graph: front-end files -> endpoints -> back-end files -> hosts
+// ---- relationship graph: five columns, mirrored around the endpoints
+//   front-end hosts <- front-end files -> endpoints -> back-end files -> back-end hosts
+// Each outside host sits on the same row as the program that connects to it,
+// so the line from a program to its hosts is short and never crosses the
+// middle of the graph.
+const RISKY_HOST = ["private", "metadata", "database"];
+
 function surfaceGraphModel(surf) {
   // Endpoints ordered by the file that defines them, so the lines into the
   // back-end column run roughly parallel instead of crossing.
@@ -2826,7 +2832,9 @@ function surfaceGraphModel(surf) {
     return state.surfaceExpanded.has(seg)
       ? "e:" + e.method + " " + e.path + " " + e.file + ":" + e.line : "g:" + seg;
   };
-  const front = new Map(), back = new Map(), hosts = new Map();
+  const front = new Map(), back = new Map();
+  const frontHosts = new Map(), backHosts = new Map();
+  const owned = new Map();        // file node id -> its host node ids, first seen first
   const edges = new Set();
   const addEdge = (a, b, kind) => edges.add(a + "\u0000" + b + "\u0000" + kind);
 
@@ -2847,68 +2855,95 @@ function surfaceGraphModel(surf) {
       back.set(e.file, { id: "b:" + e.file, label: e.file, sub: e.framework });
       addEdge(id, "b:" + e.file, "def");
       (e.called_from || []).forEach((c) => {
-        front.set(c.file, { id: "f:" + c.file, label: c.file });
+        if (!front.has(c.file)) front.set(c.file, { id: "f:" + c.file, label: c.file });
         addEdge("f:" + c.file, id, "call");
       });
     } else {
-      front.set(e.file, { id: "f:" + e.file, label: e.file });
+      if (!front.has(e.file)) front.set(e.file, { id: "f:" + e.file, label: e.file });
       addEdge("f:" + e.file, id, "call");
     }
   });
   (surf.hosts || []).forEach((h) => {
-    const hid = "h:" + h.host;
-    hosts.set(h.host, { id: hid, label: h.host, cat: h.category,
-      risk: h.frontend && ["private", "metadata", "database"].includes(h.category) });
     (h.locations || []).forEach((loc) => {
+      const files = loc.frontend ? front : back;
+      const hosts = loc.frontend ? frontHosts : backHosts;
       const fid = (loc.frontend ? "f:" : "b:") + loc.file;
-      const col = loc.frontend ? front : back;
-      if (!col.has(loc.file)) col.set(loc.file, { id: fid, label: loc.file });
-      const risky = loc.frontend && ["private", "metadata", "database"].includes(h.category);
+      const hid = (loc.frontend ? "fh:" : "bh:") + h.host;
+      if (!files.has(loc.file)) files.set(loc.file, { id: fid, label: loc.file });
+      const risky = loc.frontend && RISKY_HOST.includes(h.category);
+      if (!hosts.has(h.host)) hosts.set(h.host, { id: hid, label: h.host, cat: h.category, risk: risky });
+      const mine = owned.get(fid) || [];
+      if (!mine.includes(hid)) { mine.push(hid); owned.set(fid, mine); }
       addEdge(fid, hid, risky ? "risk" : "conn");
     });
   });
-  const cap = (m) => {
-    const arr = [...m.values()];
-    if (arr.length <= SURFACE_COL_MAX) return arr;
-    const more = { id: "more:" + arr[0].id[0], label: t("surface.more", { n: arr.length - SURFACE_COL_MAX + 1 }), more: true };
-    return arr.slice(0, SURFACE_COL_MAX - 1).concat([more]);
+
+  const more = (key, n) => ({ id: "more:" + key, label: t("surface.more", { n }), more: true });
+  const cap = (arr, key) => arr.length <= SURFACE_COL_MAX ? arr
+    : arr.slice(0, SURFACE_COL_MAX - 1).concat([more(key, arr.length - SURFACE_COL_MAX + 1)]);
+
+  // One side of the graph: each file takes as many rows as it has hosts not
+  // already placed by an earlier file, and those hosts take the same rows.
+  function side(fileMap, hostMap, key) {
+    const files = cap([...fileMap.values()], key + "f");
+    const byId = new Map([...hostMap.values()].map((h) => [h.id, h]));
+    const placed = [];
+    let row = 0;
+    files.forEach((f) => {
+      const mine = (owned.get(f.id) || []).map((id) => byId.get(id)).filter((h) => h.row == null);
+      mine.forEach((h, i) => { h.row = row + i; placed.push(h); });
+      const span = Math.max(1, mine.length);
+      f.row = row + (span - 1) / 2;       // centred on its hosts
+      row += span;
+    });
+    // Hosts whose program was cut by the column limit go last.
+    byId.forEach((h) => { if (h.row == null) { h.row = row++; placed.push(h); } });
+    let hosts = placed;
+    if (placed.length > SURFACE_COL_MAX) {
+      hosts = placed.slice(0, SURFACE_COL_MAX - 1);
+      const m = more(key + "h", placed.length - SURFACE_COL_MAX + 1);
+      m.row = hosts[hosts.length - 1].row + 1;
+      hosts.push(m);
+      row = Math.max(m.row + 1, row);
+    }
+    return { files, hosts, rows: row };
+  }
+  const f = side(front, frontHosts, "f"), b = side(back, backHosts, "b");
+  const endpoints = [...epNodes.values()];
+  endpoints.forEach((n, i) => { n.row = i; });
+  return {
+    grouped,
+    cols: [f.hosts, f.files, endpoints, b.files, b.hosts],
+    rows: [f.rows, f.rows, endpoints.length, b.rows, b.rows],
+    edges: [...edges].map((s) => s.split("\u0000")),
   };
-  return { grouped, cols: [cap(front), [...epNodes.values()], cap(back), cap(hosts)],
-    edges: [...edges].map((s) => s.split("\u0000")) };
 }
 
 function drawSurfaceGraph(surf) {
   const model = surfaceGraphModel(surf);
-  const colX = [10, 290, 580, 840], boxW = [240, 250, 220, 250];
+  const colX = [10, 232, 486, 770, 1012], boxW = [196, 222, 250, 210, 220];
   const rowH = 44, top = 34, boxH = 34;
-  const maxRows = Math.max(1, ...model.cols.map((c) => c.length));
-  const W = 1100, H = top + maxRows * rowH + 50;
+  const maxRows = Math.max(1, ...model.rows);
+  const W = 1242, H = top + maxRows * rowH + 16;
   const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H,
     role: "img", class: "surface-svg", "aria-label": t("surface.graphAria") });
-  const heads = ["colFrontend", "colEndpoints", "colBackend", "colHosts"];
+  const heads = ["colFrontHosts", "colFrontend", "colEndpoints", "colBackend", "colBackHosts"];
   const pos = {};
   model.cols.forEach((col, ci) => {
     svgText(svg, colX[ci], 18, t("surface." + heads[ci]) + " (" + col.length + ")", "sf-colhead");
-    const offset = (maxRows - col.length) * rowH / 2;
-    col.forEach((n, i) => { pos[n.id] = { x: colX[ci], y: top + offset + i * rowH, w: boxW[ci], ci }; });
+    const offset = (maxRows - model.rows[ci]) * rowH / 2;
+    col.forEach((n) => { pos[n.id] = { x: colX[ci], y: top + offset + n.row * rowH, w: boxW[ci], ci }; });
   });
   const edgeG = svgEl("g", {}, svg), nodeG = svgEl("g", {}, svg);
   const edgeEls = [];
   model.edges.forEach(([a, b, kind]) => {
     const A = pos[a], B = pos[b];
     if (!A || !B) return;
-    const x1 = A.x + A.w, y1 = A.y + boxH / 2, x2 = B.x, y2 = B.y + boxH / 2;
-    let d;
-    if (A.ci === 0 && B.ci === 3) {
-      // A front end talking straight to a host skips the middle columns:
-      // run it along the bottom so it does not cross their boxes.
-      const yb = H - 14, gx1 = x1 + 22, gx2 = x2 - 22, r = 8;
-      d = `M${x1},${y1} H${gx1 - r} Q${gx1},${y1} ${gx1},${y1 + r} V${yb - r} Q${gx1},${yb} ${gx1 + r},${yb}` +
-          ` H${gx2 - r} Q${gx2},${yb} ${gx2},${yb - r} V${y2 + r} Q${gx2},${y2} ${gx2 + r},${y2} H${x2}`;
-    } else {
-      const mx = (x1 + x2) / 2;
-      d = `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`;
-    }
+    // Front-end hosts sit to the left of their program: leave from its left edge.
+    const leftward = B.x < A.x;
+    const x1 = leftward ? A.x : A.x + A.w, x2 = leftward ? B.x + B.w : B.x;
+    const y1 = A.y + boxH / 2, y2 = B.y + boxH / 2, mx = (x1 + x2) / 2;
+    const d = `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`;
     edgeEls.push({ a, b, p: svgEl("path", { d, class: "sf-edge " + kind }, edgeG) });
   });
 
@@ -2917,7 +2952,7 @@ function drawSurfaceGraph(surf) {
     const P = pos[n.id];
     let cls = "sf-node", line1 = "", line2 = "", badge = "", tip = "";
     const chars = Math.floor(P.w / 7.2);
-    if (ci === 1) {
+    if (ci === 2) {
       const flags = n.flags;
       if (flags.has("no_auth_detected")) cls += " noauth";
       if (flags.has("unknown_backend")) cls += " missing";
@@ -2937,8 +2972,8 @@ function drawSurfaceGraph(surf) {
       if (n.risk) cls += " risk";
       if (n.more) cls += " more";
       line1 = clip(n.label, chars);
-      line2 = n.more ? "" : (ci === 3 ? t("surface.cat." + n.cat)
-        : ci === 0 ? t("surface.side.frontend") : (n.sub || t("surface.side.backend")));
+      line2 = n.more ? "" : (ci === 0 || ci === 4) ? t("surface.cat." + n.cat)
+        : ci === 1 ? t("surface.side.frontend") : (n.sub || t("surface.side.backend"));
       if (n.risk) badge = t("surface.riskBadge");
       tip = n.label;
     }
@@ -2946,14 +2981,14 @@ function drawSurfaceGraph(surf) {
     svgEl("title", {}, g).textContent = tip;
     svgEl("rect", { x: P.x, y: P.y, width: P.w, height: boxH, rx: 6 }, g);
     svgText(g, P.x + 8, P.y + 14, line1, "sf-l1");
-    svgText(g, P.x + 8, P.y + 27, clip(line2, chars), "sf-l2");
+    svgText(g, P.x + 8, P.y + 27, clip(line2, badge ? chars - 6 : chars), "sf-l2");
     if (badge) svgText(g, P.x + P.w - 8, P.y + 27, badge, "sf-badge", { "text-anchor": "end" });
     nodeEls[n.id] = g;
   }));
 
   let active = null;
   function focus(id) {
-    const node = model.cols[1].find((n) => n.id === id);
+    const node = model.cols[2].find((n) => n.id === id);
     if (node && node.group != null) {          // a group expands in place
       state.surfaceExpanded.add(node.group);
       renderSurfaceChart(state.currentJob);

@@ -422,8 +422,9 @@ matches it; only judged when the project has front-end calls),
 -end code connecting to a private address, cloud metadata or a database, or a
 secret in a front-end file.
 
-The tab shows a relationship graph (front-end files -> endpoints -> back-end
-files -> hosts; click a box to keep only its lines) or a mind map, then the
+The tab shows a relationship graph (front-end hosts <- front-end files ->
+endpoints -> back-end files -> back-end hosts, each host on the row of the
+program that connects to it; click a box to keep only its lines) or a mind map, then the
 tables. The report page carries a summary card, so the PDF includes it, and
 MCP's `get_scan_result` returns the headline.
 

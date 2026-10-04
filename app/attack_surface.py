@@ -26,6 +26,7 @@ import json
 import os
 import posixpath
 import re
+import stat
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -130,8 +131,27 @@ def _template(raw: str) -> str:
 
 
 def mask_credentials(url: str) -> str:
-    """scheme://user:secret@host -> scheme://user:***@host."""
-    return re.sub(r"(//[^/@:\s]{0,100}):[^@/\s]{1,200}@", r"\1:***@", url)
+    """scheme://user:secret@host -> scheme://user:***@host; token@host -> ***@host.
+
+    Userinfo ends at the *last* "@" before the query, because a password may
+    itself contain "@" or "/" (p@ss, pa/ss). An "@" after a "/" with no ":"
+    before that "/" belongs to the path (registry.npmjs.org/@scope/pkg) and
+    is left alone. Masking a little too much is the safe way to be wrong.
+    """
+    i = url.find("//")
+    if i == -1:
+        return url
+    head = url[i + 2:]
+    stop = min((j for j in (head.find("?"), head.find("#")) if j != -1), default=len(head))
+    at = head.rfind("@", 0, stop)
+    if at == -1:
+        return url
+    userinfo = head[:at]
+    slash, colon = userinfo.find("/"), userinfo.find(":")
+    if slash != -1 and (colon == -1 or colon > slash):
+        return url
+    user = userinfo[:colon] + ":***" if colon != -1 else "***"
+    return url[:i + 2] + user + head[at:]
 
 
 def is_frontend(rel: str, text: str) -> bool:
@@ -390,12 +410,14 @@ def extract_js(rel: str, src: _Text, ctx: "_Context", frontend: bool) -> None:
         local_prefix: dict[str, str] = {}
         imported: dict[str, str] = {}
         for m in _REQUIRE_RE.finditer(text):
+            ctx.tick()
             name, spec = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
             target = _resolve_js(rel, spec, ctx.files)
             if target:
                 imported[name] = target
         routers = {m.group(1) for m in _ROUTER_DEF_RE.finditer(text)}
         for m in _EXPRESS_USE_RE.finditer(text):
+            ctx.tick()
             prefix, spec, var = m.group(2), m.group(3), m.group(4)
             if spec:
                 target = _resolve_js(rel, spec, ctx.files)
@@ -406,6 +428,7 @@ def extract_js(rel: str, src: _Text, ctx: "_Context", frontend: bool) -> None:
             elif var in routers:
                 local_prefix[var] = prefix
         for m in _EXPRESS_ROUTE_RE.finditer(text):
+            ctx.tick()
             obj, verb, path, rest = m.group(1), m.group(2), m.group(4), m.group(5)
             if obj in _NOT_ROUTERS:
                 continue
@@ -419,7 +442,10 @@ def extract_js(rel: str, src: _Text, ctx: "_Context", frontend: bool) -> None:
     seen: set[tuple[int, str]] = set()
 
     def call(method: str, raw: str, offset: int, kind: str) -> None:
-        url = _template(raw.strip())
+        ctx.tick()
+        # A URL in source can carry credentials (https://user:pass@host);
+        # mask before it is stored anywhere.
+        url = mask_credentials(_template(raw.strip()))
         if not url or not (url.startswith("/") or "://" in url):
             return
         seen.add((offset, url))
@@ -431,6 +457,7 @@ def extract_js(rel: str, src: _Text, ctx: "_Context", frontend: bool) -> None:
     for m in _AXIOS_RE.finditer(text):
         call("?" if m.group(1) == "request" else m.group(1), m.group(3), m.start(), "axios")
     for m in _AXIOS_CFG_RE.finditer(text):
+        ctx.tick()
         u = _CFG_URL_RE.search(m.group(1))
         if u:
             mm = _CFG_METHOD_RE.search(m.group(1))
@@ -438,6 +465,7 @@ def extract_js(rel: str, src: _Text, ctx: "_Context", frontend: bool) -> None:
     for m in _JQ_RE.finditer(text):
         call("POST" if m.group(1) == "post" else "GET", m.group(3), m.start(), "jquery")
     for m in _JQ_AJAX_RE.finditer(text):
+        ctx.tick()
         u = _CFG_URL_RE.search(m.group(1))
         if u:
             mm = _CFG_METHOD_RE.search(m.group(1))
@@ -449,10 +477,12 @@ def extract_js(rel: str, src: _Text, ctx: "_Context", frontend: bool) -> None:
              m.group(1).lower())
     covered = {off for off, _ in seen}
     for m in _CLIENT_RE.finditer(text):
+        ctx.tick()
         if m.start() not in covered and not text[max(0, m.start() - 6):m.start()].endswith("axios."):
             call(m.group(1), m.group(3), m.start(), "client")
     known = {u for _, u in seen}
     for m in _LITERAL_RE.finditer(text):
+        ctx.tick()
         url = _template(m.group(2))
         if url not in known:
             call("?", m.group(2), m.start(), "literal")
@@ -460,9 +490,18 @@ def extract_js(rel: str, src: _Text, ctx: "_Context", frontend: bool) -> None:
 
 
 # --------------------------------------------------------------- Java Spring
+# How far around an annotation to look for its class keyword or its method's
+# annotation block. Bounded so a file of nothing but annotations stays linear.
+_WINDOW = 1000
 _SPRING_RE = re.compile(r"@(Request|Get|Post|Put|Delete|Patch)Mapping\b(?:\s*\(([^)]{0,500})\))?")
-_SPRING_CLASS_AFTER_RE = re.compile(
-    r"\s*(?:@\w+(?:\s*\([^)]{0,500}\))?\s*)*(?:(?:public|protected|private|abstract|final|static)\s+)*class\b")
+# What may sit between a class-level annotation and "class": whitespace, more
+# annotations, modifiers. Each alternative starts differently, and the
+# argument list allows at most one space before "(", so a failed match cannot
+# backtrack through many ways of splitting the same text.
+_SPRING_PRELUDE_RE = re.compile(
+    r"(?:\s|@\w+(?:[ \t]?\([^)]{0,500}\))?|"
+    r"\b(?:public|protected|private|abstract|final|static)\b)*")
+_CLASS_RE = re.compile(r"\bclass\b")
 _SPRING_AUTH_RE = re.compile(r"@(PreAuthorize|Secured|RolesAllowed|PostAuthorize)\b")
 _STR_LIT_RE = re.compile(r'"([^"\n]{0,300})"')
 
@@ -480,13 +519,15 @@ def extract_java(rel: str, src: _Text, ctx: "_Context") -> None:
     text = src.text
     if "Mapping" not in text:
         return
-    class_prefix, class_auth = [""], False
-    anns = list(_SPRING_RE.finditer(text))
-    first_class = re.search(r"\bclass\b", text)
-    if first_class and _SPRING_AUTH_RE.search(text[:first_class.start()]):
-        class_auth = True
-    for m in anns:
-        if _SPRING_CLASS_AFTER_RE.match(text, m.end()):
+    classes = [m.start() for m in _CLASS_RE.finditer(text)]
+    class_auth = bool(classes) and bool(_SPRING_AUTH_RE.search(text, 0, classes[0]))
+    class_prefix = [""]
+    for m in _SPRING_RE.finditer(text):
+        ctx.tick()
+        i = bisect.bisect_left(classes, m.end())
+        nxt = classes[i] if i < len(classes) else -1
+        if nxt != -1 and nxt - m.end() <= _WINDOW and \
+                _SPRING_PRELUDE_RE.fullmatch(text, m.end(), nxt):
             class_prefix = _spring_paths(m.group(2))
             continue
         kind, args = m.group(1), m.group(2)
@@ -496,11 +537,12 @@ def extract_java(rel: str, src: _Text, ctx: "_Context") -> None:
             methods = [kind.upper()]
         # The annotation block this mapping belongs to: back to the previous
         # statement or block end, forward to the method's opening brace.
-        start = max(text.rfind(";", 0, m.start()), text.rfind("}", 0, m.start()),
-                    text.rfind("{", 0, m.start()))
-        end = text.find("{", m.end())
-        block = text[start + 1:end if end != -1 else m.end()]
-        auth = class_auth or bool(_SPRING_AUTH_RE.search(block))
+        lo = max(0, m.start() - _WINDOW)
+        start = max(text.rfind(";", lo, m.start()), text.rfind("}", lo, m.start()),
+                    text.rfind("{", lo, m.start()), lo - 1)
+        end = text.find("{", m.end(), m.end() + _WINDOW)
+        auth = class_auth or bool(_SPRING_AUTH_RE.search(
+            text, start + 1, end if end != -1 else m.end()))
         ctx.frameworks.add("spring")
         for cp in class_prefix:
             for p in _spring_paths(args):
@@ -516,22 +558,20 @@ _LARAVEL_ROUTE_RE = re.compile(
 _LARAVEL_GROUP_RE = re.compile(
     r"Route::((?:(?:middleware|prefix|name|controller|namespace)\([^)]{0,300}\)\s*->\s*){0,6}"
     r"(?:middleware|prefix|name|controller|namespace)\([^)]{0,300}\))\s*->\s*group\(")
+_BRACE_RE = re.compile(r"[{}]")
 
 
-def _brace_span(text: str, start: int) -> int:
-    """Index just past the block whose '{' is the first at/after start."""
-    i = text.find("{", start)
-    if i == -1:
-        return len(text)
-    depth = 0
-    for j in range(i, len(text)):
-        if text[j] == "{":
-            depth += 1
-        elif text[j] == "}":
-            depth -= 1
-            if depth == 0:
-                return j + 1
-    return len(text)
+def brace_pairs(text: str, ctx: "_Context") -> dict[int, int]:
+    """'{' offset -> offset just past its '}', in one pass over the braces."""
+    pairs: dict[int, int] = {}
+    stack: list[int] = []
+    for m in _BRACE_RE.finditer(text):
+        ctx.tick()
+        if m.group() == "{":
+            stack.append(m.start())
+        elif stack:
+            pairs[stack.pop()] = m.end()
+    return pairs
 
 
 def extract_php(rel: str, src: _Text, ctx: "_Context") -> None:
@@ -542,21 +582,41 @@ def extract_php(rel: str, src: _Text, ctx: "_Context") -> None:
     # routes/api.php is mounted under /api by Laravel itself.
     base = "/api" if rel.endswith("routes/api.php") else ""
     groups = []
+    pairs = None
     for g in _LARAVEL_GROUP_RE.finditer(text):
+        ctx.tick()
+        if pairs is None:
+            pairs = brace_pairs(text, ctx)
         chain = g.group(1)
         pm = re.search(r"prefix\(\s*['\"]([^'\"]{0,200})['\"]", chain)
         mw = re.search(r"middleware\(([^)]{0,300})\)", chain)
-        groups.append((g.end(), _brace_span(text, g.end()),
-                       pm.group(1) if pm else "", bool(mw and "auth" in mw.group(1))))
+        brace = text.find("{", g.end(), g.end() + _WINDOW)
+        # An unclosed group runs to the end of the file, as PHP would read it.
+        end = pairs.get(brace, len(text)) if brace != -1 else g.end()
+        groups.append((g.end(), end, pm.group(1) if pm else "",
+                       bool(mw and "auth" in mw.group(1))))
+
+    # Groups nest (their braces do), so one sweep with a stack finds every
+    # route's enclosing groups without comparing each route to each group.
+    active: list[tuple[int, str, bool]] = []      # (end, prefix, auth)
+    gi = 0
     for m in _LARAVEL_ROUTE_RE.finditer(text):
+        ctx.tick()
+        pos = m.start()
+        while gi < len(groups) and groups[gi][0] <= pos:
+            gs, ge, gp, ga = groups[gi]
+            gi += 1
+            while active and active[-1][0] <= gs:
+                active.pop()
+            if ge > pos:
+                pprefix, pauth = (active[-1][1], active[-1][2]) if active else (base, False)
+                active.append((ge, _join(pprefix, gp) if gp else pprefix, pauth or ga))
+        while active and active[-1][0] <= pos:
+            active.pop()
+        prefix, auth = (active[-1][1], active[-1][2]) if active else (base, False)
         verb, path = m.group(1), m.group(2)
-        prefix, auth = base, False
-        for gs, ge, gp, ga in groups:
-            if gs <= m.start() < ge:
-                prefix = _join(prefix, gp) if gp else prefix
-                auth = auth or ga
-        stmt_end = text.find(";", m.end())
-        stmt = text[m.end():stmt_end if stmt_end != -1 else len(text)]
+        stmt_end = text.find(";", m.end(), m.end() + _WINDOW)
+        stmt = text[m.end():stmt_end if stmt_end != -1 else m.end() + _WINDOW]
         mw = re.search(r"->\s*middleware\(([^)]{0,300})\)", stmt)
         auth = auth or bool(mw and "auth" in mw.group(1))
         if verb == "match":
@@ -629,6 +689,7 @@ def extract_hosts(rel: str, src: _Text, ctx: "_Context", frontend: bool) -> None
     text = src.text
     conn_spans = _Spans()
     for m in _CONN_RE.finditer(text):
+        ctx.tick()
         conn_spans.add(m.start(), m.end())
         raw = m.group(0)
         masked = mask_credentials(raw)
@@ -637,6 +698,7 @@ def extract_hosts(rel: str, src: _Text, ctx: "_Context", frontend: bool) -> None
         ctx.add_host(key, "database", rel, src.line(m.start()), frontend)
     url_spans = _Spans()
     for m in _URL_RE.finditer(text):
+        ctx.tick()
         if conn_spans.covers(m.start()):
             continue
         url_spans.add(m.start(), m.end())
@@ -648,6 +710,7 @@ def extract_hosts(rel: str, src: _Text, ctx: "_Context", frontend: bool) -> None
         if cat:
             ctx.add_host(host, cat, rel, src.line(m.start()), frontend)
     for m in _IP_RE.finditer(text):
+        ctx.tick()
         if url_spans.covers(m.start()) or conn_spans.covers(m.start()):
             continue
         try:
@@ -663,7 +726,9 @@ def extract_hosts(rel: str, src: _Text, ctx: "_Context", frontend: bool) -> None
 
 # ------------------------------------------------------------- OpenAPI docs
 _OPENAPI_NAME_RE = re.compile(r"(openapi|swagger)[^/]*\.(json|ya?ml)$", re.IGNORECASE)
-_YAML_PATH_RE = re.compile(r"^\s+['\"]?(/[^'\":\s]*)['\"]?\s*:\s*$", re.MULTILINE)
+# [ \t] rather than \s: \s also matches newlines, and "^\s+" over a file of
+# blank lines backtracked quadratically (200 KB took minutes).
+_YAML_PATH_RE = re.compile(r"^[ \t]+['\"]?(/[^'\":\s]*)['\"]?[ \t]*:[ \t]*$", re.MULTILINE)
 
 
 def extract_openapi(text: str, rel: str) -> set[str]:
@@ -678,9 +743,22 @@ def extract_openapi(text: str, rel: str) -> set[str]:
 
 
 # ----------------------------------------------------------------- context
+class _OutOfTime(Exception):
+    """The time budget ran out inside an extractor or the correlation."""
+
+
+class _TooLarge(Exception):
+    pass
+
+
 class _Context:
-    def __init__(self, files: set[str]) -> None:
+    def __init__(self, files: set[str], clock=time.monotonic,
+                 deadline: float = float("inf")) -> None:
         self.files = files
+        self.clock = clock
+        self.deadline = deadline
+        self._ticks = 0
+        self.reasons: list[str] = []
         self.routes: dict[tuple, dict] = {}
         self.calls: list[dict] = []
         self._call_keys: set[tuple] = set()
@@ -696,6 +774,13 @@ class _Context:
         self.documented: set[str] = set()
         self.has_openapi = False
         self.frontend_files: set[str] = set()
+
+    def tick(self) -> None:
+        """Called inside every per-match loop: the budget holds within a file,
+        not only between files. The clock is read every 256 ticks."""
+        self._ticks += 1
+        if not self._ticks & 255 and self.clock() > self.deadline:
+            raise _OutOfTime
 
     def skip(self, rel: str, why: str) -> None:
         self.skipped_count += 1
@@ -776,6 +861,10 @@ def _match(call_path: str, route_path: str) -> bool:
     return long_.endswith(short)
 
 
+def _segments(path: str) -> tuple:
+    return tuple(p for p in path.split("/") if p)
+
+
 def _methods_match(a: str, b: str) -> bool:
     return a == b or "?" in (a, b) or "ANY" in (a, b)
 
@@ -787,44 +876,75 @@ def correlate(ctx: _Context, findings: "list | None") -> dict:
         r["called_from"] = []
         r["flags"] = []
 
-    has_frontend_calls = False
-    unmatched = []
-    for c in ctx.calls:
-        external = "://" in c["url"]
-        if external:
-            try:
-                parts = urlsplit(c["url"])
-                host, path = parts.hostname or "", parts.path or "/"
-            except ValueError:
-                continue
-            if classify_host(host) not in ("loopback",):
-                unmatched.append({**c, "path": c["url"], "external": True})
-                continue
+    # A call can only match a route that ends in the same segments (see
+    # _match), so index routes by their last one or two segments instead of
+    # comparing every call with every route.
+    by_two: dict[tuple, list] = {}
+    by_one: dict[tuple, list] = {}
+    single: dict[tuple, list] = {}
+    for r in routes:
+        segs = _segments(r["norm"])
+        if len(segs) >= 2:
+            by_two.setdefault(segs[-2:], []).append(r)
         else:
-            path = c["url"]
-        if c["frontend"]:
-            has_frontend_calls = True
-        norm = normalize_path(path)
-        hit = False
-        for r in routes:
-            if _methods_match(c["method"], r["method"]) and _match(norm, r["norm"]):
-                hit = True
-                if len(r["called_from"]) < MAX_LOCATIONS:
-                    r["called_from"].append({"file": c["file"], "line": c["line"]})
-        if not hit:
-            unmatched.append({**c, "path": path, "external": False})
+            single.setdefault(segs, []).append(r)
+        by_one.setdefault(segs[-1:], []).append(r)
+
+    def candidates(norm: str) -> list:
+        segs = _segments(norm)
+        if len(segs) >= 2:
+            return by_two.get(segs[-2:], []) + single.get(segs[-1:], [])
+        return by_one.get(segs, [])
+
+    has_frontend_calls = False
+    matched_all = True
+    unmatched = []
+    try:
+        for c in ctx.calls:
+            ctx.tick()
+            external = "://" in c["url"]
+            if external:
+                try:
+                    parts = urlsplit(c["url"])
+                    host, path = parts.hostname or "", parts.path or "/"
+                except ValueError:
+                    continue
+                if classify_host(host) not in ("loopback",):
+                    unmatched.append({**c, "path": c["url"], "external": True})
+                    continue
+            else:
+                path = c["url"]
+            if c["frontend"]:
+                has_frontend_calls = True
+            norm = normalize_path(path)
+            hit = False
+            for r in candidates(norm):
+                ctx.tick()
+                if _methods_match(c["method"], r["method"]) and _match(norm, r["norm"]):
+                    hit = True
+                    if len(r["called_from"]) < MAX_LOCATIONS:
+                        r["called_from"].append({"file": c["file"], "line": c["line"]})
+            if not hit:
+                unmatched.append({**c, "path": path, "external": False})
+    except _OutOfTime:
+        # Without every call matched, "nobody calls this" and "no route for
+        # this" would be guesses; leave both out rather than mislabel.
+        matched_all = False
+        ctx.reasons.append("time limit reached while matching front-end calls to "
+                           "routes; 'unreferenced' and 'no matching route' were not judged")
 
     for r in routes:
         if r["auth"] == "not_detected":
             r["flags"].append("no_auth_detected")
-        if has_frontend_calls and not r["called_from"]:
+        if matched_all and has_frontend_calls and not r["called_from"]:
             r["flags"].append("unreferenced")
         if ctx.has_openapi and r["norm"] not in ctx.documented:
             r["flags"].append("undocumented")
 
     endpoints = [{k: v for k, v in r.items() if k != "norm"} for r in routes]
     for c in unmatched:          # already one per (method, url, file)
-        flags = ["external"] if c["external"] else (["unknown_backend"] if routes else [])
+        flags = ["external"] if c["external"] else (
+            ["unknown_backend"] if routes and matched_all else [])
         endpoints.append({
             "method": c["method"], "path": c["path"], "side": "frontend",
             "framework": c["kind"], "file": c["file"], "line": c["line"],
@@ -900,23 +1020,48 @@ def _walk(root: Path) -> "tuple[list[str], int]":
     return out, links
 
 
+def read_regular(path: Path, limit: int) -> "bytes | None":
+    """A regular file's bytes, or None for anything else (FIFO, device, socket).
+
+    Opened with O_NOFOLLOW, so a file swapped for a symlink after the walk
+    fails instead of being followed; O_NONBLOCK, so opening a FIFO does not
+    wait for a writer. The type is checked on the open descriptor, and the
+    size is enforced while reading, so a file that grows is still capped.
+    """
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        chunks, total = [], 0
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                return b"".join(chunks)
+            total += len(chunk)
+            if total > limit:
+                raise _TooLarge
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
+
+
 def collect(root: Path, findings: "list | None" = None,
             clock=time.monotonic) -> dict:
     """Map the attack surface of the tree at root. Never runs anything."""
     root = Path(root)
     started = clock()
     all_files, symlinks = _walk(root)
-    reasons = []
+    ctx = _Context(set(all_files), clock=clock, deadline=started + TIME_BUDGET_S)
     if len(all_files) > MAX_FILES:
-        reasons.append(f"only the first {MAX_FILES} of {len(all_files)} files were read")
+        ctx.reasons.append(f"only the first {MAX_FILES} of {len(all_files)} files were read")
         all_files = all_files[:MAX_FILES]
-    ctx = _Context(set(all_files))
+        ctx.files = set(all_files)
 
     scanned = 0
     for i, rel in enumerate(all_files):
-        if clock() - started > TIME_BUDGET_S:
-            reasons.append(f"time limit of {int(TIME_BUDGET_S)}s reached; "
-                           f"{len(all_files) - i} files not read")
+        if clock() > ctx.deadline:
+            ctx.reasons.append(f"time limit of {int(TIME_BUDGET_S)}s reached; "
+                               f"{len(all_files) - i} files not read")
             break
         name = posixpath.basename(rel)
         ext = posixpath.splitext(name)[1].lower()
@@ -925,18 +1070,16 @@ def collect(root: Path, findings: "list | None" = None,
             continue
         if name in LOCKFILES:
             continue
-        full = root / rel
         try:
-            size = full.stat().st_size
-            if size > MAX_FILE_BYTES:
-                ctx.skip(rel, f"larger than {MAX_FILE_BYTES // (1024 * 1024)} MB")
-                continue
-            data = full.read_bytes()
+            data = read_regular(root / rel, MAX_FILE_BYTES)
+        except _TooLarge:
+            ctx.skip(rel, f"larger than {MAX_FILE_BYTES // (1024 * 1024)} MB")
+            continue
         except OSError as exc:
             ctx.skip(rel, f"unreadable ({type(exc).__name__})")
             continue
-        if b"\x00" in data[:1024]:
-            continue        # binary
+        if data is None or b"\x00" in data[:1024]:
+            continue        # not a regular file, or binary
         src = _Text(data.decode("utf-8", errors="replace"))
         scanned += 1
         frontend = is_frontend(rel, src.text)
@@ -957,13 +1100,17 @@ def collect(root: Path, findings: "list | None" = None,
             extract_hosts(rel, src, ctx, frontend)
         except RecursionError:
             ctx.skip(rel, "too deeply nested to parse")
+        except _OutOfTime:
+            ctx.reasons.append(f"time limit of {int(TIME_BUDGET_S)}s reached while "
+                               f"reading {rel}; {len(all_files) - i - 1} files not read")
+            break
 
     if ctx.skipped_count:
-        reasons.append(f"{ctx.skipped_count} files could not be analysed")
+        ctx.reasons.append(f"{ctx.skipped_count} files could not be analysed")
     result = correlate(ctx, findings)
     result.update({
-        "status": "incomplete" if reasons else "ok",
-        "reason": "; ".join(reasons),
+        "status": "incomplete" if ctx.reasons else "ok",
+        "reason": "; ".join(ctx.reasons),
         "skipped": ctx.skipped,
         "stats": {"files_scanned": scanned, "files_skipped": ctx.skipped_count,
                   "symlinks_ignored": symlinks,
