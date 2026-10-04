@@ -40,5 +40,8 @@
 - 已知限制：bearer 對 `app/static/app.js`（約 120 KB）逾時略過（debug log：`context deadline exceeded`，第 41 輪已記錄），本輪前端新增程式碼改以獨立人工複核確認（textContent／SVG 文字節點，無 innerHTML 注入）。
 - 發現：先前各輪 CI 判讀寫「程式掃描皆 0」，但基準報表顯示 bearer 一直有上述既有項目——`summary.txt` 的 0 是結束碼（bearer 以 `--exit-code 0` 執行），不是發現數。判讀必須打開報表本體。
 
+### G5 複查（run 37172074875，commit d2d2d5d）
+bearer：`base.py:65` critical、`orchestrator.py:281` high、`mcp.py:279` medium，皆為基準既有項目；i18n.js 誤報已消失。trivy-image CRITICAL 5／HIGH 190，與基準相同。其餘工具 0。→ **G5 通過**。
+
 ### G3 判定
 Critical 0／High 0（已修）／無硬編碼密鑰／無新增相依 → **通過**。
