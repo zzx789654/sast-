@@ -130,28 +130,37 @@ def _template(raw: str) -> str:
     return re.sub(r"\$\{[^}]{0,200}\}", "{param}", raw)
 
 
-def mask_credentials(url: str) -> str:
-    """scheme://user:secret@host -> scheme://user:***@host; token@host -> ***@host.
+# Query parameters whose value is a credential: ?password=..., &api_key=...
+_SECRET_PARAM_RE = re.compile(
+    r"([?&;][\w.-]{0,40}(?:pass|pwd|secret|token|key|auth|sig|credential)[\w.-]{0,40}=)[^&#;\s]*",
+    re.IGNORECASE)
 
-    Userinfo ends at the *last* "@" before the query, because a password may
-    itself contain "@" or "/" (p@ss, pa/ss). An "@" after a "/" with no ":"
-    before that "/" belongs to the path (registry.npmjs.org/@scope/pkg) and
-    is left alone. Masking a little too much is the safe way to be wrong.
+
+def mask_credentials(url: str) -> str:
+    """Hide every credential a URL can carry: user:secret@, token@, ?password=.
+
+    A password may contain "@", "/", "?" or "#", so with a ":" in front of an
+    "@" everything up to the *last* "@" is treated as userinfo. That can mask
+    a little too much (an "@" later in a path or query), which only costs
+    accuracy of the host shown -- the safe way to be wrong. Without a ":", a
+    bare token ends at the first "/", "?" or "#" (so registry/@scope/pkg is
+    a path, not a token).
     """
+    url = _SECRET_PARAM_RE.sub(r"\1***", url)
     i = url.find("//")
     if i == -1:
         return url
     head = url[i + 2:]
-    stop = min((j for j in (head.find("?"), head.find("#")) if j != -1), default=len(head))
+    colon = head.find(":")
+    if colon != -1 and head.find("@", colon) != -1:
+        at = head.rfind("@")
+        return url[:i + 2] + head[:colon] + ":***" + head[at:]
+    stop = min((j for j in (head.find("/"), head.find("?"), head.find("#")) if j != -1),
+               default=len(head))
     at = head.rfind("@", 0, stop)
     if at == -1:
         return url
-    userinfo = head[:at]
-    slash, colon = userinfo.find("/"), userinfo.find(":")
-    if slash != -1 and (colon == -1 or colon > slash):
-        return url
-    user = userinfo[:colon] + ":***" if colon != -1 else "***"
-    return url[:i + 2] + user + head[at:]
+    return url[:i + 2] + "***" + head[at:]
 
 
 def is_frontend(rel: str, text: str) -> bool:
@@ -228,6 +237,7 @@ def _py_framework(tree: ast.Module) -> str:
 
 
 def extract_python(rel: str, text: str, ctx: "_Context") -> None:
+    ctx.check()          # parsing cannot be interrupted, so do not start late
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError) as exc:
@@ -236,6 +246,7 @@ def extract_python(rel: str, text: str, ctx: "_Context") -> None:
 
     # Auth-decorated names, for Django views wired up in another file.
     for node in ast.walk(tree):
+        ctx.tick()
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if any(AUTH_RE.search(_name_of(d)) for d in node.decorator_list):
                 ctx.auth_views.add(node.name)
@@ -254,6 +265,7 @@ def extract_python(rel: str, text: str, ctx: "_Context") -> None:
     routers: dict[str, tuple[str, bool]] = {}
     imports: dict[str, tuple[str, str]] = {}
     for node in ast.walk(tree):
+        ctx.tick()
         if isinstance(node, ast.ImportFrom) and node.module is not None:
             mod = node.module.split(".")[-1]
             for a in node.names:
@@ -286,6 +298,7 @@ def extract_python(rel: str, text: str, ctx: "_Context") -> None:
         return
 
     for node in ast.walk(tree):
+        ctx.tick()
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         other_auth = any(
@@ -327,6 +340,7 @@ def extract_python(rel: str, text: str, ctx: "_Context") -> None:
 def _django_urls(rel: str, tree: ast.Module, ctx: "_Context") -> None:
     module = posixpath.splitext(rel)[0].replace("/", ".")
     for node in ast.walk(tree):
+        ctx.tick()
         if not (isinstance(node, ast.Call) and _name_of(node.func) in (
                 "path", "re_path", "url") and len(node.args) >= 2):
             continue
@@ -559,6 +573,9 @@ _LARAVEL_GROUP_RE = re.compile(
     r"Route::((?:(?:middleware|prefix|name|controller|namespace)\([^)]{0,300}\)\s*->\s*){0,6}"
     r"(?:middleware|prefix|name|controller|namespace)\([^)]{0,300}\))\s*->\s*group\(")
 _BRACE_RE = re.compile(r"[{}]")
+_PHP_CLOSURE_RE = re.compile(
+    r"\s*(?:static\s+)?function\s*\([^)]{0,300}\)\s*"
+    r"(?:use\s*\([^)]{0,300}\)\s*)?(?::\s*\??[\w\\]{1,100}\s*)?\{")
 
 
 def brace_pairs(text: str, ctx: "_Context") -> dict[int, int]:
@@ -590,9 +607,12 @@ def extract_php(rel: str, src: _Text, ctx: "_Context") -> None:
         chain = g.group(1)
         pm = re.search(r"prefix\(\s*['\"]([^'\"]{0,200})['\"]", chain)
         mw = re.search(r"middleware\(([^)]{0,300})\)", chain)
-        brace = text.find("{", g.end(), g.end() + _WINDOW)
-        # An unclosed group runs to the end of the file, as PHP would read it.
-        end = pairs.get(brace, len(text)) if brace != -1 else g.end()
+        # Only a closure passed straight to group() is its body. A group that
+        # loads a file (->group(base_path(...))) has none, and taking the next
+        # "{" would hand its prefix and auth to unrelated routes.
+        closure = _PHP_CLOSURE_RE.match(text, g.end())
+        # An unclosed closure runs to the end of the file, as PHP would read it.
+        end = pairs.get(closure.end() - 1, len(text)) if closure else g.end()
         groups.append((g.end(), end, pm.group(1) if pm else "",
                        bool(mw and "auth" in mw.group(1))))
 
@@ -694,7 +714,10 @@ def extract_hosts(rel: str, src: _Text, ctx: "_Context", frontend: bool) -> None
         raw = m.group(0)
         masked = mask_credentials(raw)
         parts = urlsplit(masked.replace("jdbc:", "", 1))
-        key = f"{parts.scheme}://{parts.netloc}" if parts.netloc else masked
+        # Never the whole string: what follows the authority (a query with
+        # options, sometimes a password) is not part of where it connects.
+        key = f"{parts.scheme}://{parts.netloc}" if parts.netloc else \
+            f"{parts.scheme}://{parts.path}"
         ctx.add_host(key, "database", rel, src.line(m.start()), frontend)
     url_spans = _Spans()
     for m in _URL_RE.finditer(text):
@@ -774,6 +797,10 @@ class _Context:
         self.documented: set[str] = set()
         self.has_openapi = False
         self.frontend_files: set[str] = set()
+
+    def check(self) -> None:
+        if self.clock() > self.deadline:
+            raise _OutOfTime
 
     def tick(self) -> None:
         """Called inside every per-match loop: the budget holds within a file,
@@ -1005,8 +1032,12 @@ def correlate(ctx: _Context, findings: "list | None") -> dict:
 
 
 # --------------------------------------------------------------------- walk
-def _walk(root: Path) -> "tuple[list[str], int]":
-    """Regular files under root, relative and '/'-separated. Symlinks skipped."""
+def _walk(root: Path, limit: int) -> "tuple[list[str], int]":
+    """Files under root, relative and '/'-separated. Symlinks skipped.
+
+    Stops one past limit, so a tree of millions of files is not listed in
+    full just to report that it was too big.
+    """
     out, links = [], 0
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS
@@ -1017,6 +1048,8 @@ def _walk(root: Path) -> "tuple[list[str], int]":
                 links += 1
                 continue
             out.append(Path(full).relative_to(root).as_posix())
+            if len(out) > limit:
+                return out, links
     return out, links
 
 
@@ -1050,10 +1083,10 @@ def collect(root: Path, findings: "list | None" = None,
     """Map the attack surface of the tree at root. Never runs anything."""
     root = Path(root)
     started = clock()
-    all_files, symlinks = _walk(root)
+    all_files, symlinks = _walk(root, MAX_FILES)
     ctx = _Context(set(all_files), clock=clock, deadline=started + TIME_BUDGET_S)
     if len(all_files) > MAX_FILES:
-        ctx.reasons.append(f"only the first {MAX_FILES} of {len(all_files)} files were read")
+        ctx.reasons.append(f"only the first {MAX_FILES} files were read; the project has more")
         all_files = all_files[:MAX_FILES]
         ctx.files = set(all_files)
 

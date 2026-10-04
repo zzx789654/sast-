@@ -62,6 +62,11 @@ def test_join_and_template():
     ("https://registry.npmjs.org/@babel/core", "https://registry.npmjs.org/@babel/core"),
     ("https://h/x?email=a@b.com", "https://h/x?email=a@b.com"),
     ("no scheme at all", "no scheme at all"),
+    ("postgres://u:Qm?ark@h4", "postgres://u:***@h4"),                     # "?" in password
+    ("https://carol:Qq#Leak@q.corp.io/z", "https://carol:***@q.corp.io/z"),  # "#" in password
+    ("postgres:///db?password=EmptyNetPw", "postgres:///db?password=***"),
+    ("https://h/api?api_key=abc123&x=1", "https://h/api?api_key=***&x=1"),
+    ("/login?user=a&access_token=xyz", "/login?user=a&access_token=***"),
 ])
 def test_mask_credentials(raw, masked):
     assert asf.mask_credentials(raw) == masked
@@ -72,11 +77,14 @@ def test_credentials_in_frontend_urls_never_leave_the_module(tmp_path):
         "public/a.js": ("fetch('https://alice:Hunter2Secret@api.corp.io/v1/x');\n"
                         "axios.get('https://bob:S3cr3t@svc.corp.io/y');\n"),
         "srv/db.py": ("A = 'postgres://admin:pa/ssw0rd@db/x'\n"
-                      "B = 'mysql://root:p@ssword@h:3306/d'\n"),
+                      "B = 'mysql://root:p@ssword@h:3306/d'\n"
+                      "C = 'postgres:///db?password=EmptyNetPw'\n"),
+        "public/b.js": "fetch('https://carol:Qq?Leak@q.corp.io/z');\n",
     })
     r = asf.collect(tmp_path)
     dump = json.dumps(r)
-    for secret in ("Hunter2Secret", "S3cr3t", "pa/ssw0rd", "ssw0rd", "p@ssword", "ssword"):
+    for secret in ("Hunter2Secret", "S3cr3t", "pa/ssw0rd", "ssw0rd", "p@ssword", "ssword",
+                   "Qq?Leak", "Leak", "EmptyNetPw"):
         assert secret not in dump, secret
     paths = {e["path"] for e in r["endpoints"]}
     assert "https://alice:***@api.corp.io/v1/x" in paths
@@ -638,7 +646,7 @@ def test_file_count_limit(tmp_path, monkeypatch):
     write(tmp_path, {f"f{i}.js": "" for i in range(4)})
     r = asf.collect(tmp_path)
     assert r["status"] == "incomplete"
-    assert "only the first 2 of 4 files" in r["reason"]
+    assert "only the first 2 files were read; the project has more" in r["reason"]
 
 
 def test_time_budget_between_files(tmp_path):
@@ -827,3 +835,23 @@ def test_same_path_other_method_is_not_a_match():
     r = asf.correlate(ctx, [])
     front = [e for e in r["endpoints"] if e["side"] == "frontend"]
     assert front[0]["flags"] == ["unknown_backend"]
+
+
+def test_laravel_group_without_a_closure_claims_no_routes(tmp_path):
+    """->group(base_path(...)) loads a file; the next "{" is not its body."""
+    write(tmp_path, {"routes/web.php": (
+        "<?php\n"
+        "Route::middleware('auth')->prefix('admin')->group(base_path('routes/admin.php'));\n"
+        "Route::get('/public/delete-all', function () { return 1; });\n"
+        "Route::prefix('x')->group(static function () use ($a): void {\n"
+        "  Route::get('/in', 'A@b');\n"
+        "});\n")})
+    got = routes(asf.collect(tmp_path))
+    assert got[("GET", "/public/delete-all")]["auth"] == "not_detected"
+    assert ("GET", "/x/in") in got
+
+
+def test_python_file_is_not_parsed_after_the_deadline(tmp_path):
+    ctx = asf._Context(set(), clock=lambda: 999.0, deadline=0.0)
+    with pytest.raises(asf._OutOfTime):
+        asf.extract_python("a.py", "x = 1\n", ctx)
