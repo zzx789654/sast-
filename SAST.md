@@ -29,6 +29,12 @@
 
 第二輪判定：Critical／High = 0；無抑制註解；無硬編碼密鑰。G3 有條件通過，相依套件 CVE 以 G5 CI 報表確認。
 
+### CI 報表判讀（G5）
+| run | commit | 判讀 |
+|---|---|---|
+| 37311211524 | d5aaeef | 綠燈，但 `pip-audit-semgrep` = 1：pip 24.0、setuptools 79.0.1。原因是 CI 的 venv 沒有比照 Dockerfile 升級 pip／setuptools，審到的不是映像實際的環境；trivy-image 的 Python 套件發現與基準 37209215637 **完全相同**（msgpack、setuptools 70.3.0、urllib3，既有） |
+| 37311828371 | 438876a | CI venv 改為與 Dockerfile 相同步驟後：semgrep 0、pip-audit 0、**pip-audit-semgrep 0**、osv 0、trivy-fs 0、gitleaks 0；trivy-image CRITICAL 5／HIGH 190（同基準）。bearer 多出 `main.py:1590` path traversal（High）與 `main.py:1014` regex（Medium）：第 44 輪未改 `main.py`，同一 commit f0b4ceb 的兩次 CI（37172467199 有、37209215637 無）結果不同，屬 bearer 結果不穩定。人工確認為誤判：寫入路徑是 `job_dir(伺服器 id)/"upload.zip"`，不使用上傳檔名；regex 前已限制長度 ≤ 260、無巢狀量詞 |
+
 ### 實測證據（.145）
 - 線上壞映像：`semgrep --version` → `ImportError: cannot import name '_ExtendedAttributes'`；opentelemetry-api 1.45.0 vs sdk 1.37.0（FastAPI 0.142.2 要求 >=1.44）。
 - 新探測：壞映像 rc=1（semgrep NOT AVAILABLE）、舊映像 33d55f4 rc=0。
