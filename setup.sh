@@ -53,6 +53,20 @@ say()  { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# Older setups installed semgrep into the app's venv. It pins
+# opentelemetry-api~=1.37, FastAPI 0.142 needs >=1.44, and with both in one
+# environment one of them breaks; it would also sit first on PATH ahead of
+# the separate venv install-tools.sh now uses. Take it out and let the app's
+# requirements resolve again.
+drop_semgrep_from_app_venv() {
+  [ -x "$VENV_DIR/bin/semgrep" ] || return 0
+  say "Removing semgrep from ./$VENV_DIR (it now has a venv of its own)"
+  "$VENV_DIR/bin/pip" uninstall -y semgrep || warn "could not uninstall semgrep from $VENV_DIR"
+  "$VENV_DIR/bin/pip" install --upgrade -r requirements.txt \
+    --timeout "${PIP_TIMEOUT:-600}" --retries "${PIP_RETRIES:-10}" \
+    || warn "could not refresh the app's requirements in $VENV_DIR"
+}
+
 if [ "$MODE" != "docker" ]; then
   if [ "$(uname -s)" != "Linux" ]; then
     echo "Local setup supports Ubuntu Linux only. Use ./setup.sh --docker on other hosts." >&2
@@ -165,14 +179,9 @@ if [ "$MODE" = "update" ]; then
     # shellcheck disable=SC1091
     source "$VENV_DIR/bin/activate"
   fi
-  if have pip; then PIP_CMD=pip;
-  elif have pip3; then PIP_CMD=pip3;
-  else PIP_CMD=""; fi
-  if [ -n "$PIP_CMD" ]; then
-    "$PIP_CMD" install -U semgrep || warn "semgrep update failed"
-  else
-    warn "pip is unavailable; semgrep was not updated"
-  fi
+  # Semgrep is updated by install-tools.sh below, in its own venv. Updating
+  # it in the app's venv would pull opentelemetry-api back under FastAPI.
+  drop_semgrep_from_app_venv
   # Decide once what this deployment is, because it changes which steps are
   # worth doing: installing binaries onto the host is wasted work when the
   # scanners that run are the ones inside the image.
@@ -202,7 +211,7 @@ if [ "$MODE" = "update" ]; then
   if [ "$DOCKERISED" = "1" ] && [ "${SKIP_DEPLOY:-0}" != "1" ]; then
     echo "  (skipping the host install: the container is what serves this)"
   else
-    FORCE=1 BIN_DIR="$BIN_DIR" PIP_CMD="${PIP_CMD:-pip3}" bash scripts/install-tools.sh \
+    FORCE=1 BIN_DIR="$BIN_DIR" bash scripts/install-tools.sh \
       || warn "some tools failed to update"
   fi
   # Where the app is actually served from decides what "update" has to mean.
@@ -271,10 +280,11 @@ if [ "$USE_VENV" -eq 1 ]; then
   source "$VENV_DIR/bin/activate"
   PIP="pip"
 fi
-export PIP_CMD="$PIP"
 PIP_TIMEOUT="${PIP_TIMEOUT:-600}"
 PIP_RETRIES="${PIP_RETRIES:-10}"
 export PIP_DEFAULT_TIMEOUT="$PIP_TIMEOUT" PIP_RETRIES="$PIP_RETRIES"
+
+if [ "$USE_VENV" -eq 1 ]; then drop_semgrep_from_app_venv; fi
 
 say "Installing Python dependencies / 安裝 Python 相依套件"
 "$PIP" install --upgrade pip setuptools wheel \
@@ -289,12 +299,8 @@ say "Installing Python dependencies / 安裝 Python 相依套件"
 if [ "$DO_TOOLS" -eq 1 ]; then
   say "Installing scanners / 安裝掃描工具"
 
-  # Semgrep is a Python package — install it into this (venv) environment so it
-  # is on PATH whenever the app runs.
-  "$PIP" install --prefer-binary --timeout "$PIP_TIMEOUT" --retries "$PIP_RETRIES" \
-    semgrep || warn "semgrep install failed"
-
-  # Native binaries (Trivy, Bearer, OSV-Scanner, Gitleaks) via install-tools.sh.
+  # All six via install-tools.sh. Semgrep goes into its own venv there, not
+  # this one: it and FastAPI need different opentelemetry-api versions.
   if [ -w /usr/local/bin ]; then
     BIN_DIR=/usr/local/bin
   else
@@ -302,7 +308,7 @@ if [ "$DO_TOOLS" -eq 1 ]; then
     mkdir -p "$BIN_DIR"
   fi
   say "Installing scanner binaries into $BIN_DIR"
-  BIN_DIR="$BIN_DIR" PIP_CMD="$PIP" bash scripts/install-tools.sh || warn "some tools failed to install"
+  BIN_DIR="$BIN_DIR" bash scripts/install-tools.sh || warn "some tools failed to install"
 
   case ":$PATH:" in
     *":$BIN_DIR:"*) : ;;

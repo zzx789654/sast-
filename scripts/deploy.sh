@@ -92,6 +92,29 @@ bash "${ROOT}/scripts/fetch-vendor.sh" || echo "  continuing; the build will fet
 step "Building the new image (the running service is untouched)"
 compose build || die "build failed -- the old version is still serving"
 
+# A healthy service says nothing about its scanners: a deploy once went out
+# with semgrep failing on import, and /api/tools cannot be read once accounts
+# are on. Ask the scanners themselves, in the new image, before it serves.
+step "Checking every scanner starts in the new image"
+probe='from app.adapters import get_adapters
+bad = 0
+for a in get_adapters():
+    ok, detail = a.probe()
+    state = "ok" if ok else "NOT AVAILABLE"
+    print(f"  {a.name:<12} {state}")
+    bad += not ok
+raise SystemExit(bad)'
+if ! docker run --rm --entrypoint python sast-studio:latest -c "${probe}"; then
+  if docker image inspect sast-studio:rollback-previous >/dev/null 2>&1; then
+    docker tag sast-studio:rollback-previous sast-studio:latest
+  else
+    # First deploy: nothing to go back to, so do not leave the broken image
+    # as "latest" for the next compose up to start.
+    docker rmi sast-studio:latest >/dev/null 2>&1 || true
+  fi
+  die "a scanner does not start in the new image -- not switched, the old version is still serving"
+fi
+
 step "Switching to the new image"
 if [ "${RECREATE_FOR_GID}" -eq 1 ]; then
   echo "  forcing a recreate so the corrected docker group takes effect"

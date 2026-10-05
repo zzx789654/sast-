@@ -129,25 +129,27 @@ def _update_commands(tools: list[str]) -> list[tuple[str, list[str]]]:
     """
     cmds: list[tuple[str, list[str]]] = []
     for name in tools:
-        if name == "semgrep":
-            cmds.append((name, ["python", "-m", "pip", "install", "--no-cache-dir",
-                                "--upgrade", "semgrep"]))
-        elif name == "trivy" and shutil.which("trivy"):
+        if name == "trivy" and shutil.which("trivy"):
             # Trivy ships its own database updater; refreshing it is the part
             # that actually matters between releases.
             cmds.append((name, ["trivy", "image", "--download-db-only"]))
         # npm is deliberately not updated here: the image runs as a non-root
         # user so "npm install -g" always fails on /usr/local/lib, and npm
         # audit reads its advisories from the registry, not from local npm.
-        # bearer, gitleaks, npm_audit and osv-scanner are pinned in the
-        # image: updating them means rebuilding, not installing in place.
+        # bearer, gitleaks, npm_audit, osv-scanner and semgrep are pinned in
+        # the image: updating them means rebuilding, not installing in place.
+        # Semgrep used to upgrade itself here from PyPI, unpinned. It lives in
+        # its own venv (it and FastAPI need different opentelemetry-api), and
+        # upgrading it in place meant handing that venv to the app's account
+        # and pulling whatever PyPI served past CI and the image scan.
     return cmds
 
 
 #: Where each pinned tool's releases are published. Only used to ask "is
 #: there a newer one", never to download anything: the version that gets
-#: installed is the one pinned in the Dockerfile, reviewed and checksummed.
+#: installed is the one pinned in the Dockerfile and tested by CI.
 UPSTREAM = {
+    "semgrep": "semgrep/semgrep",
     "gitleaks": "gitleaks/gitleaks",
     "osv_scanner": "google/osv-scanner",
     "bearer": "Bearer/bearer",

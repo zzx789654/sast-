@@ -760,7 +760,7 @@ how they are installed rather than a shortcut:
 
 | tool | updates in place? | why |
 |---|---|---|
-| semgrep | yes | a pip package, so `pip install --upgrade` works |
+| semgrep | no | pinned (`SEMGREP_VERSION`) in its own root-owned venv `/opt/semgrep`; it and the app need different opentelemetry versions, and upgrading in place would let the app's account rewrite the scanner and skip CI |
 | trivy | its database | the binary is pinned; `--download-db-only` refreshes the part that changes daily |
 | bearer, gitleaks, osv-scanner | no | pinned binaries in `/usr/local/bin`, which the app's account cannot write, and none of them has a self-update command |
 | npm_audit | no | npm's global install needs root, and the advisories come from the registry at scan time anyway |
@@ -777,10 +777,10 @@ them: the version that ships is one somebody chose and checksummed.
   OSV.dev and npm audit queries the npm registry at scan time, so CVE/advisory
   freshness is automatic — only the tool *binaries* need version management.
 - **Binaries are version-pinned** in `scripts/install-tools.sh` and the
-  `Dockerfile` (Trivy/OSV/Gitleaks) so builds are reproducible. Bump those
+  `Dockerfile` (Trivy/OSV/Gitleaks/Semgrep) so builds are reproducible. Bump those
   versions deliberately; automate the bumps with Renovate/Dependabot if you like.
-- **Update in place** with `./setup.sh --update` (updates Semgrep via pip and
-  re-installs the pinned binaries), or rebuild the Docker image.
+- **Update in place** with `./setup.sh --update` (re-installs the pinned binaries,
+  and Semgrep in its own venv), or rebuild the Docker image.
 - **See what's installed** any time in the **Monitor** tab or at `GET /api/tools`.
 
 ## Monitoring

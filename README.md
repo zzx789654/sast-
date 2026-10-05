@@ -69,7 +69,9 @@ SAST Studio 會同時跑 **Semgrep、Bearer、Trivy、npm audit、OSV-Scanner、
 | **Gitleaks** | 密鑰 | 掃描硬編碼的密鑰／憑證 | 任何檔案 | MIT |
 
 目前釘住的版本（`Dockerfile`、`scripts/install-tools.sh`、`scripts/fetch-vendor.sh` 三處一致）：
-Trivy **0.74.0**、OSV-Scanner **2.6.0**、Gitleaks **8.30.1**；Semgrep 以 pip 安裝最新版；
+Trivy **0.74.0**、OSV-Scanner **2.6.0**、Gitleaks **8.30.1**、Semgrep **1.179.0**（`Dockerfile`、`install-tools.sh`、CI 三處一致）；
+Semgrep 裝在**自己的 venv**（映像內 `/opt/semgrep`），
+不和 SAST Studio 本身共用 Python 環境——兩者需要的 opentelemetry 版本互斥；
 Bearer 走官方安裝腳本（CI 內釘 2.1.1 並驗 SHA-256）。
 
 > **為什麼不用 CodeQL？** 它的 CLI 只對開源／研究免費，掃描私有程式碼需要付費的
@@ -215,12 +217,11 @@ cd sast-
 
 #### `./setup.sh --update` 具體做了什麼
 
-1. 用 pip 更新 Semgrep（有 `.venv` 會先啟用）。
-2. 判斷目前是 **Docker 部署**（有執行中的 `sast-studio` 容器）還是**主機安裝**。
-3. **下載到本機 `./vendor`**（`scripts/fetch-vendor.sh`）：可續傳、會驗 SHA-256、已經有的就跳過——第二次執行完全不用網路。
-4. 依部署方式分流：
+1. 判斷目前是 **Docker 部署**（有執行中的 `sast-studio` 容器）還是**主機安裝**。
+2. **下載到本機 `./vendor`**（`scripts/fetch-vendor.sh`）：可續傳、會驗 SHA-256、已經有的就跳過——第二次執行完全不用網路。
+3. 依部署方式分流：
    - **Docker 部署** → 跳過主機安裝（實際跑掃描的是容器內的副本），直接呼叫 `scripts/deploy.sh` 重建映像並切換。
-   - **主機安裝** → 以 `FORCE=1` 重跑 `scripts/install-tools.sh` 把工具重新裝到主機。
+   - **主機安裝** → 以 `FORCE=1` 重跑 `scripts/install-tools.sh` 把工具重新裝到主機（Semgrep 裝在它自己的 venv，預設 `/usr/local/lib/sast-semgrep`）。
 
 兩個退出口，當你只想做其中一部分：
 
@@ -249,7 +250,8 @@ SKIP_VENDOR=1 ./setup.sh --update    # 重建映像，不碰 ./vendor 快取
 | 6. 切換 | `docker compose up -d`；`nginx.conf` 有變動時自動重建 nginx 容器 | 提示執行 `--rollback` |
 | 7. 等待健康 | 最多等 5 分鐘直到容器 healthy | 提示執行 `--rollback` |
 | 8. 驗證 | 打 `/api/health` 必須 200；`/api/tools` 回報幾個掃描器可用（啟用帳號時回 401 屬正常） | 提示執行 `--rollback` |
-| 9. 首次密碼 | 第一次部署時從日誌撈出自動產生的管理員密碼並顯示 | — |
+| 9. 掃描器探測 | 在容器內直接呼叫六個掃描器的探測，任何一個起不來就失敗（不需登入；健康檢查看不到掃描器壞掉） | 提示執行 `--rollback` |
+| 10. 首次密碼 | 第一次部署時從日誌撈出自動產生的管理員密碼並顯示 | — |
 
 停機時間只有最後切換容器的幾秒鐘。
 
@@ -300,8 +302,9 @@ SKIP_VENDOR=1 ./setup.sh --update    # 重建映像，不碰 ./vendor 快取
   都在掃描時即時更新。只有工具**本體二進位**需要管理版本。
 - **二進位版本固定**：要升版就同時修改 `Dockerfile`、`scripts/install-tools.sh`、`scripts/fetch-vendor.sh`
   的版本號（以及 `fetch-vendor.sh` 的 checksum），再跑 `./setup.sh --update`。
-- **網頁上就地更新**：監控分頁的「更新掃描工具」可直接更新 Semgrep（pip）與 Trivy 的弱點 DB；
-  Bearer、Gitleaks、OSV-Scanner、npm 以二進位釘在映像裡，需重建映像才能換版。
+- **網頁上就地更新**：監控分頁的「更新掃描工具」只更新 Trivy 的弱點 DB；
+  Semgrep、Bearer、Gitleaks、OSV-Scanner、npm 都釘在映像裡，需重建映像才能換版（監控分頁會顯示是否有新版）。
+  Semgrep 原本可在網頁上從 PyPI 直接升級（不釘版本），第 44 輪起改為釘版本：就地升級要讓執行中的帳號能改寫掃描器本體，且新版未經 CI 與映像掃描。
 - **查看已安裝版本**：監控分頁，或 `GET /api/tools`。
 
 ### 手動安裝（不用腳本）

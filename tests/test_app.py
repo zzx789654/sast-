@@ -837,12 +837,13 @@ def test_admin_status_reports_updatable_tools():
     assert "gitleaks" in pinned and "osv_scanner" in pinned
 
 
-def test_admin_update_commands_are_fixed_argv():
+def test_admin_update_commands_are_fixed_argv(monkeypatch):
     """Update commands must never be built from request input."""
     from app import admin
 
-    cmds = admin._update_commands(["semgrep", "gitleaks", "not-a-tool"])
-    assert cmds, "semgrep should be updatable"
+    monkeypatch.setattr(admin.shutil, "which", lambda name: "/usr/local/bin/" + name)
+    cmds = admin._update_commands(["trivy", "gitleaks", "not-a-tool"])
+    assert cmds, "trivy's database should be updatable"
     for _name, cmd in cmds:
         assert isinstance(cmd, list)          # argv, never a shell string
         assert all(isinstance(part, str) for part in cmd)
@@ -850,10 +851,72 @@ def test_admin_update_commands_are_fixed_argv():
     assert all(n in {"semgrep", "trivy", "npm_audit"} for n, _ in cmds)
 
 
+def test_semgrep_is_not_upgraded_in_place():
+    """It used to pip-upgrade itself from PyPI, unpinned, with the app's
+    python. Done in its own venv instead, the app's account would have to
+    own that venv -- code every later scan runs. Now pinned like the rest."""
+    from app import admin
+
+    assert admin._update_commands(["semgrep"]) == []
+    assert not hasattr(admin, "_semgrep_python")
+    rows = {r["name"]: r for r in admin.updatable_tools()}
+    assert rows["semgrep"]["in_place"] is False
+    assert "semgrep" in admin.UPSTREAM, "nothing would say a newer one exists"
+
+
+def test_semgrep_does_not_share_the_apps_environment():
+    """Every place that installs semgrep keeps it out of the app's packages,
+    and a build or deploy where a scanner cannot start does not pass."""
+    import re
+
+    root = Path(__file__).resolve().parents[1]
+    dockerfile = (root / "Dockerfile").read_text("utf-8")
+    block = dockerfile[dockerfile.index("--- Semgrep"):]
+    block = block[:block.index("# Scanner binaries")]
+    assert "python -m venv /opt/semgrep" in block
+    assert '"semgrep==${SEMGREP_VERSION}"' in block, "semgrep is not pinned"
+    assert "chown -R appuser /opt/semgrep" not in dockerfile, (
+        "the app's account can rewrite the scanner it runs")
+    assert "python -m pip install --no-cache-dir --prefer-binary \\\n" \
+        "      --timeout \"${PIP_TIMEOUT}\" --retries \"${PIP_RETRIES}\" semgrep" \
+        not in dockerfile, "semgrep is installed into the app's environment again"
+    after_reqs = dockerfile[dockerfile.index("-r requirements.txt"):]
+    assert "semgrep --version" in after_reqs, (
+        "nothing checks semgrep still starts after the app's packages")
+
+    install = (root / "scripts/install-tools.sh").read_text("utf-8")
+    assert '-m venv "$SEMGREP_VENV"' in install
+    assert '"semgrep==${SEMGREP_VERSION}"' in install
+    # An old semgrep elsewhere on PATH must not count as installed.
+    fn = install[install.index("install_semgrep() {"):]
+    fn = fn[:fn.index("\n}\n")]
+    assert "want semgrep" not in fn and '"$SEMGREP_VENV/bin/semgrep"' in fn
+    setup = (root / "setup.sh").read_text("utf-8")
+    assert "install -U semgrep" not in setup
+    assert setup.count("drop_semgrep_from_app_venv") >= 3, (
+        "a semgrep left in the app's venv by an older setup stays first on PATH")
+    assert not re.search(r'"\$PIP"[^\n]*\\\n\s*semgrep', setup)
+
+    ci = (root / ".github/workflows/ci.yml").read_text("utf-8")
+    assert "pip-audit semgrep" not in ci
+    assert '"$RUNNER_TEMP/semgrep/bin/semgrep" scan' in ci
+    assert '"semgrep==${SEMGREP_VERSION}"' in ci
+    assert "pip-audit-semgrep" in ci, "semgrep's own packages are not audited"
+
+    deploy = (root / "scripts/deploy.sh").read_text("utf-8")
+    assert "get_adapters()" in deploy and "a.probe()" in deploy
+    assert "a scanner does not start" in deploy
+    assert deploy.index("Checking every scanner starts") < \
+        deploy.index('step "Switching to the new image"'), (
+        "a broken image would already be serving when the check fails")
+
+
 def test_admin_update_rejects_unknown_tools_via_api(monkeypatch):
     from app import admin
 
     started = {}
+    # Trivy's database is the one thing left that updates in place.
+    monkeypatch.setattr(admin.shutil, "which", lambda name: "/usr/local/bin/" + name)
     monkeypatch.setattr(admin.threading, "Thread",
                         lambda **kw: type("T", (), {"start": lambda s: started.setdefault("ran", True)})())
     try:
@@ -865,14 +928,15 @@ def test_admin_update_rejects_unknown_tools_via_api(monkeypatch):
             admin.state.running = False
 
 
-def test_admin_rejects_concurrent_jobs():
+def test_admin_rejects_concurrent_jobs(monkeypatch):
     """Two installs at once would fight over the same files."""
     from app import admin
 
+    monkeypatch.setattr(admin.shutil, "which", lambda name: "/usr/local/bin/" + name)
     with admin.state.lock:
         admin.state.running = True
     try:
-        res = admin.start_update(["semgrep"])
+        res = admin.start_update(["trivy"])
         assert res["started"] is False
         assert "already running" in res["reason"]
         # A restart must not interrupt an update either.
@@ -3227,7 +3291,8 @@ def test_the_scanner_versions_are_pinned_to_the_same_value_everywhere():
         "scripts/install-tools.sh": r'{key}="\$\{{{key}:-([0-9][0-9.]*)\}}"',
     }
 
-    for key in ["OSV_SCANNER_VERSION", "GITLEAKS_VERSION", "TRIVY_VERSION"]:
+    for key in ["OSV_SCANNER_VERSION", "GITLEAKS_VERSION", "TRIVY_VERSION",
+                "SEMGREP_VERSION"]:
         found = {}
         for rel, pattern in sources.items():
             text = (root / rel).read_text("utf-8")
@@ -3670,7 +3735,7 @@ def test_update_fills_the_cache_before_installing():
 
 # ------------------------------------------------ what can actually update
 def test_only_the_tools_that_can_update_in_place_are_offered():
-    """Four of the six are pinned binaries in the image.
+    """Five of the six are pinned in the image; only trivy's database updates.
 
     Verified on the deployment rather than assumed: /usr/local/bin is not
     writable by the account the app runs as, npm's global install fails for
@@ -3680,8 +3745,7 @@ def test_only_the_tools_that_can_update_in_place_are_offered():
     """
     from app.admin import _update_commands
 
-    assert _update_commands(["semgrep"]), "semgrep is a pip package; it can update"
-    for pinned in ["bearer", "gitleaks", "osv_scanner", "npm_audit"]:
+    for pinned in ["bearer", "gitleaks", "osv_scanner", "npm_audit", "semgrep"]:
         assert not _update_commands([pinned]), (
             f"{pinned} is a pinned binary and cannot be updated in place"
         )

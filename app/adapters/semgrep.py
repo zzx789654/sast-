@@ -19,7 +19,9 @@ class SemgrepAdapter(BaseAdapter):
     name = "semgrep"
     kind = ToolKind.SAST
     binary = "semgrep"
-    install_hint = "pip install semgrep  (or: brew install semgrep)"
+    # Not "pip install semgrep": in the app's environment it breaks FastAPI or
+    # itself (they need different opentelemetry-api versions).
+    install_hint = "scripts/install-tools.sh  (semgrep gets its own venv; or: pipx install semgrep)"
     languages = ["*"]  # rule-dependent; supports 30+ languages
     first_stage = "rules"          # fetching and compiling rulesets
     requirement = "source code (30+ languages, rule-based)"

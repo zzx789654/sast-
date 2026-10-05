@@ -33,6 +33,7 @@ jobs:
     permissions:
       contents: read
     env:
+      SEMGREP_VERSION: "1.179.0"
       OSV_SCANNER_VERSION: "2.6.0"
       TRIVY_VERSION: "0.74.0"
       GITLEAKS_VERSION: "8.30.1"
@@ -49,7 +50,12 @@ jobs:
       - name: Install security scanners
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install -r requirements.txt pytest pip-audit semgrep
+          python -m pip install -r requirements.txt pytest pip-audit
+          # Semgrep gets its own venv, as in the image: installed alongside
+          # the app, the resolver held FastAPI back to suit semgrep, so CI
+          # tested an older FastAPI than the image ships.
+          python -m venv "$RUNNER_TEMP/semgrep"
+          "$RUNNER_TEMP/semgrep/bin/pip" install "semgrep==${SEMGREP_VERSION}"
           mkdir -p "$RUNNER_TEMP/security-tools" reports
 
           curl -fsSL --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 600 \
@@ -107,11 +113,16 @@ jobs:
 
           # Source code scan without telemetry. Explicit language rules avoid
           # Semgrep's auto-config metrics requirement while covering this repo.
-          run_scan semgrep semgrep scan --config p/python --config p/javascript \
+          run_scan semgrep "$RUNNER_TEMP/semgrep/bin/semgrep" scan --config p/python --config p/javascript \
             --error --metrics=off --json .
 
           # Python dependency scan of the complete installed environment.
           run_scan pip-audit pip-audit --progress-spinner off --format json
+          # Semgrep's own venv is not the environment above, so audit what
+          # it resolved separately.
+          "$RUNNER_TEMP/semgrep/bin/pip" freeze --all > reports/semgrep-venv.txt
+          run_scan pip-audit-semgrep pip-audit --progress-spinner off --format json \
+            --no-deps -r reports/semgrep-venv.txt
 
           # Multi-ecosystem dependency scan (requirements.txt and any supported
           # manifests supplied by the repository).

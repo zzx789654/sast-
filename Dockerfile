@@ -4,6 +4,7 @@
 # Desktop GUI carries a fee for large orgs, and a server image does not need it.
 FROM python:3.11-slim
 
+ARG SEMGREP_VERSION=1.179.0
 ARG OSV_SCANNER_VERSION=2.6.0
 ARG GITLEAKS_VERSION=8.30.1
 ARG TRIVY_VERSION=0.74.0
@@ -28,15 +29,25 @@ RUN python -m pip install --no-cache-dir --upgrade \
       --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" \
       pip setuptools wheel
 
-# --- Semgrep (pip, pulls the Python engine) ---
+# --- Semgrep (pip, in its own virtualenv) ---
+# Semgrep pins opentelemetry-api~=1.37 and FastAPI 0.142 needs >=1.44. In one
+# environment whichever installs last wins: the app's install upgraded it and
+# semgrep died on import while the service stayed healthy. Its own venv lets
+# each side resolve on its own. The symlink is enough: semgrep adds its venv's
+# bin to PATH itself to find pysemgrep and semgrep-core. Pinned like the
+# other five and root-owned: a new version means a rebuild CI has tested.
 # Semgrep pins older transitive packaging deps, so re-upgrade setuptools and
 # msgpack afterwards; upgrading before this step alone leaves the old versions
 # in the image. Semgrep does not constrain either at runtime.
-RUN python -m pip install --no-cache-dir --prefer-binary \
-      --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" semgrep \
-    && python -m pip install --no-cache-dir --upgrade \
+RUN python -m venv /opt/semgrep \
+    && /opt/semgrep/bin/pip install --no-cache-dir --upgrade \
+      --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" pip setuptools wheel \
+    && /opt/semgrep/bin/pip install --no-cache-dir --prefer-binary \
+      --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" "semgrep==${SEMGREP_VERSION}" \
+    && /opt/semgrep/bin/pip install --no-cache-dir --upgrade \
       --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" \
-      "setuptools>=78.1.1" "msgpack>=1.2.1"
+      "setuptools>=78.1.1" "msgpack>=1.2.1" \
+    && ln -s /opt/semgrep/bin/semgrep /usr/local/bin/semgrep
 
 # Scanner binaries: use the host cache when present, download when not.
 # scripts/fetch-vendor.sh fills ./vendor before the build. That matters on a
@@ -114,6 +125,13 @@ WORKDIR /app
 COPY requirements.txt .
 RUN python -m pip install --no-cache-dir --prefer-binary \
       --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" -r requirements.txt
+# Every scanner must still start after the app's packages are in. A health
+# check cannot see a broken scanner, so the build is where it has to fail.
+# (semgrep --version is the check that caught the broken opentelemetry: it
+# goes through the Python side. "import semgrep.main" succeeded on that image.)
+RUN SEMGREP_ENABLE_VERSION_CHECK=0 semgrep --version \
+    && bearer version && trivy --version && osv-scanner --version \
+    && gitleaks version && npm --version
 COPY app ./app
 
 RUN useradd -m appuser \

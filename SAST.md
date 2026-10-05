@@ -3,6 +3,36 @@
 > 每次安全確認（G3）追加一則，最新在上，不覆蓋。命中密鑰只記位置與類型。
 > 第 42 輪以前的紀錄在 `待修改.md` 各輪與 `lessons.md`。
 
+## [2026-10-05] 第 44 輪 — Semgrep 獨立 venv（Dockerfile、admin.py、部署與安裝腳本、CI）
+
+### 自動掃描
+| 類別 | 工具與範圍 | 結果 |
+|---|---|---|
+| SAST | Semgrep（舊映像 33d55f4 內正常版本）`p/python`、`p/javascript`、`p/dockerfile`、`p/github-actions`；`app/admin.py`、`app/adapters/semgrep.py`、`tests/test_app.py`、`ci.yml` | 0 項、0 錯誤。Dockerfile 第 13 行（既有 ENV 多行寫法）semgrep 無法解析，改人工；shell 腳本無可用規則集（`p/bash` 不存在），以 `bash -n`＋人工 |
+| Secret | Gitleaks 8.30.1，整個工作目錄 | 0 |
+| SCA／授權 | 無新增套件；semgrep 由「未釘版本」改為釘 1.179.0（LGPL-2.1，既有）。CI 新增 `pip-audit-semgrep` 審核 semgrep venv | 以 CI 的 pip-audit／pip-audit-semgrep／trivy-image 為準（G5） |
+
+### 人工複核（獨立子代理，兩輪）
+| # | 嚴重度 | 問題 | 處置 |
+|---|---|---|---|
+| FIND-001 | High | 舊主機 `.venv` 殘留 semgrep 仍在 PATH 前面，衝突會重現；`want semgrep` 看到它就跳過獨立 venv | `setup.sh` `drop_semgrep_from_app_venv`（兩條路徑）；`install_semgrep` 只認 `$SEMGREP_VENV`，並比對 PATH 上 semgrep 的 realpath |
+| FIND-002 | Medium | `/opt/semgrep` chown 給 appuser，執行期帳號可改寫掃描器本體 | 移除 chown；維持 root 擁有 |
+| FIND-003 | Medium | semgrep 未釘版本，網頁就地升級從 PyPI 直拉、繞過 CI 與映像掃描 | 釘 `SEMGREP_VERSION=1.179.0`（Dockerfile／CI／install-tools，有一致性測試）；網頁不再就地升級 semgrep。殘餘：無 `--require-hashes`（Low，接受） |
+| FIND-004／005 | Medium／Low | `_semgrep_python()` 由 PATH 推導直譯器，非 venv 安裝時判斷錯誤 | 隨就地升級一併刪除 |
+| FIND-006 | Low | 疑 `--version` 不經 Python 端 | 實測：壞映像 `semgrep --version` 確實 ImportError；建議的 `import semgrep.main` 在壞映像上**成功**（抓不到），故不採用 |
+| FIND-007 | Low | 探測在切換後才跑 | 移到切換前，以 `docker run --rm` 測新映像；失敗即標回舊映像（首次部署則刪除新 latest）並停止 |
+| FIND-008 | Low | BIN_DIR 結尾斜線 | 去除；python3-venv 缺少時記為安裝失敗（殘餘，接受） |
+| FIND-009 | Low | chown 造成映像多一份 venv | 隨 FIND-002 移除 |
+| FIND-010 | Low | pip-audit 不涵蓋 semgrep venv | CI 新增 `pip-audit-semgrep` |
+| FIND-011 | Low | 安裝提示仍是 `pip install semgrep` | 改為 install-tools.sh／pipx |
+| NEW-001～003 | Low | 第二輪：已安裝時跳過 symlink 檢查；首次部署失敗留下壞 latest；清除舊 semgrep 時未帶 timeout | 皆已修 |
+
+第二輪判定：Critical／High = 0；無抑制註解；無硬編碼密鑰。G3 有條件通過，相依套件 CVE 以 G5 CI 報表確認。
+
+### 實測證據（.145）
+- 線上壞映像：`semgrep --version` → `ImportError: cannot import name '_ExtendedAttributes'`；opentelemetry-api 1.45.0 vs sdk 1.37.0（FastAPI 0.142.2 要求 >=1.44）。
+- 新探測：壞映像 rc=1（semgrep NOT AVAILABLE）、舊映像 33d55f4 rc=0。
+
 ## [2026-10-04] 第 43 輪 — 攻擊面盤點（app/attack_surface.py 等）
 
 ### 自動掃描

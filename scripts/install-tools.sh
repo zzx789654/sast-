@@ -10,8 +10,13 @@ set -uo pipefail
 OSV_SCANNER_VERSION="${OSV_SCANNER_VERSION:-2.6.0}"
 GITLEAKS_VERSION="${GITLEAKS_VERSION:-8.30.1}"
 TRIVY_VERSION="${TRIVY_VERSION:-0.74.0}"
+SEMGREP_VERSION="${SEMGREP_VERSION:-1.179.0}"
 BIN_DIR="${BIN_DIR:-/usr/local/bin}"
-PIP_CMD="${PIP_CMD:-pip3}"
+BIN_DIR="${BIN_DIR%/}"
+# Semgrep lives in its own venv: it pins opentelemetry-api~=1.37 and FastAPI
+# 0.142 needs >=1.44, so in the app's environment one of them breaks.
+SEMGREP_PYTHON="${SEMGREP_PYTHON:-python3}"
+SEMGREP_VENV="${SEMGREP_VENV:-${BIN_DIR%/bin}/lib/sast-semgrep}"
 PIP_TIMEOUT="${PIP_TIMEOUT:-600}"
 PIP_RETRIES="${PIP_RETRIES:-10}"
 FORCE="${FORCE:-0}"
@@ -149,9 +154,28 @@ case "$arch" in
 esac
 
 install_semgrep() {
-  want semgrep || { echo "   already installed: $(command -v semgrep || echo "${BIN_DIR}/semgrep")"; return 0; }
-  "$PIP_CMD" install --prefer-binary --timeout "$PIP_TIMEOUT" \
-    --retries "$PIP_RETRIES" -U semgrep
+  # "Installed" means our venv, not any semgrep on PATH: one left in the app's
+  # venv by an older setup is exactly the copy that breaks.
+  if [ "$FORCE" != 1 ] && [ -x "$SEMGREP_VENV/bin/semgrep" ]; then
+    echo "   already installed: $SEMGREP_VENV"
+  else
+    "$SEMGREP_PYTHON" -m venv "$SEMGREP_VENV" \
+      && "$SEMGREP_VENV/bin/pip" install --prefer-binary --timeout "$PIP_TIMEOUT" \
+        --retries "$PIP_RETRIES" -U pip "semgrep==${SEMGREP_VERSION}" \
+      || return 1
+  fi
+  # Link and check even when already installed: the link may be gone, or
+  # this run may use a different BIN_DIR than the one that installed it.
+  ln -sf "$SEMGREP_VENV/bin/semgrep" "${BIN_DIR}/semgrep" \
+    && SEMGREP_ENABLE_VERSION_CHECK=0 "${BIN_DIR}/semgrep" --version \
+    || return 1
+  # A semgrep earlier on PATH would still be the one the app runs.
+  local found
+  found="$(command -v semgrep || true)"
+  if [ -n "$found" ] && [ "$(readlink -f "$found")" != "$(readlink -f "$SEMGREP_VENV/bin/semgrep")" ]; then
+    echo "   [warn] $found comes before ${BIN_DIR}/semgrep on PATH; remove it" >&2
+    return 1
+  fi
 }
 
 install_osv() (
