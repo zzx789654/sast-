@@ -54,8 +54,13 @@ jobs:
           # Semgrep gets its own venv, as in the image: installed alongside
           # the app, the resolver held FastAPI back to suit semgrep, so CI
           # tested an older FastAPI than the image ships.
+          # Same steps as the Dockerfile, so pip-audit-semgrep below audits
+          # what the image ships (a bare venv keeps its bundled, old pip).
           python -m venv "$RUNNER_TEMP/semgrep"
+          "$RUNNER_TEMP/semgrep/bin/pip" install --upgrade pip setuptools wheel
           "$RUNNER_TEMP/semgrep/bin/pip" install "semgrep==${SEMGREP_VERSION}"
+          "$RUNNER_TEMP/semgrep/bin/pip" install --upgrade \
+            "setuptools>=78.1.1" "msgpack>=1.2.1"
           mkdir -p "$RUNNER_TEMP/security-tools" reports
 
           curl -fsSL --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 600 \
