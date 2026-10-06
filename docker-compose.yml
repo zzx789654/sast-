@@ -35,10 +35,15 @@ services:
       SAST_ALLOWED_HOSTS: "${SAST_ALLOWED_HOSTS:-}"
       SAST_ALLOW_LOCAL_PATH: "true"
       SAST_TOOL_TIMEOUT: "900"
-      # Monitor tab — per-container CPU/memory. Reads the docker socket that is
-      # mounted read-only below. That mount is a privileged capability, so this
-      # whole compose file assumes a trusted, non-public host.
+      # Monitor tab — per-container CPU/memory, read through docker-proxy
+      # below. This container has no docker socket: one mounted ":ro" still
+      # accepts every API call, including ones that start containers, which
+      # is control of the host.
       SAST_ENABLE_DOCKER_STATS: "true"
+      SAST_DOCKER_PROXY: "docker-proxy:2375"
+      # Scanner upgrades from the Monitor tab: this app writes a request here
+      # and scripts/sast_updater.py, on the host, does the work.
+      SAST_OPS_DIR: "/data/ops"
     volumes:
       # Two volumes, not one: filling the rules directory must not take the
       # scan workspaces down with it, and vice versa.
@@ -49,17 +54,25 @@ services:
       # using the "Local path" tab with e.g. /mounted/my-project.
       # - ./my-project:/mounted/my-project:ro
       #
-      # Required for the Monitor tab. Read-only: enough to read container stats,
-      # not to start, stop or create containers. Still a privileged capability —
-      # a process that can read this socket can see every container on the host.
+      # Upgrade requests and their progress (see SAST_OPS_DIR). Created by
+      # scripts/install-updater.sh; holds no credentials.
+      - ./ops:/data/ops
+    depends_on:
+      - docker-proxy
+    restart: unless-stopped
+
+  # The Docker API for the Monitor tab: four read-only paths (container list,
+  # one container's details and stats, engine info), 403 for everything else
+  # -- no writes, no container files, no logs. See nginx/docker-proxy.conf.
+  # Not published to the host.
+  docker-proxy:
+    # Pinned by digest: this container holds the docker socket.
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    volumes:
+      - ./nginx/docker-proxy.conf:/etc/nginx/nginx.conf:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    # The socket is owned by root:docker and the app runs as a non-root user,
-    # so it needs that group to read it. The gid differs per host (988 here,
-    # 999 elsewhere), which is why it comes from the environment:
-    # scripts/deploy.sh writes the host's real gid into .env before building.
-    # Without this the Monitor tab reports "permission denied".
-    group_add:
-      - "${DOCKER_GID:-999}"
+    expose:
+      - "2375"
     restart: unless-stopped
 
   nginx:

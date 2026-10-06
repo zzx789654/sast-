@@ -157,12 +157,10 @@ if [ "$MODE" = "docker" ]; then
     echo "Docker daemon is not available to the current user." >&2
     exit 1
   fi
-  # Before the first container exists, not after. Compose stamps the group
-  # onto a container when it creates it, so a gid written later never
-  # reaches the container already running -- which is why the Monitor tab
-  # reported "permission denied" on every freshly deployed machine.
-  say "Detecting the docker group id for the Monitor tab"
-  bash scripts/docker-gid.sh || true
+  # Before the first container exists: a bind-mount source Docker has to
+  # create itself is created as root. Also starts the host updater (cron).
+  say "Setting up scanner upgrades from the web panel"
+  bash scripts/install-updater.sh || warn "upgrades from the web panel are off"
 
   say "Building and starting containers (this pulls the six scanners)…"
   $COMPOSE up --build -d

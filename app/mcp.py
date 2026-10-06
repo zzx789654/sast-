@@ -25,7 +25,7 @@ from typing import Any, Optional
 
 from .config import config
 from .models import ScanTarget
-from .orchestrator import manager
+from .orchestrator import Draining, manager
 from .source import SourceError, validate_git_url
 
 # The version we implement. A client asking for something else still gets this
@@ -191,9 +191,9 @@ def handle(message: dict, user, base_url: Optional[str] = None) -> Optional[dict
         args = params.get("arguments") or {}
         try:
             return _result(req_id, _call_tool(name, args, user, base_url))
-        except ValueError as exc:
+        except (ValueError, Draining) as exc:
             # A bad argument is the caller's problem, and saying which one
-            # saves a round trip.
+            # saves a round trip. So is "not now, an upgrade is restarting".
             return _result(req_id, {
                 "content": [{"type": "text", "text": str(exc)}],
                 "isError": True,

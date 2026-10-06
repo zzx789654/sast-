@@ -45,16 +45,43 @@ SHA_OSV="ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108"
 SHA_GITLEAKS="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
 SHA_TRIVY="2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a"
 
+# The versions the hashes above belong to. Any other version -- one upgraded
+# from the web panel -- is checked against the checksums file the project
+# publishes with that release instead.
+SHA_OSV_FOR="2.6.0"
+SHA_GITLEAKS_FOR="8.30.1"
+SHA_TRIVY_FOR="0.74.0"
+
 PRINT_HASHES=0
+STRICT=0
 [ "${1:-}" = "--print-hashes" ] && PRINT_HASHES=1
+# --strict: a download that cannot be verified is a failure (exit 1), not a
+# note for the build to work around. The upgrade path uses it.
+[ "${1:-}" = "--strict" ] && STRICT=1
+
+GH="https://github.com"
+
+# The hash the project published for <name> in its release checksums file.
+official_sum() {
+  local name="$1" url
+  case "${name}" in
+    osv-scanner_*) url="${GH}/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_SHA256SUMS" ;;
+    gitleaks_*)    url="${GH}/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt" ;;
+    trivy_*)       url="${GH}/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt" ;;
+    *)             return 0 ;;
+  esac
+  curl -fsSL --retry 5 --retry-delay 5 --connect-timeout 30 "${url}" \
+    | awk -v n="${name}" '$2 == n || $2 == "*" n { print $1; exit }'
+}
 
 expected_for() {
   case "$1" in
-    osv-scanner_*)  printf '%s' "${SHA_OSV}" ;;
-    gitleaks_*)     printf '%s' "${SHA_GITLEAKS}" ;;
-    trivy_*)        printf '%s' "${SHA_TRIVY}" ;;
-    *)              printf '' ;;
+    osv-scanner_*) [ "${OSV_SCANNER_VERSION}" = "${SHA_OSV_FOR}" ] && { printf '%s' "${SHA_OSV}"; return; } ;;
+    gitleaks_*)    [ "${GITLEAKS_VERSION}" = "${SHA_GITLEAKS_FOR}" ] && { printf '%s' "${SHA_GITLEAKS}"; return; } ;;
+    trivy_*)       [ "${TRIVY_VERSION}" = "${SHA_TRIVY_FOR}" ] && { printf '%s' "${SHA_TRIVY}"; return; } ;;
+    *)             return 0 ;;
   esac
+  official_sum "$1"
 }
 
 # The hashes live here and nowhere else. install-tools.sh asks for one before
@@ -72,6 +99,7 @@ verify() {
   want="$(expected_for "${name}")"
   if [ -z "${want}" ]; then
     info "${name}: no recorded checksum (not verified)"
+    [ "${STRICT}" -eq 1 ] && return 1
     return 0
   fi
   got="$(sha256sum "${file}" | cut -d' ' -f1)"
@@ -161,5 +189,6 @@ if [ "${rc}" -eq 0 ]; then
 else
   echo "Some downloads failed. The build still works - it falls back to"
   echo "downloading whatever is missing. Re-run to retry; finished files are kept."
+  [ "${STRICT}" -eq 1 ] && exit 1
 fi
 exit 0

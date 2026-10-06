@@ -28,8 +28,16 @@ class _UnixHTTPConnection(http.client.HTTPConnection):
         self.sock = s
 
 
+def _connection(timeout: float) -> http.client.HTTPConnection:
+    """To the read-only proxy when one is configured, else the socket."""
+    if config.DOCKER_PROXY:
+        host, _, port = config.DOCKER_PROXY.rpartition(":")
+        return http.client.HTTPConnection(host, int(port), timeout=timeout)
+    return _UnixHTTPConnection(config.DOCKER_SOCKET, timeout)
+
+
 def _get(path: str, timeout: float = 5.0):
-    conn = _UnixHTTPConnection(config.DOCKER_SOCKET, timeout)
+    conn = _connection(timeout)
     try:
         conn.request("GET", path)
         resp = conn.getresponse()
@@ -45,6 +53,8 @@ def availability() -> tuple[bool, str]:
     if not config.ENABLE_DOCKER_STATS:
         return False, ("disabled — set SAST_ENABLE_DOCKER_STATS=true and mount "
                        "the docker socket to enable")
+    if config.DOCKER_PROXY:
+        return True, ""
     if not os.path.exists(config.DOCKER_SOCKET):
         return False, f"docker socket not found at {config.DOCKER_SOCKET}"
     return True, ""

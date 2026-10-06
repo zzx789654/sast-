@@ -15,10 +15,12 @@ cd "${ROOT}"
 
 PULL=1
 ROLLBACK=0
+PREV=""
 for arg in "$@"; do
   case "${arg}" in
     --no-pull)  PULL=0 ;;
     --rollback) ROLLBACK=1 ;;
+    --prev=*)   PREV="${arg#--prev=}" ;;   # internal: set by the re-exec below
     -h|--help)  sed -n '2,12p' "$0"; exit 0 ;;
     *) echo "unknown option: ${arg}" >&2; exit 2 ;;
   esac
@@ -32,6 +34,17 @@ compose() {
   else docker-compose "$@"; fi
 }
 
+# The scanner upgrade (scripts/sast_updater.py) switches images too. Two of
+# them at once would each tag the other's image as the one to roll back to.
+# After the re-exec below, fd 9 is inherited still holding the lock; opening
+# it again would drop the lock for a moment, long enough for the updater. So
+# open it only when it is not open yet, and always take the lock: locking
+# the same open file again succeeds, and no option can skip it.
+if ! { true >&9; } 2>/dev/null; then
+  exec 9>"${ROOT}/.updater.lock"
+fi
+flock -n 9 || die "a scanner upgrade is running; try again when it finishes"
+
 # ------------------------------------------------------------------ rollback
 if [ "${ROLLBACK}" -eq 1 ]; then
   step "Rolling back to the previous image"
@@ -44,9 +57,22 @@ if [ "${ROLLBACK}" -eq 1 ]; then
 fi
 
 # -------------------------------------------------------------------- deploy
+# Pull first, and if that changed this script, run the new one. Bash reads a
+# script as it goes, so carrying on would run the old steps -- a deploy once
+# skipped the scanner check it was shipping, and printed steps twice.
+[ -n "${PREV}" ] || PREV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if [ "${PULL}" -eq 1 ] && [ -d .git ]; then
+  step "Updating the source"
+  before="$(sha256sum "$0" | cut -d' ' -f1)"
+  git pull --ff-only || die "git pull failed (local changes? resolve them first)"
+  if [ "$(sha256sum "$0" | cut -d' ' -f1)" != "${before}" ]; then
+    echo "  deploy.sh itself changed; continuing with the new version"
+    exec bash "$0" --no-pull "--prev=${PREV}"
+  fi
+fi
+
 step "Tagging the current image so this deploy can be undone"
 if docker image inspect sast-studio:latest >/dev/null 2>&1; then
-  PREV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
   docker tag sast-studio:latest "sast-studio:rollback-${PREV}"
   docker tag sast-studio:latest sast-studio:rollback-previous
   echo "  previous image kept as sast-studio:rollback-${PREV}"
@@ -54,57 +80,40 @@ else
   echo "  no existing image (first deploy)"
 fi
 
-if [ "${PULL}" -eq 1 ] && [ -d .git ]; then
-  step "Updating the source"
-  git pull --ff-only || die "git pull failed (local changes? resolve them first)"
-fi
 echo "  deploying $(git rev-parse --short HEAD 2>/dev/null || echo 'working tree')"
 
-# The Monitor tab reads the docker socket, which is owned by root:docker with
-# no world access. The app runs as a non-root user, so it needs that group --
-# and the gid differs between hosts, so read the real one rather than guessing.
-# Without this the Monitor tab just says "permission denied".
-step "Detecting the docker group id for the Monitor tab"
-# Exit 2 means a running container still carries the old group. Compose
-# reads .env only when it creates a container, so writing the right gid is
-# not enough on its own -- that container has to be recreated, or the
-# Monitor tab stays broken however often the service is restarted.
-RECREATE_FOR_GID=0
-# Capture the status directly. Inside `if ! cmd`, $? is the status of the
-# negation rather than the command, so the exit-2 signal was read as 0 and
-# a stale container aborted the deploy instead of being recreated.
-# `|| rc=$?` also keeps set -e from killing the script on a non-zero exit.
-rc=0
-bash "${ROOT}/scripts/docker-gid.sh" || rc=$?
-case "${rc}" in
-  0) ;;
-  2) RECREATE_FOR_GID=1 ;;
-  *) die "could not determine the docker group id" ;;
-esac
+# The upgrade exchange directory. It must exist, owned by this user, before
+# compose starts: a missing bind-mount source is created by Docker as root,
+# and then neither the app nor the host updater could write to it.
+mkdir -p "${ROOT}/ops"
 
 # Download the scanner binaries before the build rather than during it. On a
 # slow link this is the difference between a build of minutes and one of tens
 # of minutes, and a failure here costs nothing: the build falls back to
 # downloading whatever is still missing.
+# Scanner versions upgraded from the web panel live in .env (written by
+# scripts/sast_updater.py), not in the repository. Keep them: a deploy of new
+# code must not quietly take a scanner back to the repository's version.
+BUILD_ARGS=()
+if [ -f .env ]; then
+  while IFS='=' read -r key value; do
+    export "${key}=${value}"
+    BUILD_ARGS+=(--build-arg "${key}=${value}")
+    echo "  keeping ${key}=${value} from .env"
+  done < <(grep -E '^(SEMGREP|TRIVY|OSV_SCANNER|GITLEAKS)_VERSION=[0-9]+[.][0-9]+[.][0-9]+$' .env || true)
+fi
+
 step "Caching scanner binaries (resumable, safe to interrupt)"
 bash "${ROOT}/scripts/fetch-vendor.sh" || echo "  continuing; the build will fetch what is missing"
 
 step "Building the new image (the running service is untouched)"
-compose build || die "build failed -- the old version is still serving"
+compose build "${BUILD_ARGS[@]}" || die "build failed -- the old version is still serving"
 
 # A healthy service says nothing about its scanners: a deploy once went out
 # with semgrep failing on import, and /api/tools cannot be read once accounts
 # are on. Ask the scanners themselves, in the new image, before it serves.
 step "Checking every scanner starts in the new image"
-probe='from app.adapters import get_adapters
-bad = 0
-for a in get_adapters():
-    ok, detail = a.probe()
-    state = "ok" if ok else "NOT AVAILABLE"
-    print(f"  {a.name:<12} {state}")
-    bad += not ok
-raise SystemExit(bad)'
-if ! docker run --rm --entrypoint python sast-studio:latest -c "${probe}"; then
+if ! docker run --rm --entrypoint python sast-studio:latest -m app.selfcheck probe; then
   if docker image inspect sast-studio:rollback-previous >/dev/null 2>&1; then
     docker tag sast-studio:rollback-previous sast-studio:latest
   else
@@ -116,11 +125,6 @@ if ! docker run --rm --entrypoint python sast-studio:latest -c "${probe}"; then
 fi
 
 step "Switching to the new image"
-if [ "${RECREATE_FOR_GID}" -eq 1 ]; then
-  echo "  forcing a recreate so the corrected docker group takes effect"
-  compose up -d --force-recreate sast-studio \
-    || die "could not start the new image; ./scripts/deploy.sh --rollback"
-fi
 compose up -d || die "could not start the new image; ./scripts/deploy.sh --rollback"
 
 # nginx.conf is bind-mounted as a single file, which pins the inode it had
@@ -177,6 +181,11 @@ if compose logs sast-studio 2>/dev/null | grep -q "First run: created administra
     | sed 's/^[^|]*| *//'
   echo "  Save these now; the password is not recoverable."
 fi
+
+# Every deploy keeps the image it replaced. Without a limit they pile up:
+# .145 had 54 of them and 516 MB of disk left.
+step "Removing old rollback images (keeping three)"
+bash "${ROOT}/scripts/prune-rollbacks.sh"
 
 printf '\nDeployed. %s\n' "$(git rev-parse --short HEAD 2>/dev/null || echo 'working tree')"
 echo "Open ${URL} -- roll back with ./scripts/deploy.sh --rollback"

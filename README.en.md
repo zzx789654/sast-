@@ -781,6 +781,22 @@ them: the version that ships is one somebody chose and checksummed.
   versions deliberately; automate the bumps with Renovate/Dependabot if you like.
 - **Update in place** with `./setup.sh --update` (re-installs the pinned binaries,
   and Semgrep in its own venv), or rebuild the Docker image.
+- **Upgrade from the web panel** (Docker deployments): Monitor → *Upgrade
+  scanners* → *Check for new versions* → tick → *Upgrade*. Semgrep, Trivy,
+  OSV-Scanner and Gitleaks; only the newest release, once it (and every file
+  in it) has been out for 7 days. The app container only files a request;
+  `scripts/sast_updater.py` on the host (cron, every minute) re-checks the
+  version, downloads and verifies the published checksum, checks again,
+  builds a candidate image, confirms every scanner still finds what it must on
+  a sample project and that the image has no more CRITICAL vulnerabilities,
+  waits for running scans (new ones get `503`), then switches -- or keeps the
+  old image if anything fails. Versions are recorded in the host's `.env`,
+  which `deploy.sh` keeps. Needs accounts on (`SAST_REQUIRE_AUTH=true`), an
+  administrator, `scripts/install-updater.sh` run once, and 3 GB free disk.
+- **The app has no Docker socket.** The Monitor tab reads the Docker API
+  through `docker-proxy` (`nginx/docker-proxy.conf`): four read-only paths,
+  403 for everything else. A socket mounted `:ro` would still accept every
+  API call, including ones that start containers.
 - **See what's installed** any time in the **Monitor** tab or at `GET /api/tools`.
 
 ## Monitoring

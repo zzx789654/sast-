@@ -3,6 +3,27 @@
 > 每次安全確認（G3）追加一則，最新在上，不覆蓋。命中密鑰只記位置與類型。
 > 第 42 輪以前的紀錄在 `待修改.md` 各輪與 `lessons.md`。
 
+## [2026-10-06] 第 45 輪 — 網頁觸發的掃描工具升級（主機服務、docker proxy）
+
+### 自動掃描
+| 類別 | 工具與範圍 | 結果 |
+|---|---|---|
+| SAST | Semgrep `p/python`＋`p/javascript`（同 CI），`app/`、`scripts/`、`tests/` 共 40 檔 | 1 項：`tests/test_updater.py` 刻意建立 setuid 檔（驗證主機會清掉），屬測試樣本；已改用具名常數 `stat.S_ISUID…` 表達意圖 |
+| SAST（稽核） | Semgrep `p/security-audit`，四個新模組 | `dynamic-urllib-use-detected` ×2 → 改用 `http.client`、只連 https＋白名單主機（擋 `file://`）；`httpsconnection-detected` ×1 → 已明確傳入 `ssl.create_default_context()`，測試斷言憑證與主機名稱驗證開啟 |
+| SAST（bearer） | 四個新模組 | os_command_injection（`_run`）：argv list、`shell=False`、只允許 `docker`／`bash`、可變部分皆經格式驗證 → 誤判；path_traversal ×2（rmtree、open 鎖檔）：路徑皆為程式常數 → 誤判 |
+| Secret | Gitleaks 8.30.1，整個工作目錄 | 0（`selfcheck.py` 的假 AKIA 於執行時組出，不在檔案中） |
+| SCA | 無新增 Python 套件；docker proxy 改用既有的 nginx 映像（digest 固定），移除原計畫的第三方 socket-proxy | 以 CI 的 pip-audit／osv／trivy 為準（G5） |
+
+### 人工複核（獨立子代理，兩輪）
+- 第一輪：Critical 0／High 0／Medium 6／Low 11。處置：回退完整化（FIND-001）、proxy 改 nginx 路徑白名單（002）、冷卻改看 asset 與 PyPI 最新檔（003/004）、ops 清理與去 setuid（006）、RecursionError 與目錄處理（007）、drain 只接受 int 0（008）、confirm 競態（009）、re-exec 鎖（010）、回退映像依 image 保留（011）、.env 以 0600 建立（012）、cron 路徑（013）、`.dockerignore`（014）、Trivy 報表解析（015）、未啟用帳號時拒絕升級（016）、app 端 FIFO（017）。
+- 第二輪：17 項中 11 已修、5 部分、1 延後；修正引入 Medium×2（NEW-01 路徑 chmod 會跟隨 symlink、NEW-02 tidy 例外使 updater 當機）與 Low×5，**全部已修**：fchmod 於描述元、逐項例外處理、`--prev` 無法略過鎖、nginx 拒絕路徑含 `%`／`..`／`//`（查詢字串不受影響）並以 digest 固定、`.env` 寫入失敗時明確警告、cron 只接受單純路徑、下載後重新查核發布時間。
+- proxy 實測（.145 真實 socket）：`/containers/json`（含 app 實際送出的編碼過濾參數）、`/containers/<id>/json`、`/stats`、`/info` → 200；`archive`、`export`、`logs`、`images`、`/v1.43/`、`%2e%2e`、`..`、`//`、編碼斜線、POST create/stop → 403。
+
+### 殘餘風險（接受，列下一輪）
+- FIND-005：Semgrep 遞移相依未鎖 hash；Bearer 未釘版本；二進位 checksum 與檔案同源（防不了 release 本身被竄改）→ 簽章／provenance 驗證。
+- FIND-002 殘餘：`/containers/<id>/json` 可讀任一容器設定（含環境變數），監控分頁讀記憶體上限需要。
+- 既有 38 處抑制註解（10 個檔案）未處理，另開一輪。
+
 ## [2026-10-05] 第 44 輪 — Semgrep 獨立 venv（Dockerfile、admin.py、部署與安裝腳本、CI）
 
 ### 自動掃描

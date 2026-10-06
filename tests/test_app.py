@@ -904,7 +904,7 @@ def test_semgrep_does_not_share_the_apps_environment():
     assert "pip-audit-semgrep" in ci, "semgrep's own packages are not audited"
 
     deploy = (root / "scripts/deploy.sh").read_text("utf-8")
-    assert "get_adapters()" in deploy and "a.probe()" in deploy
+    assert "-m app.selfcheck probe" in deploy
     assert "a scanner does not start" in deploy
     assert deploy.index("Checking every scanner starts") < \
         deploy.index('step "Switching to the new image"'), (
@@ -4546,65 +4546,88 @@ def _read(rel):
     return (Path(__file__).resolve().parents[1] / rel).read_text(encoding="utf-8")
 
 
-def test_first_run_writes_the_docker_gid_before_starting_containers():
-    """The gid has to exist before the first container does.
-
-    Compose stamps group_add onto a container when it creates it and never
-    revisits it, so a DOCKER_GID written afterwards reaches nothing that is
-    already running. `setup.sh --docker` used to go straight to `compose up`,
-    which is why a freshly deployed machine reported "permission denied" in
-    the Monitor tab until someone happened to run deploy.sh.
-    """
-    setup = _read("setup.sh")
-    gid_at = setup.find("scripts/docker-gid.sh")
-    up_at = setup.find("$COMPOSE up --build -d")
-    assert gid_at != -1, "setup.sh --docker never determines the docker gid"
-    assert up_at != -1
-    assert gid_at < up_at, "the gid is written after the first container is created"
-
-
-def test_both_entry_points_share_one_gid_implementation():
-    """Two copies drift; one of them is how the bug survived."""
-    from pathlib import Path
-    root = Path(__file__).resolve().parents[1]
-    assert (root / "scripts/docker-gid.sh").exists()
+def test_the_app_container_has_no_docker_socket():
+    """A socket mounted ":ro" still answers every API call -- creating a
+    container included -- so the app gets the Docker API only through a
+    proxy that refuses POST. Docker group membership went with the socket."""
+    compose = _read("docker-compose.yml")
+    app_block = compose[compose.index("  sast-studio:"):compose.index("  docker-proxy:")]
+    assert "docker.sock" not in app_block
+    assert "group_add" not in app_block
+    assert 'SAST_DOCKER_PROXY: "docker-proxy:2375"' in app_block
+    proxy = compose[compose.index("  docker-proxy:"):compose.index("  nginx:")]
+    assert "./nginx/docker-proxy.conf:/etc/nginx/nginx.conf:ro" in proxy
+    assert "ports:" not in proxy, "the Docker API must not be published to the host"
+    assert "nginx:1.27-alpine@sha256:" in proxy, "the socket holder is not pinned by digest"
+    conf = _read("nginx/docker-proxy.conf")
+    assert "limit_except GET { deny all; }" in conf
+    # What the location checks must be what Docker receives.
+    assert r'if ($request_uri ~ "^[^?]*(%|\.\.|//)")' in conf
+    assert "location / {\n      return 403;" in conf
+    # Only what docker_stats asks for; nothing that reads files or logs.
+    allowed = conf[conf.index("location ~"):conf.index("{", conf.index("location ~"))]
+    for leak in ("archive", "export", "logs", "exec", "images"):
+        assert leak not in allowed, leak
+    assert not (Path(__file__).resolve().parents[1] / "scripts/docker-gid.sh").exists()
     for entry in ("setup.sh", "scripts/deploy.sh"):
-        assert "scripts/docker-gid.sh" in _read(entry), entry
-    # The detection itself must live in exactly one place.
-    assert _read("scripts/deploy.sh").count("stat -c '%g' /var/run/docker.sock") == 0
-
-
-def test_a_stale_container_group_forces_a_recreate():
-    """Writing the right gid does not fix a container that already exists.
-
-    docker-gid.sh reports that with exit 2; deploy.sh has to act on it, or the
-    Monitor tab stays broken through any number of restarts.
-    """
-    gid = _read("scripts/docker-gid.sh")
-    assert "exit 2" in gid, "no signal for a container created with the wrong group"
-    deploy = _read("scripts/deploy.sh")
-    assert "RECREATE_FOR_GID" in deploy
-    assert "--force-recreate sast-studio" in deploy
+        assert "docker-gid" not in _read(entry), entry
 
 
 def test_docker_monitoring_is_on_in_the_default_compose_file():
     """The default deployment monitors itself; it is not an opt-in extra."""
     compose = _read("docker-compose.yml")
     assert 'SAST_ENABLE_DOCKER_STATS: "true"' in compose
-    assert "/var/run/docker.sock:/var/run/docker.sock:ro" in compose
-    assert "${DOCKER_GID:-999}" in compose
 
 
-def test_the_gid_exit_code_is_read_correctly():
-    """`if ! cmd; then rc=$?` reads the negation, not the command.
+def test_the_monitor_reads_docker_through_the_proxy(monkeypatch):
+    import http.client
+    from app import docker_stats
+    from app.config import config
 
-    The first attempt at this did exactly that, so docker-gid.sh's exit 2
-    arrived as 0 and a stale container aborted the deploy instead of being
-    recreated. Verified on the machine that was actually broken.
-    """
+    monkeypatch.setattr(config, "DOCKER_PROXY", "docker-proxy:2375")
+    monkeypatch.setattr(config, "ENABLE_DOCKER_STATS", True)
+    conn = docker_stats._connection(3.0)
+    assert type(conn) is http.client.HTTPConnection
+    assert (conn.host, conn.port) == ("docker-proxy", 2375)
+    assert docker_stats.availability() == (True, "")
+
+    monkeypatch.setattr(config, "DOCKER_PROXY", "")
+    assert isinstance(docker_stats._connection(3.0), docker_stats._UnixHTTPConnection)
+
+
+def test_deploy_runs_its_new_self_after_pulling():
+    """Bash reads a script as it runs, so a pull that changed deploy.sh left
+    the old steps running: a deploy skipped the very check it shipped."""
     deploy = _read("scripts/deploy.sh")
-    assert 'if ! bash "${ROOT}/scripts/docker-gid.sh"; then' not in deploy
-    assert 'bash "${ROOT}/scripts/docker-gid.sh" || rc=$?' in deploy
+    pull = deploy.index("git pull --ff-only")
+    assert 'exec bash "$0" --no-pull "--prev=${PREV}"' in deploy[pull:]
+    assert pull < deploy.index('step "Tagging the current image')
+    assert 'flock -n 9' in deploy, "deploy and the upgrade could switch at once"
+    assert 'mkdir -p "${ROOT}/ops"' in deploy
+
+
+def test_deploy_keeps_scanner_versions_upgraded_from_the_panel():
+    deploy = _read("scripts/deploy.sh")
+    assert "(SEMGREP|TRIVY|OSV_SCANNER|GITLEAKS)_VERSION=[0-9]+[.][0-9]+[.][0-9]+$" in deploy
+    assert 'compose build "${BUILD_ARGS[@]}"' in deploy
+
+
+def test_the_cron_line_only_takes_plain_paths():
+    """The path goes into a crontab line, where "%" is a newline."""
+    install = _read("scripts/install-updater.sh")
+    assert "^[A-Za-z0-9/._-]+$" in install
+    assert install.index("grep -Eq") < install.index("LINE=")
+
+
+def test_deploy_keeps_only_three_rollback_images():
+    """.145 had 54 of them and 516 MB of disk left."""
+    assert 'scripts/prune-rollbacks.sh"' in _read("scripts/deploy.sh")
+    assert '"scripts/prune-rollbacks.sh"' in _read("scripts/sast_updater.py")
+    prune = _read("scripts/prune-rollbacks.sh")
+    assert 'KEEP="${KEEP:-3}"' in prune
+    # Counted per image, and never the image in use or the one to roll back to.
+    assert "rank[$2]" in prune and "sast-studio:rollback-previous" in prune
+    assert prune.rstrip().endswith("exit 0"), "pruning must never fail a deploy"
 
 
 # ------------------------------------------------------------- activity log

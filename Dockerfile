@@ -134,10 +134,15 @@ RUN SEMGREP_ENABLE_VERSION_CHECK=0 semgrep --version \
     && gitleaks version && npm --version
 COPY app ./app
 
+# The cache directory exists in the image, owned by appuser, so a volume
+# mounted there (the upgrade self-check keeps Trivy's database in one) starts
+# out writable instead of root-owned.
 RUN useradd -m appuser \
-    && mkdir -p /data/workspaces /data/rules /data/accounts \
-    && chown -R appuser /data
+    && mkdir -p /data/workspaces /data/rules /data/accounts /home/appuser/.cache \
+    && chown -R appuser /data /home/appuser/.cache
 USER appuser
+# The same check the deploy and the upgrade run, as the account that scans.
+RUN python -m app.selfcheck probe
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

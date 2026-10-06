@@ -12,3 +12,6 @@ node_modules/
 scan-reports-*/
 vendor/*
 !vendor/.gitkeep
+/ops/
+.updater.lock
+.updater-tmp/

@@ -535,6 +535,17 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 
 /* Result of the last update, so "do I need to restart?" is answered outright */
 .admin-outcome { margin-top: .5rem; font-size: .78rem; }
+.upg-tools { margin-top: .5rem; display: grid; gap: .2rem; font-size: .82rem; }
+.upg-row { display: flex; gap: .5rem; align-items: baseline; cursor: pointer; }
+.upg-row.upg-off { cursor: default; color: var(--muted); }
+.upg-row .upg-why { font-size: .76rem; color: var(--muted); }
+.upg-steps { margin: .6rem 0 0; padding-left: 1.3rem; font-size: .8rem; color: var(--muted); }
+.upg-step.done { color: var(--ok); }
+.upg-step.now { color: var(--med); font-weight: 600; }
+.upg-step.failed { color: var(--high); font-weight: 600; }
+.upg-result { margin-top: .5rem; font-size: .82rem; }
+.upg-result.good { color: var(--ok); }
+.upg-result.bad { color: var(--high); }
 .admin-outcome-row { display: flex; gap: .5rem; align-items: baseline; padding: .12rem 0; }
 .admin-outcome .ao-tool { font-family: ui-monospace, monospace; min-width: 7rem; }
 .admin-outcome .ao-upgraded { color: var(--ok); font-weight: 600; }

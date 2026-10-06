@@ -138,6 +138,14 @@ class Config:
     # privileged capability — only enable it on a trusted deployment.
     ENABLE_DOCKER_STATS = _env_bool("SAST_ENABLE_DOCKER_STATS", False)
     DOCKER_SOCKET = os.environ.get("SAST_DOCKER_SOCKET", "/var/run/docker.sock")
+    # Reach the Docker API through a proxy instead, e.g. "docker-proxy:2375".
+    # The compose file runs one that answers GET only: a socket mounted ":ro"
+    # still accepts every API call, including ones that start containers.
+    DOCKER_PROXY = os.environ.get("SAST_DOCKER_PROXY", "")
+
+    # Where the host updater and this app exchange an upgrade request and its
+    # progress (scripts/sast_updater.py). Unset: the upgrade button is off.
+    OPS_DIR = Path(os.environ["SAST_OPS_DIR"]) if os.environ.get("SAST_OPS_DIR") else None
 
 
 config = Config()

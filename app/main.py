@@ -27,7 +27,7 @@ from . import events
 from .inventory import inventory
 from .models import JobStatus, ScanTarget
 from .attack_surface import NOTE as ATTACK_SURFACE_NOTE
-from .orchestrator import manager
+from .orchestrator import Draining, manager
 from .source import SourceError, resolve_local_path, validate_git_url
 
 @asynccontextmanager
@@ -44,12 +44,15 @@ async def _lifespan(_app: FastAPI):
         events.record("service", "start", detail=f"SAST Studio {app.version}")
     except Exception:  # noqa: BLE001 - never block startup on the log
         pass
+    from . import upgrades
+    upgrades.start_watcher(manager)
     try:
         from . import docker_stats
         docker_stats.start_sampler()
     except Exception:  # noqa: BLE001 - monitoring is not worth a failed start
         pass
     yield
+    upgrades.stop_watcher()
     try:
         from . import docker_stats
         docker_stats.stop_sampler()
@@ -64,6 +67,13 @@ async def _lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="SAST Studio", version="1.0.0", lifespan=_lifespan)
+
+
+@app.exception_handler(Draining)
+async def _draining(_request: Request, exc: Draining) -> JSONResponse:
+    """New scans wait while an upgrade switches images; say so plainly."""
+    return JSONResponse({"detail": str(exc)}, status_code=503,
+                        headers={"Retry-After": "120"})
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -113,6 +123,51 @@ async def admin_update_tools(request: Request,
     _tool_cache.clear()
     result = admin.start_update(wanted)
     return JSONResponse(result, status_code=202 if result.get("started") else 409)
+
+
+def _require_upgrade_admin(request: Request) -> None:
+    """An administrator, and accounts must be on. With accounts off,
+    require_admin lets everyone through -- acceptable for buttons that run
+    in place, not for one that rebuilds and swaps the service."""
+    if not config.REQUIRE_AUTH:
+        raise HTTPException(403, "scanner upgrades need accounts turned on "
+                                 "(SAST_REQUIRE_AUTH=true)")
+    require_admin(request)
+
+
+@app.get("/api/admin/upgrades")
+async def admin_upgrades(request: Request, check: bool = False) -> dict:
+    """The upgrade panel: progress of any upgrade, and with `check`, what an
+    upgrade would install now (asks GitHub and PyPI, so only on request)."""
+    from . import upgrades
+
+    _require_upgrade_admin(request)
+    out = upgrades.status()
+    if check and out["enabled"]:
+        out["tools"] = await run_in_threadpool(upgrades.check)
+    return out
+
+
+@app.post("/api/admin/upgrades")
+async def admin_request_upgrade(request: Request,
+                                targets: Optional[str] = Form(None)) -> JSONResponse:
+    """Ask the host updater to upgrade scanners. `targets` is
+    "tool=version,tool=version", the versions the panel offered."""
+    from . import upgrades
+
+    _require_upgrade_admin(request)
+    wanted = {}
+    for part in (targets or "").split(","):
+        tool, _, version = part.strip().partition("=")
+        if tool:
+            wanted[tool.strip()] = version.strip()
+    result = await run_in_threadpool(
+        upgrades.request_upgrade, wanted, _owner_name(request) or "")
+    events.record("service", "upgrade", level="info" if result["started"] else "warn",
+                  actor=_owner_name(request), source=_client_ip(request),
+                  detail=(f"requested {targets}" if result["started"]
+                          else f"refused: {result['reason']}"))
+    return JSONResponse(result, status_code=202 if result["started"] else 409)
 
 
 @app.post("/api/admin/restart")

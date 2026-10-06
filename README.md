@@ -106,7 +106,7 @@ npm audit）會標示「不適用」與原因——掃描照樣跑其他工具�
 | 動作 | 連到哪裡 | 說明 |
 |---|---|---|
 | Git 網址掃描 | 你給的 Git 主機 | 只允許 `http`/`https`、depth-1、不互動、有 timeout；預設拒絕內網位址（`SAST_ALLOW_INTERNAL_GIT_HOSTS`） |
-| 監控分頁「檢查版本」 | GitHub Releases API | 只查掃描器是否有新版，不帶任何掃描資料 |
+| 監控分頁「檢查版本」「檢查新版」 | GitHub Releases API、PyPI JSON API | 只查掃描器是否有新版與發布時間，不帶任何掃描資料 |
 | 更新掃描器／建置映像 | PyPI、GitHub Releases、Bearer／Trivy 安裝腳本 | 只下載工具本體，二進位檔會驗 checksum |
 
 > **敏感專案須知**：npm audit 與 OSV-Scanner 會讓外部服務知道「這個專案用了哪些套件與版本」。
@@ -189,8 +189,9 @@ cd sast-
 | `scripts/reset-password.sh` | 在主機上重設帳號密碼 | 忘記密碼、帳號被鎖 |
 | `scripts/fetch-vendor.sh` | 把掃描器二進位預先下載到 `./vendor` | 由上面兩支自動呼叫；網路慢時可單獨先跑 |
 | `scripts/install-tools.sh` | 把掃描器安裝到主機 | 由 `setup.sh` 自動呼叫；手動安裝時使用 |
-
-另有 `scripts/docker-gid.sh` 由部署腳本自動呼叫（偵測主機 docker 群組 ID 寫入 `.env`，讓監控分頁能讀容器效能），一般不需手動執行。
+| `scripts/install-updater.sh` | 開啟「網頁升級掃描工具」：建立 `ops/`、在 crontab 加入每分鐘執行的 `scripts/sast_updater.py` | `setup.sh --docker` 自動呼叫；既有部署手動執行一次 |
+| `scripts/sast_updater.py` | 主機服務：處理網頁送出的升級請求（查核→下載驗證→建置→驗收→等待掃描→切換） | 由 cron 呼叫，不需手動執行 |
+| `scripts/prune-rollbacks.sh` | 只保留最近 3 個回退映像 | 部署與升級後自動呼叫 |
 
 ### `setup.sh` — 安裝與更新
 
@@ -202,7 +203,7 @@ cd sast-
 |---|---|
 | （無） | **主機完整安裝**：檢查並用 apt 補齊 git／curl／Node.js／npm／python3-venv → 建立 `.venv` → 安裝 Python 相依 → 安裝六個掃描器 → 跑測試驗證 → 列出各工具是否可用 |
 | `--run` | 安裝完直接以 `uvicorn` 在 `http://localhost:8000` 啟動服務 |
-| `--docker` | **Docker 安裝**：若沒有 Docker 就從 Docker 官方 apt 來源安裝 Docker Engine ＋ Compose → 偵測 docker 群組 ID → `docker compose up --build -d`，完成後開 `http://localhost:8080` |
+| `--docker` | **Docker 安裝**：若沒有 Docker 就從 Docker 官方 apt 來源安裝 Docker Engine ＋ Compose → 開啟網頁升級（`scripts/install-updater.sh`）→ `docker compose up --build -d`，完成後開 `http://localhost:8080` |
 | `--update` | **更新**（詳見下方） |
 | `--no-tools` | 只裝 Python app，不裝掃描器（掃描器會顯示「未安裝」） |
 | `--no-venv` | Python 相依裝進目前環境，不建立 `.venv` |
@@ -242,16 +243,18 @@ SKIP_VENDOR=1 ./setup.sh --update    # 重建映像，不碰 ./vendor 快取
 
 | 步驟 | 內容 | 失敗時 |
 |---|---|---|
-| 1. 標記舊映像 | 把 `sast-studio:latest` 另存為 `sast-studio:rollback-<commit>` 與 `sast-studio:rollback-previous` | 第一次部署時略過 |
-| 2. 更新原始碼 | `git pull --ff-only` | 有本機修改會停止，請先處理 |
-| 3. 偵測 docker 群組 | `scripts/docker-gid.sh` 寫入 `DOCKER_GID` 到 `.env`；群組變了會強制重建容器 | 停止 |
+| 0. 取得鎖 | 與網頁升級共用 `.updater.lock`，升級進行中就停止 | 停止 |
+| 1. 更新原始碼 | `git pull --ff-only`；若 `deploy.sh` 本身被更新，改執行新版（不會跑到一半的舊步驟） | 有本機修改會停止，請先處理 |
+| 2. 標記舊映像 | 把 `sast-studio:latest` 另存為 `sast-studio:rollback-<commit>` 與 `sast-studio:rollback-previous` | 第一次部署時略過 |
+| 3. 沿用升級版本 | `.env` 中網頁升級過的 `*_VERSION` 以 build args 傳入，不會被 repo 的版本蓋回 | — |
 | 4. 快取掃描器 | `scripts/fetch-vendor.sh` | 繼續，建置時再下載缺少的 |
-| 5. 建置新映像 | `docker compose build`，**舊容器持續服務** | 停止，舊版仍在服務 |
-| 6. 切換 | `docker compose up -d`；`nginx.conf` 有變動時自動重建 nginx 容器 | 提示執行 `--rollback` |
-| 7. 等待健康 | 最多等 5 分鐘直到容器 healthy | 提示執行 `--rollback` |
-| 8. 驗證 | 打 `/api/health` 必須 200；`/api/tools` 回報幾個掃描器可用（啟用帳號時回 401 屬正常） | 提示執行 `--rollback` |
-| 9. 掃描器探測 | 在容器內直接呼叫六個掃描器的探測，任何一個起不來就失敗（不需登入；健康檢查看不到掃描器壞掉） | 提示執行 `--rollback` |
-| 10. 首次密碼 | 第一次部署時從日誌撈出自動產生的管理員密碼並顯示 | — |
+| 5. 建置新映像 | `docker compose build`，**舊容器持續服務**；建置時即確認六個掃描器都能啟動 | 停止，舊版仍在服務 |
+| 6. 掃描器探測 | 切換**前**在新映像內執行 `python -m app.selfcheck probe` | 不切換，舊版仍在服務 |
+| 7. 切換 | `docker compose up -d`；`nginx.conf` 有變動時自動重建 nginx 容器 | 提示執行 `--rollback` |
+| 8. 等待健康 | 最多等 5 分鐘直到容器 healthy | 提示執行 `--rollback` |
+| 9. 驗證 | 打 `/api/health` 必須 200 | 提示執行 `--rollback` |
+| 10. 清理 | 只保留最近 3 個回退映像（`scripts/prune-rollbacks.sh`） | 不影響部署結果 |
+| 11. 首次密碼 | 第一次部署時從日誌撈出自動產生的管理員密碼並顯示 | — |
 
 停機時間只有最後切換容器的幾秒鐘。
 
@@ -302,9 +305,16 @@ SKIP_VENDOR=1 ./setup.sh --update    # 重建映像，不碰 ./vendor 快取
   都在掃描時即時更新。只有工具**本體二進位**需要管理版本。
 - **二進位版本固定**：要升版就同時修改 `Dockerfile`、`scripts/install-tools.sh`、`scripts/fetch-vendor.sh`
   的版本號（以及 `fetch-vendor.sh` 的 checksum），再跑 `./setup.sh --update`。
-- **網頁上就地更新**：監控分頁的「更新掃描工具」只更新 Trivy 的弱點 DB；
-  Semgrep、Bearer、Gitleaks、OSV-Scanner、npm 都釘在映像裡，需重建映像才能換版（監控分頁會顯示是否有新版）。
-  Semgrep 原本可在網頁上從 PyPI 直接升級（不釘版本），第 44 輪起改為釘版本：就地升級要讓執行中的帳號能改寫掃描器本體，且新版未經 CI 與映像掃描。
+- **網頁上就地更新**：「維護動作」的「更新掃描工具」只更新 Trivy 的弱點 DB。
+- **網頁上升級版本**（第 45 輪）：監控分頁「升級掃描工具」→「檢查新版」→ 勾選 →「開始更新」。
+  適用 Semgrep、Trivy、OSV-Scanner、Gitleaks；**只提供最新版，且發布（含所有檔案的最後更新）滿 7 天**。
+  網頁容器只送出請求，由主機上的 `scripts/sast_updater.py`（cron 每分鐘）執行：
+  重新查核版本 → 下載並比對官方 checksum → 下載後再查核一次 → 建置候選映像（舊版持續服務）→
+  自動驗收（六個掃描器能啟動、樣本專案每個工具都抓到預期發現、候選映像 CRITICAL 不多於現行）→
+  有掃描進行中就暫停接受新掃描並等它們結束（最多 60 分鐘）→ 切換；任何一步失敗都保留舊版，切換後異常會自動退回。
+  升級後的版本寫在主機 `.env`，之後 `deploy.sh` 會沿用；畫面會提示「本機版本比 repo 新」，請找時間把 repo 的版本號也改上去，CI 才會測到同樣的版本。
+  前提：**必須啟用帳號**（`SAST_REQUIRE_AUTH=true`）且由管理員操作；主機已執行 `scripts/install-updater.sh`；磁碟至少 3 GB 可用。
+  進度與記錄在 `ops/status.json`、`ops/update.log`。
 - **查看已安裝版本**：監控分頁，或 `GET /api/tools`。
 
 ### 手動安裝（不用腳本）
@@ -654,6 +664,8 @@ echo "判定：$STATUS"
 | `GET /api/admin/status?check_upstream=true` | 🔑 | 維護工作狀態、可更新的工具；`check_upstream` 會向 GitHub 查新版 |
 | `POST /api/admin/update-tools` | 🔑 | 就地更新掃描器（`tools` 逗號分隔，可省略）；回 `202`，用 status 輪詢 |
 | `POST /api/admin/restart` | 🔑 | 重啟應用程式（每分鐘最多一次；會清空記憶體中的掃描記錄） |
+| `GET /api/admin/upgrades?check=true` | 🔑 | 升級進度（`status`、`log`、`pending`）；`check` 時另回每個工具可升級的版本或原因。未啟用帳號時一律 403 |
+| `POST /api/admin/upgrades` | 🔑 | 送出升級請求：`targets=tool=version,tool=version`，版本必須等於「檢查新版」提供的版本；回 `202`／`409`。升級等待切換期間，新的掃描請求回 `503`（`Retry-After: 120`） |
 | `GET /api/mcp/config` | 👤 | 產生可直接貼上的 MCP 用戶端設定與 `.env` 範本 |
 | `GET /api/health` | 🌐 | 健康檢查，回 `{"status":"ok"}`（nginx 另提供 `/healthz`） |
 
@@ -773,7 +785,9 @@ Docker 部署預設**啟用登入**（`SAST_REQUIRE_AUTH=true`）。
 - **供應鏈**：建置時下載的掃描器二進位驗 SHA-256；CI 的 GitHub Actions 以 commit hash 釘版。
 - **維護動作**：限管理員、固定參數陣列、同時只允許一個維護工作、重啟每分鐘最多一次、輸出先遮罩憑證與絕對路徑。
 
-> 監控分頁需要把 Docker socket 掛進容器，即使唯讀也屬高權限能力。本系統請部署在**信任的內網**，
+> 應用程式容器**不掛 Docker socket**（即使 `:ro` 也擋不住 Docker API 寫入）。監控分頁改經 `docker-proxy`
+> （nginx，`nginx/docker-proxy.conf`）：只放行 4 條唯讀路徑，其餘（含讀取其他容器的檔案與 log、所有寫入）一律 403。
+> 殘餘：`/containers/<id>/json` 仍可讀主機上任一容器的設定（含環境變數）。本系統請部署在**信任的內網**，
 > 不要把 8080 埠直接暴露到公網；對外請在前面加 HTTPS。
 > 想再加一層防護，可在 `nginx/nginx.conf` 限制管理端點的來源網段：
 >

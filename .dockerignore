@@ -1,0 +1,8 @@
+# Allow-list: the image copies these three and nothing else. Everything else
+# stays out of the build context -- .env, .git, and above all ops/, which the
+# running container can fill with whatever it likes.
+*
+!app/
+!vendor/
+!requirements.txt
+**/__pycache__

@@ -1165,6 +1165,8 @@ function wireViewNav() {
 
   $("#admin-update").addEventListener("click", runToolUpdate);
   $("#admin-restart").addEventListener("click", runRestart);
+  $("#upg-check").addEventListener("click", () => loadUpgrade(true));
+  $("#upg-start").addEventListener("click", startUpgrade);
   $("#report-refresh").addEventListener("click", () => refreshScanList(state.selectedJob));
   $("#export-csv").addEventListener("click", exportCsv);
   const pkgBtn = $("#export-packages");
@@ -1227,6 +1229,7 @@ async function renderMonitor() {
   renderMonitorTools();
   await loadMonitorDocker();
   await loadAdminStatus();
+  await loadUpgrade(false);
 }
 
 // ---------------------------------------------------------------- operator
@@ -1477,8 +1480,133 @@ function meterCell(pct, text) {
 function startMonitorPolling() {
   clearInterval(state.monTimer);
   state.monTimer = setInterval(loadMonitorDocker, 3000);
+  // Upgrade progress, but only while one is under way: the endpoint is for
+  // administrators, and an idle panel has nothing to refresh.
+  clearInterval(state.upgTimer);
+  state.upgTimer = setInterval(() => { if (state.upgBusy) loadUpgrade(false); }, 5000);
 }
-function stopMonitorPolling() { clearInterval(state.monTimer); }
+function stopMonitorPolling() { clearInterval(state.monTimer); clearInterval(state.upgTimer); }
+
+// ---------------------------------------------------------------- upgrades
+// Scanner versions that need a new image. The host rebuilds, checks the new
+// image and switches; this panel only asks and reports. While it switches,
+// the service restarts, so a failed poll here is expected, not an error.
+const UPG_PHASES = ["checking", "downloading", "building", "verifying",
+  "waiting_for_scans", "switching", "done"];
+const UPG_BUSY = new Set(UPG_PHASES.slice(0, -1).concat(["queued"]));
+
+async function loadUpgrade(check) {
+  const panel = $("#upgrade-panel");
+  let res;
+  try {
+    res = await fetch("/api/admin/upgrades" + (check ? "?check=true" : ""), { cache: "no-store" });
+  } catch (e) {
+    return;                       // restarting mid-switch; the next poll answers
+  }
+  if (res.status === 401 || res.status === 403) { panel.classList.add("hidden"); return; }
+  if (!res.ok) return;
+  const d = await res.json();
+  panel.classList.remove("hidden");
+  const st = d.status || {};
+  state.upgBusy = !!d.pending || UPG_BUSY.has(st.phase);
+
+  const label = $("#upg-state");
+  label.textContent = !d.enabled ? t("upg.off")
+    : d.pending ? t("upg.pending")
+    : st.phase ? t("upg.phase." + st.phase) : "";
+  label.className = "admin-state" + (state.upgBusy ? " busy"
+    : st.phase === "failed" ? " bad" : st.phase === "done" ? " good" : "");
+  $("#upg-check").disabled = !d.enabled || state.upgBusy;
+
+  if (d.tools) renderUpgradeTools(d.tools);
+  $("#upg-start").disabled = !d.enabled || state.upgBusy || !upgradeTargets().length;
+  renderUpgradeSteps(st);
+
+  const ov = $("#upg-overrides");
+  const rows = Object.entries(st.overrides || {});
+  ov.classList.toggle("hidden", !rows.length);
+  ov.textContent = rows.length ? t("upg.overrides", {
+    list: rows.map(([tool, v]) => `${tool} ${v.local} (repo ${v.repo})`).join(", ") }) : "";
+
+  const log = $("#upg-log");
+  log.classList.toggle("hidden", !d.log);
+  log.textContent = d.log || "";
+  log.scrollTop = log.scrollHeight;
+}
+
+function renderUpgradeTools(tools) {
+  const box = $("#upg-tools");
+  box.textContent = "";
+  tools.forEach((row) => {
+    const line = el("label", "upg-row" + (row.eligible ? "" : " upg-off"));
+    const box1 = el("input");
+    box1.type = "checkbox";
+    box1.disabled = !row.eligible;
+    box1.dataset.tool = row.tool;
+    box1.dataset.version = row.eligible || "";
+    box1.addEventListener("change", () => {
+      $("#upg-start").disabled = state.upgBusy || !upgradeTargets().length;
+    });
+    line.appendChild(box1);
+    line.appendChild(el("span", "av-name", row.tool));
+    line.appendChild(el("span", "av-have", row.installed || "?"));
+    if (row.eligible) {
+      line.appendChild(el("span", "av-arrow", "→"));
+      line.appendChild(el("span", "av-new", row.eligible));
+    } else {
+      line.appendChild(el("span", "upg-why", row.reason === "up to date"
+        ? t("admin.current") : (row.reason || "")));
+    }
+    box.appendChild(line);
+  });
+}
+
+function upgradeTargets() {
+  return [...document.querySelectorAll("#upg-tools input:checked")]
+    .map((b) => `${b.dataset.tool}=${b.dataset.version}`);
+}
+
+function renderUpgradeSteps(st) {
+  const list = $("#upg-steps");
+  const result = $("#upg-result");
+  list.textContent = "";
+  list.classList.toggle("hidden", !st.phase);
+  result.classList.toggle("hidden", !st.phase || UPG_BUSY.has(st.phase));
+  if (!st.phase) return;
+  const at = st.phase === "failed" ? UPG_PHASES.indexOf(st.step) : UPG_PHASES.indexOf(st.phase);
+  UPG_PHASES.slice(0, -1).forEach((phase, i) => {
+    const cls = st.phase === "done" || i < at ? "done"
+      : i === at ? (st.phase === "failed" ? "failed" : "now") : "";
+    list.appendChild(el("li", "upg-step " + cls, t("upg.phase." + phase)));
+  });
+  if (st.phase === "failed") {
+    result.className = "upg-result bad";
+    result.textContent = t("upg.failedAt", { step: t("upg.phase." + (st.step || "checking")),
+      reason: st.reason || "" });
+  } else if (st.phase === "done") {
+    // Switched, but the host could not record the versions: say so loudly,
+    // since the next deploy would otherwise quietly go back.
+    result.className = "upg-result " + (st.warning ? "bad" : "good");
+    result.textContent = t("upg.doneMsg", { list: Object.entries(st.targets || {})
+      .map(([tool, v]) => `${tool} ${v}`).join(", ") }) + (st.warning ? " " + st.warning : "");
+  }
+}
+
+async function startUpgrade() {
+  const targets = upgradeTargets();
+  if (!targets.length || !confirm(t("upg.confirm", { list: targets.join(", ") }))) return;
+  const body = new FormData();
+  body.append("targets", targets.join(","));
+  try {
+    const res = await fetch("/api/admin/upgrades", { method: "POST", body });
+    const d = await res.json();
+    if (!d.started) { alert(d.reason || t("admin.failed")); return; }
+  } catch (e) {
+    alert(t("admin.failed") + ": " + e.message);
+    return;
+  }
+  loadUpgrade(false);
+}
 
 function wireTabs() {
   document.querySelectorAll(".tab").forEach((tab) => {

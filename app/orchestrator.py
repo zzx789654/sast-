@@ -23,6 +23,15 @@ from .policies import evaluate_policy
 from .source import clone_git, extract_zip, resolve_local_path
 
 
+class Draining(Exception):
+    """No new scans: an upgrade is waiting for the running ones to finish."""
+
+
+#: Scans that would be cut off if the container were replaced now. A scan
+#: awaiting confirmation has not started its tools and is not waited for.
+ACTIVE = (JobStatus.QUEUED, JobStatus.RUNNING)
+
+
 class JobManager:
     def __init__(self) -> None:
         self._jobs: dict[str, Job] = {}
@@ -30,6 +39,7 @@ class JobManager:
         # confirmation (source already prepared on disk, tools not yet run).
         self._pending: dict[str, dict] = {}
         self._lock = threading.Lock()
+        self._draining = False
         self._pool = ThreadPoolExecutor(
             max_workers=config.MAX_WORKERS, thread_name_prefix="job"
         )
@@ -45,6 +55,9 @@ class JobManager:
                   custom_rules=custom_rules or {},
                   rulesets=rulesets or {}, owner=owner)
         with self._lock:
+            if self._draining:
+                raise Draining("an upgrade is about to restart the service; "
+                               "try again in a few minutes")
             self._jobs[job_id] = job
             self._prune_locked()
         (config.WORKSPACE_DIR / job_id).mkdir(parents=True, exist_ok=True)
@@ -60,11 +73,16 @@ class JobManager:
         """Resume a scan that was paused for confirmation. Returns False if the
         job isn't in that state."""
         with self._lock:
+            if self._draining:
+                raise Draining("an upgrade is about to restart the service; "
+                               "try again in a few minutes")
             pending = self._pending.pop(job_id, None)
-        job = self.get(job_id)
-        if job is None or pending is None or job.status != JobStatus.AWAITING:
-            return False
-        job.status = JobStatus.RUNNING
+            job = self._jobs.get(job_id)
+            if job is None or pending is None or job.status != JobStatus.AWAITING:
+                return False
+            # Inside the lock: an upgrade counting running scans must not see
+            # this one between "not draining" and "running".
+            job.status = JobStatus.RUNNING
         self._pool.submit(self._scan, job, pending["scan_root"], pending["external"])
         return True
 
@@ -82,6 +100,19 @@ class JobManager:
         if not config.KEEP_WORKSPACES:
             self._cleanup(job_id, external)
         return True
+
+    def set_draining(self, on: bool) -> None:
+        with self._lock:
+            self._draining = on
+
+    @property
+    def draining(self) -> bool:
+        with self._lock:
+            return self._draining
+
+    def active_count(self) -> int:
+        with self._lock:
+            return sum(1 for j in self._jobs.values() if j.status in ACTIVE)
 
     def get(self, job_id: str) -> Job | None:
         with self._lock:

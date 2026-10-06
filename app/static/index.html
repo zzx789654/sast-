@@ -609,6 +609,24 @@
       <div id="admin-outcome" class="admin-outcome hidden"></div>
       <pre id="admin-log" class="admin-log hidden"></pre>
     </div>
+    <!-- Upgrades that need a new image. The host does the work
+         (scripts/sast_updater.py); this panel asks and shows progress. -->
+    <div class="panel hidden" id="upgrade-panel">
+      <div class="mon-head">
+        <h2 data-i18n="upg.title">升級掃描工具</h2>
+        <span id="upg-state" class="admin-state"></span>
+      </div>
+      <p class="mon-hint" data-i18n="upg.hint"></p>
+      <div class="admin-actions">
+        <button id="upg-check" class="btn ghost" data-i18n="upg.check">檢查新版</button>
+        <button id="upg-start" class="btn" data-i18n="upg.start" disabled>開始更新</button>
+      </div>
+      <div id="upg-tools" class="upg-tools"></div>
+      <ol id="upg-steps" class="upg-steps hidden"></ol>
+      <p id="upg-result" class="upg-result hidden"></p>
+      <p id="upg-overrides" class="mon-subnote hidden"></p>
+      <pre id="upg-log" class="admin-log hidden"></pre>
+    </div>
   </section>
 
   <!-- window.prompt() cannot mask what is typed, so a password set through
