@@ -153,7 +153,14 @@ done
 
 step "Checking the app answers"
 URL="http://localhost:8080"
-code="$(curl -s -o /dev/null -w '%{http_code}' "${URL}/api/health" || echo 000)"
+# Through nginx, which re-resolves the backend every 10 s: a recreated
+# container on a new address can take that long to be reachable.
+code=000
+for _ in $(seq 1 12); do
+  code="$(curl -s -o /dev/null -w '%{http_code}' "${URL}/api/health" || echo 000)"
+  [ "${code}" = "200" ] && break
+  sleep 5
+done
 [ "${code}" = "200" ] || die "health endpoint returned ${code} -- ./scripts/deploy.sh --rollback"
 
 # /api/tools needs a login once accounts are enabled, so a 401 here is the

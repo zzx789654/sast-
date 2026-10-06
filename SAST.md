@@ -19,6 +19,13 @@
 - 第二輪：17 項中 11 已修、5 部分、1 延後；修正引入 Medium×2（NEW-01 路徑 chmod 會跟隨 symlink、NEW-02 tidy 例外使 updater 當機）與 Low×5，**全部已修**：fchmod 於描述元、逐項例外處理、`--prev` 無法略過鎖、nginx 拒絕路徑含 `%`／`..`／`//`（查詢字串不受影響）並以 digest 固定、`.env` 寫入失敗時明確警告、cron 只接受單純路徑、下載後重新查核發布時間。
 - proxy 實測（.145 真實 socket）：`/containers/json`（含 app 實際送出的編碼過濾參數）、`/containers/<id>/json`、`/stats`、`/info` → 200；`archive`、`export`、`logs`、`images`、`/v1.43/`、`%2e%2e`、`..`、`//`、編碼斜線、POST create/stop → 403。
 
+### CI 報表判讀（G5，run 37461611822，commit 5c63608；基準 37311828371）
+| 工具 | 結果 | 判讀 |
+|---|---|---|
+| semgrep／pip-audit／pip-audit-semgrep／osv／trivy-fs／gitleaks | 0 | — |
+| trivy-image | CRITICAL 5、HIGH 190（同基準）；MEDIUM 209→205、LOW 159→159 | 未增加 |
+| bearer | 新增皆在 `scripts/sast_updater.py`：os_command_injection（`_run`）、file_permissions ×2（`fchmod` 設 0644／0600，是**收緊**權限、去 setuid）、path_traversal ×4（rmtree／unlink 的對象為 `ops/` 掃描出的項目名稱，不含 `/`；其餘為程式常數） | 皆誤判；其餘與基準相同（含 bearer 不穩定的 `main.py` 兩筆） |
+
 ### 殘餘風險（接受，列下一輪）
 - FIND-005：Semgrep 遞移相依未鎖 hash；Bearer 未釘版本；二進位 checksum 與檔案同源（防不了 release 本身被竄改）→ 簽章／provenance 驗證。
 - FIND-002 殘餘：`/containers/<id>/json` 可讀任一容器設定（含環境變數），監控分頁讀記憶體上限需要。

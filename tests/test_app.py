@@ -5709,3 +5709,16 @@ def test_mcp_attack_surface_brief_before_the_scan_finishes():
     from app import mcp
 
     assert mcp._attack_surface_brief({}) == {"status": "pending"}
+
+
+def test_nginx_follows_the_backend_to_a_new_address():
+    """A recreated sast-studio can come back on another address. nginx used
+    to resolve it once, at start, and kept sending traffic to the old one --
+    which by then belonged to docker-proxy: a deploy answered 502."""
+    conf = _read("nginx/nginx.conf")
+    assert "resolver 127.0.0.11" in conf
+    assert "server sast-studio:8000 resolve;" in conf
+    assert "zone sast_backend" in conf, "resolve needs a shared-memory zone"
+    deploy = _read("scripts/deploy.sh")
+    check = deploy[deploy.index('step "Checking the app answers"'):]
+    assert "for _ in $(seq 1 12)" in check[:600], "one try can land inside the 10 s window"
