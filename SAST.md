@@ -22,6 +22,9 @@
   - 移除重啟後沒有情境無路可走：Trivy DB 掃描時自動更新、工具快取 TTL 300 秒、卡住的掃描可取消、drain 由主機 recover 解除。
 - 攻擊面變化：網頁容器不再連 api.github.com（`app/admin.py` 刪除），網頁能送給主機的動作只剩 apply；每日檢查不再能被容器的請求擠掉。
 
+### CI 報表判讀（G5，run 37643494543，commit c813e5d；基準第 47 輪 37638073675）
+- semgrep／pip-audit／pip-audit-semgrep／osv／trivy-fs／gitleaks 0；bearer 12→10（無新增，第 47 輪 `main.py` 兩筆誤判消失）；trivy-image 373 個 CVE，與基準相同。
+
 ## [2026-10-07] 第 47 輪 — 每日預先建置、網頁核准套用、說明文字網址
 
 ### 自動掃描
