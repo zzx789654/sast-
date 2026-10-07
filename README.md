@@ -191,7 +191,7 @@ cd sast-
 | `scripts/install-tools.sh` | 把掃描器安裝到主機 | 由 `setup.sh` 自動呼叫；手動安裝時使用 |
 | `scripts/install-updater.sh` | 開啟「網頁升級掃描工具」：建立 `ops/`、在 crontab 加入每分鐘執行的 `scripts/sast_updater.py` | `setup.sh --docker` 自動呼叫；既有部署手動執行一次 |
 | `scripts/sast_updater.py` | 主機服務：處理網頁送出的升級請求（查核→下載驗證→建置→驗收→等待掃描→切換） | 由 cron 呼叫，不需手動執行 |
-| `scripts/prune-rollbacks.sh` | 只保留最近 3 個回退映像 | 部署與升級後自動呼叫 |
+| `scripts/prune-rollbacks.sh` | 映像只保留 2 版：目前版本與前一版 | 部署與升級後自動呼叫 |
 
 ### `setup.sh` — 安裝與更新
 
@@ -253,7 +253,7 @@ SKIP_VENDOR=1 ./setup.sh --update    # 重建映像，不碰 ./vendor 快取
 | 7. 切換 | `docker compose up -d`；`nginx.conf` 有變動時自動重建 nginx 容器 | 提示執行 `--rollback` |
 | 8. 等待健康 | 最多等 5 分鐘直到容器 healthy | 提示執行 `--rollback` |
 | 9. 驗證 | 打 `/api/health` 必須 200 | 提示執行 `--rollback` |
-| 10. 清理 | 只保留最近 3 個回退映像（`scripts/prune-rollbacks.sh`） | 不影響部署結果 |
+| 10. 清理 | 映像只保留目前版本與前一版（`scripts/prune-rollbacks.sh`） | 不影響部署結果 |
 | 11. 首次密碼 | 第一次部署時從日誌撈出自動產生的管理員密碼並顯示 | — |
 
 停機時間只有最後切換容器的幾秒鐘。

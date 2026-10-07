@@ -191,7 +191,7 @@ fi
 
 # Every deploy keeps the image it replaced. Without a limit they pile up:
 # .145 had 54 of them and 516 MB of disk left.
-step "Removing old rollback images (keeping three)"
+step "Removing old images (keeping this version and the one before)"
 bash "${ROOT}/scripts/prune-rollbacks.sh"
 
 printf '\nDeployed. %s\n' "$(git rev-parse --short HEAD 2>/dev/null || echo 'working tree')"

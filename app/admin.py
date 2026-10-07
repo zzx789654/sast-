@@ -175,7 +175,7 @@ def _installed_version(name: str) -> str:
             continue
         try:
             available, version = adapter.probe()
-        except Exception:  # noqa: BLE001 - a probe must not break the panel
+        except Exception:  # last line: a probe must not break the panel
             return ""
         if not available:
             return ""
@@ -202,22 +202,20 @@ def _latest_upstream() -> dict:
         if fresh and _upstream_cache["versions"]:
             return dict(_upstream_cache["versions"])
 
-    import json as _json
-    import urllib.request
+    import http.client
+    from .releases import _fetch_json
 
     found = {}
     for name, repo in UPSTREAM.items():
+        # The same fetch as the upgrade panel: https, release hosts only.
         try:
-            req = urllib.request.Request(
-                f"https://api.github.com/repos/{repo}/releases/latest",
-                headers={"Accept": "application/vnd.github+json",
-                         "User-Agent": "sast-studio"})
-            with urllib.request.urlopen(req, timeout=6) as resp:
-                tag = _json.load(resp).get("tag_name") or ""
-            if tag:
-                found[name] = tag.lstrip("v")
-        except Exception:  # noqa: BLE001 - offline is a normal state here
-            continue
+            data = _fetch_json(f"https://api.github.com/repos/{repo}/releases/latest",
+                               timeout=6)
+        except (OSError, ValueError, http.client.HTTPException):
+            continue            # offline, rate-limited or not JSON: unknown
+        tag = (data.get("tag_name") or "") if isinstance(data, dict) else ""
+        if tag:
+            found[name] = tag.lstrip("v")
 
     with _upstream_lock:
         if found:
@@ -272,7 +270,7 @@ def _run_update(tools: list[str]) -> None:
     """
     try:
         _run_updates(tools)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # last line: the job slot must be released
         _mark_failed()
         _append("\nupdate aborted: {}\n".format(exc))
     finally:
@@ -312,7 +310,7 @@ def _run_updates(tools: list[str]) -> None:
         _append(f"\n$ {' '.join(cmd)}\n")
         outcome = "failed"
         try:
-            proc = subprocess.run(  # noqa: S603 - fixed argv, shell=False
+            proc = subprocess.run(  # fixed argv from _update_commands, shell=False
                 cmd, capture_output=True, text=True,
                 timeout=UPDATE_TIMEOUT, shell=False,
             )
@@ -326,7 +324,7 @@ def _run_updates(tools: list[str]) -> None:
         except subprocess.TimeoutExpired:
             _mark_failed()
             _append(f"\n[{name}] timed out after {UPDATE_TIMEOUT}s\n")
-        except Exception as exc:  # noqa: BLE001 - surface, never crash the worker
+        except Exception as exc:  # last line: surface it, never crash the worker
             _mark_failed()
             _append(f"\n[{name}] failed: {exc}\n")
         with state.lock:

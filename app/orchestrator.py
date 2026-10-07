@@ -7,6 +7,7 @@ concurrently on a small thread pool since each one is a blocking subprocess.
 from __future__ import annotations
 
 import shutil
+import sqlite3
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -143,7 +144,7 @@ class JobManager:
             job.stage = "inventorying files"
             try:
                 job.inventory = inventory(scan_root)
-            except Exception:  # noqa: BLE001 - inventory is best-effort
+            except Exception:  # last line: inventory is best-effort
                 job.inventory = {}
 
             if confirm:
@@ -157,7 +158,7 @@ class JobManager:
                 return
 
             self._scan(job, str(scan_root), external)
-        except Exception as exc:  # noqa: BLE001 - report any prep failure
+        except Exception as exc:  # last line: report any prep failure
             job.status = JobStatus.ERROR
             job.stage = "error"
             job.error = f"{type(exc).__name__}: {exc}"
@@ -183,7 +184,7 @@ class JobManager:
                 continue
             try:
                 paths = rules_mod.materialize(engine, names, base / engine)
-            except Exception:  # noqa: BLE001 - a rule problem must not kill the scan
+            except Exception:  # last line: a rule problem must not kill the scan
                 continue
             if paths:
                 out[engine] = paths
@@ -221,7 +222,7 @@ class JobManager:
             else:
                 job.stage = "done"
                 job.status = JobStatus.DONE
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # last line: a failed scan is reported, not lost
             job.status = JobStatus.ERROR
             job.stage = "error"
             job.error = f"{type(exc).__name__}: {exc}"
@@ -288,7 +289,7 @@ class JobManager:
                 result = adapter.scan(scan_root,
                                       rule_files.get(adapter.name),
                                       job.rulesets.get(adapter.name))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # last line: one tool must not stop the others
                 result = ToolResult(
                     tool=adapter.name, kind=adapter.kind,
                     status=ToolStatus.ERROR,
@@ -341,5 +342,5 @@ def _triage_marks() -> dict:
     try:
         from . import accounts
         return accounts.get_triage()
-    except Exception:  # noqa: BLE001
+    except (ImportError, sqlite3.Error, OSError):
         return {}

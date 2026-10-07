@@ -6,6 +6,10 @@
 # to the FastAPI backend, which is not published to the host directly.
 services:
   sast-studio:
+    # Fixed names: the docker proxy answers questions about these three
+    # containers only (nginx/docker-proxy.conf). The project name, and with
+    # it every named volume, is unchanged.
+    container_name: sast-studio
     build:
       context: .
       args:
@@ -41,6 +45,7 @@ services:
       # is control of the host.
       SAST_ENABLE_DOCKER_STATS: "true"
       SAST_DOCKER_PROXY: "docker-proxy:2375"
+      SAST_CONTAINER_NAME: "sast-studio"
       # Scanner upgrades from the Monitor tab: this app writes a request here
       # and scripts/sast_updater.py, on the host, does the work.
       SAST_OPS_DIR: "/data/ops"
@@ -66,6 +71,7 @@ services:
   # -- no writes, no container files, no logs. See nginx/docker-proxy.conf.
   # Not published to the host.
   docker-proxy:
+    container_name: sast-docker-proxy
     # Pinned by digest: this container holds the docker socket.
     image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     volumes:
@@ -76,6 +82,7 @@ services:
     restart: unless-stopped
 
   nginx:
+    container_name: sast-nginx
     image: nginx:1.27-alpine
     ports:
       # Host 8080 -> nginx 80. Change to "80:80" to serve on the standard port.

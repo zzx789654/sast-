@@ -57,7 +57,7 @@ def collect(scan_root: Path, full_inventory: bool | None = None) -> dict:
         full_inventory = config.OSV_FULL_INVENTORY
     try:
         return _collect(scan_root, full_inventory)
-    except Exception as exc:  # noqa: BLE001 - an SBOM must not fail a scan
+    except Exception as exc:  # last line: an SBOM must not fail a scan
         return {"available": False, "reason": f"{type(exc).__name__}: {exc}",
                 "packages": [], "summary": {}}
 
@@ -253,7 +253,7 @@ def _read_pyproject(text: str):
         return
     try:
         data = tomllib.loads(text)
-    except Exception:  # noqa: BLE001 - a malformed file is not our problem
+    except ValueError:  # tomllib.TOMLDecodeError: a malformed file is not our problem
         return
 
     import re

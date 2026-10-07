@@ -2843,7 +2843,17 @@ function clip(s, n) {
 }
 
 function surfaceOf(job) {
-  return (job && job.attack_surface) || {};
+  const surf = (job && job.attack_surface) || {};
+  if (state.surfaceShowSamples || !surf.endpoints) return surf;
+  // Tests, docs and drafts are full of example addresses and routes. Out of
+  // the graph, the mind map and the tables unless asked for; the summary
+  // counts from the server already leave them out.
+  return {
+    ...surf,
+    endpoints: surf.endpoints.filter((e) => !e.sample),
+    hosts: (surf.hosts || []).filter((h) => !h.sample).map((h) => ({
+      ...h, locations: (h.locations || []).filter((l) => !l.sample) })),
+  };
 }
 
 function surfaceFlagLabel(flag) { return t("surface.flag." + flag); }
@@ -2930,6 +2940,13 @@ function renderSurface(job) {
     });
     tiles.appendChild(b);
   });
+
+  const samples = s.samples || {};
+  const nSamples = (samples.endpoints || 0) + (samples.hosts || 0);
+  $("#surface-samples").classList.toggle("hidden", !nSamples);
+  $("#surface-show-samples").checked = !!state.surfaceShowSamples;
+  $("#surface-samples-label").textContent = t("surface.showSamples", {
+    endpoints: samples.endpoints || 0, hosts: samples.hosts || 0 });
 
   body.classList.remove("hidden");
   renderSurfaceChart(job);
@@ -3093,7 +3110,8 @@ function drawSurfaceGraph(surf) {
       } else {
         line1 = clip(n.e.method + "  " + n.e.path, chars);
         line2 = [...flags].filter((f) => f !== "external").map(surfaceFlagLabel).join("・") ||
-          (n.e.auth === "detected" ? "✓ " + t("surface.auth.detected") : n.e.framework);
+          (n.e.auth === "detected" ? "✓ " + t("surface.auth.detected")
+            : ["global", "public"].includes(n.e.auth) ? t("surface.auth." + n.e.auth) : n.e.framework);
         tip = n.e.method + " " + n.e.path + "\n" + n.e.file + ":" + n.e.line;
       }
     } else {
@@ -3260,7 +3278,10 @@ function renderSurfaceRisks(surf) {
     const tr = el("tr", "sf-risk-row");
     tr.appendChild(el("td", "sf-risk-kind", t("surface.risk." + r.kind)));
     tr.appendChild(el("td", "mono", r.detail));
-    tr.appendChild(el("td", "mono", r.file + (r.line ? ":" + r.line : "")));
+    const where = el("td", "mono", r.file + (r.line ? ":" + r.line : ""));
+    // Listed, not hidden: a wrong guess about a file must stay visible.
+    if (r.sample) where.appendChild(el("span", "sf-flag sample", t("surface.sampleTag")));
+    tr.appendChild(where);
     table.appendChild(tr);
   });
   box.appendChild(table);
@@ -3317,7 +3338,9 @@ function renderSurfaceEndpoints(surf) {
     const ftd = el("td");
     (e.flags || []).forEach((f) => ftd.appendChild(el("span", "sf-flag " + f, surfaceFlagLabel(f))));
     tr.appendChild(ftd);
-    tr.appendChild(el("td", "mono", e.file + ":" + e.line));
+    const loc = el("td", "mono", e.file + ":" + e.line);
+    if (e.sample) loc.appendChild(el("span", "sf-flag sample", t("surface.sampleTag")));
+    tr.appendChild(loc);
     const callers = e.called_from || [];
     tr.appendChild(el("td", "mono", callers.length
       ? callers.slice(0, 3).map((c) => c.file + ":" + c.line).join(", ") + (callers.length > 3 ? " …" : "")
@@ -3343,7 +3366,9 @@ function renderSurfaceHosts(surf) {
   hosts.forEach((h) => {
     const risky = h.frontend && ["private", "metadata", "database"].includes(h.category);
     const tr = el("tr", risky ? "sf-risk-row" : "");
-    tr.appendChild(el("td", "mono", h.host));
+    const name = el("td", "mono", h.host);
+    if (h.sample) name.appendChild(el("span", "sf-flag sample", t("surface.sampleTag")));
+    tr.appendChild(name);
     tr.appendChild(el("td", null, t("surface.cat." + h.category)));
     tr.appendChild(el("td", null, h.frontend ? t("surface.yes") : "—"));
     const locs = h.locations || [];
@@ -3381,7 +3406,8 @@ function renderSurfaceCard(job) {
   const ul = $("#surface-card-risks");
   ul.innerHTML = "";
   (surf.risks || []).slice(0, 10).forEach((r) =>
-    ul.appendChild(el("li", null, t("surface.risk." + r.kind) + "：" + r.detail + "（" + r.file + ":" + r.line + "）")));
+    ul.appendChild(el("li", null, t("surface.risk." + r.kind) + "：" + r.detail + "（" + r.file + ":" + r.line + "）"
+      + (r.sample ? " [" + t("surface.sampleTag") + "]" : ""))));
 }
 
 function wireSurface() {
@@ -3410,6 +3436,10 @@ function wireSurface() {
   $("#surface-filter").addEventListener("input", (ev) => {
     state.surfaceQuery = ev.target.value;
     renderSurfaceEndpoints(surfaceOf(state.currentJob));
+  });
+  $("#surface-show-samples").addEventListener("change", (ev) => {
+    state.surfaceShowSamples = ev.target.checked;
+    renderSurface(state.currentJob);
   });
   $("#surface-card-open").addEventListener("click", () => showView("surface"));
 }

@@ -311,14 +311,14 @@ def _run_validation(engine: str, content: str, binary: str) -> dict:
                    "--format", "json", "--quiet", str(target)]
 
         try:
-            proc = subprocess.run(  # noqa: S603 - fixed argv, shell=False
+            proc = subprocess.run(  # fixed argv, shell=False; only a path varies
                 cmd, capture_output=True, text=True,
                 timeout=VALIDATE_TIMEOUT, shell=False,
             )
         except subprocess.TimeoutExpired:
             return {"ok": False, "checked": True,
                     "message": f"validation timed out after {VALIDATE_TIMEOUT}s"}
-        except Exception as exc:  # noqa: BLE001
+        except (OSError, ValueError) as exc:  # not installed, or bad arguments
             return {"ok": False, "checked": True, "message": str(exc)[:500]}
 
     # Trivy prints its whole scan report on success, which is noise next to

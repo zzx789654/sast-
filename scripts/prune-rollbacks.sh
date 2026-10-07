@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Remove old sast-studio:rollback-* images, keeping the newest three images.
+# Remove old sast-studio:rollback-* images: two versions stay, the one
+# running (latest) and the one before it (talk.md #029).
 #
-#   bash scripts/prune-rollbacks.sh        (KEEP=5 to keep more)
+#   bash scripts/prune-rollbacks.sh        (KEEP=3 to keep more rollbacks)
 #
 # Every deploy and every upgrade tags the image it replaces. Nothing removed
 # them, and .145 reached 54 of them with 516 MB of disk left. Counted by
@@ -10,7 +11,7 @@
 # rollback-previous are never removed. Never fails the caller.
 set -uo pipefail
 
-KEEP="${KEEP:-3}"
+KEEP="${KEEP:-1}"
 protect="$(docker images --format '{{.ID}}' sast-studio:latest 2>/dev/null) \
 $(docker images --format '{{.ID}}' sast-studio:rollback-previous 2>/dev/null)"
 

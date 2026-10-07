@@ -15,6 +15,12 @@ from urllib.parse import quote
 
 from .config import config
 
+#: What talking to the Docker API can raise: the connection (OSError),
+#: the protocol, a non-200 answer (RuntimeError, from _get), a body that is
+#: not JSON, or JSON not shaped as expected.
+DOCKER_ERRORS = (OSError, http.client.HTTPException, RuntimeError,
+                 ValueError, KeyError, TypeError)
+
 
 class _UnixHTTPConnection(http.client.HTTPConnection):
     def __init__(self, path: str, timeout: float):
@@ -74,7 +80,7 @@ def _project_filter() -> str:
             me = _get(f"/containers/{_self_id()}/json")
             project = ((me.get("Config") or {}).get("Labels") or {}).get(
                 "com.docker.compose.project", "")
-        except Exception:  # noqa: BLE001
+        except DOCKER_ERRORS:
             project = ""
     if project:
         flt = json.dumps({"label": [f"com.docker.compose.project={project}"]})
@@ -82,8 +88,21 @@ def _project_filter() -> str:
     return "?all=1"
 
 
+def _ref(c: dict) -> str:
+    """How to ask the API about a listed container: by name.
+
+    The proxy answers only this deployment's container names (fixed in
+    docker-compose.yml); asking by id is refused, so a compromised app cannot
+    read other containers' settings through it.
+    """
+    names = c.get("Names") or []
+    return names[0].lstrip("/") if names else c.get("Id", "")
+
+
 def _self_id() -> str:
-    """This container's id, from the cgroup or hostname."""
+    """This container's name when compose fixed one, else its id."""
+    if os.environ.get("SAST_CONTAINER_NAME"):
+        return os.environ["SAST_CONTAINER_NAME"]
     try:
         with open("/proc/self/mountinfo", encoding="utf-8") as fh:
             for line in fh:
@@ -105,7 +124,7 @@ def collect() -> dict:
     # (image names and tags often carry internal project or customer names).
     try:
         containers = _get("/containers/json" + _project_filter())
-    except Exception as exc:  # noqa: BLE001
+    except DOCKER_ERRORS as exc:
         return {"available": False, "reason": f"cannot reach docker: {exc}",
                 "containers": []}
 
@@ -123,8 +142,8 @@ def collect() -> dict:
         }
         if c.get("State") == "running":
             try:
-                item.update(_stats(c["Id"]))
-            except Exception:  # noqa: BLE001 - stats are best-effort
+                item.update(_stats(_ref(c)))
+            except DOCKER_ERRORS:  # stats are best-effort
                 pass
         item["capacity"] = _capacity(item, host_total)
         out.append(item)
@@ -143,7 +162,7 @@ def _log_changes(containers: list) -> None:
     """Record starts, stops, restarts and capacity trouble. Never raises."""
     try:
         from . import events
-    except Exception:  # noqa: BLE001
+    except ImportError:
         return
     for c in containers:
         name = c.get("name") or ""
@@ -173,7 +192,7 @@ def _log_changes(containers: list) -> None:
                     level="error" if level_now == "tight" else "warn",
                     detail=f"{level_now}: {reasons}"
                            f" (cpu {c.get('cpu_pct')}%, mem {c.get('mem_pct')}%)")
-        except Exception:  # noqa: BLE001 - monitoring must not break the tab
+        except Exception:  # last line: monitoring must not break the tab
             continue
 
 
@@ -231,7 +250,7 @@ def _capacity(item: dict, host_total: int | None = None) -> dict:
 def _host_memory_total() -> int | None:
     try:
         return int(_get("/info").get("MemTotal") or 0) or None
-    except Exception:  # noqa: BLE001 - informational only
+    except DOCKER_ERRORS:  # informational only
         return None
 
 
@@ -319,7 +338,7 @@ def start_sampler() -> bool:
         while True:
             try:
                 collect()
-            except Exception:  # noqa: BLE001 - a sampler must not die of one bad read
+            except Exception:  # last line: a sampler must not die of one bad read
                 pass
             if _stop.wait(SAMPLE_SECONDS):
                 return
@@ -387,7 +406,7 @@ def limits() -> dict:
     try:
         listing = _get("/containers/json" + _project_filter())
         info = _get("/info")
-    except Exception as exc:  # noqa: BLE001
+    except DOCKER_ERRORS as exc:
         return {"available": False, "reason": f"cannot reach docker: {exc}",
                 "containers": [], "host_memory": None, "host_cpus": None}
 
@@ -399,8 +418,8 @@ def limits() -> dict:
         names = c.get("Names") or []
         name = names[0].lstrip("/") if names else c.get("Id", "")[:12]
         try:
-            detail = _get(f"/containers/{c['Id']}/json")
-        except Exception:  # noqa: BLE001
+            detail = _get(f"/containers/{_ref(c)}/json")
+        except DOCKER_ERRORS:
             continue
         host_cfg = detail.get("HostConfig") or {}
         mem = int(host_cfg.get("Memory") or 0)
@@ -418,9 +437,9 @@ def limits() -> dict:
         used_mem = None
         if c.get("State") == "running":
             try:
-                used_mem = _memory(_get(f"/containers/{c['Id']}/stats?stream=false")
+                used_mem = _memory(_get(f"/containers/{_ref(c)}/stats?stream=false")
                                    ).get("mem_used")
-            except Exception:  # noqa: BLE001
+            except DOCKER_ERRORS:
                 used_mem = None
 
         out.append({

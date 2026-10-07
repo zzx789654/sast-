@@ -8,6 +8,7 @@ import io
 import json
 import os
 import re
+import sqlite3
 from contextlib import asynccontextmanager
 import threading
 import time
@@ -20,6 +21,7 @@ from fastapi.responses import (FileResponse, JSONResponse, RedirectResponse,
                                Response)
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
+from starlette.requests import ClientDisconnect
 
 from .adapters import ADAPTERS
 from .config import config
@@ -42,26 +44,26 @@ async def _lifespan(_app: FastAPI):
         from . import events
         events.init()
         events.record("service", "start", detail=f"SAST Studio {app.version}")
-    except Exception:  # noqa: BLE001 - never block startup on the log
+    except Exception:  # last line: never block startup on the log
         pass
     from . import upgrades
     upgrades.start_watcher(manager)
     try:
         from . import docker_stats
         docker_stats.start_sampler()
-    except Exception:  # noqa: BLE001 - monitoring is not worth a failed start
+    except Exception:  # last line: monitoring is not worth a failed start
         pass
     yield
     upgrades.stop_watcher()
     try:
         from . import docker_stats
         docker_stats.stop_sampler()
-    except Exception:  # noqa: BLE001
+    except Exception:  # last line: never block shutdown
         pass
     try:
         from . import events
         events.record("service", "stop", detail="shutting down")
-    except Exception:  # noqa: BLE001
+    except Exception:  # last line: never block shutdown
         pass
 
 
@@ -400,7 +402,7 @@ def _expired_blocked(request: Request, user) -> bool:
         return False
     try:
         return accounts.password_expired(user)
-    except Exception:  # noqa: BLE001 - never lock everyone out over a read
+    except (sqlite3.Error, OSError, ValueError):  # never lock everyone out over a read
         return False
 
 
@@ -713,7 +715,9 @@ async def mcp_endpoint(request: Request) -> Response:
 
     try:
         message = await request.json()
-    except Exception:  # noqa: BLE001
+    except ClientDisconnect:
+        return Response(status_code=400)         # nobody left to answer
+    except ValueError:  # not JSON, or not UTF-8
         return JSONResponse(
             {"jsonrpc": "2.0", "id": None,
              "error": {"code": mcp.PARSE_ERROR, "message": "invalid JSON"}},

@@ -198,7 +198,7 @@ def handle(message: dict, user, base_url: Optional[str] = None) -> Optional[dict
                 "content": [{"type": "text", "text": str(exc)}],
                 "isError": True,
             })
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # last line: a JSON-RPC error, never a 500
             return _error(req_id, INTERNAL_ERROR, f"{type(exc).__name__}: {exc}")
 
     if method == "ping":
@@ -448,7 +448,15 @@ def _attack_surface_brief(surface: dict) -> dict:
     no_auth = [
         {"method": e["method"], "path": e["path"], "file": e["file"], "line": e["line"]}
         for e in surface.get("endpoints", [])
-        if "no_auth_detected" in e.get("flags", [])
+        if "no_auth_detected" in e.get("flags", []) and not e.get("sample")
+    ]
+    # Routes marked protected (or public) only by inference from a middleware:
+    # listed, so an assistant can check them rather than take them on trust.
+    inferred = [
+        {"method": e["method"], "path": e["path"], "auth": e["auth"],
+         "file": e["file"], "line": e["line"]}
+        for e in surface.get("endpoints", [])
+        if "auth_inferred" in e.get("flags", []) and not e.get("sample")
     ]
     return {
         "status": surface.get("status"),
@@ -456,5 +464,6 @@ def _attack_surface_brief(surface: dict) -> dict:
         "summary": surface.get("summary", {}),
         "risks": surface.get("risks", [])[:50],
         "no_auth_detected": no_auth[:50],
+        "auth_inferred": inferred[:50],
         "note": NOTE,
     }

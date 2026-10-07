@@ -3872,7 +3872,7 @@ def expiring(tmp_path, monkeypatch):
         from datetime import datetime, timedelta, timezone
         stamp = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         target = accounts.get_user(username)
-        with accounts._connect() as conn:
+        with accounts.connect() as conn:
             conn.execute("UPDATE users SET password_changed_at = ? WHERE id = ?",
                          (stamp, target.id))
 
@@ -4624,7 +4624,8 @@ def test_deploy_keeps_only_three_rollback_images():
     assert 'scripts/prune-rollbacks.sh"' in _read("scripts/deploy.sh")
     assert '"scripts/prune-rollbacks.sh"' in _read("scripts/sast_updater.py")
     prune = _read("scripts/prune-rollbacks.sh")
-    assert 'KEEP="${KEEP:-3}"' in prune
+    # Two versions in all: latest and the one before it (talk.md #029).
+    assert 'KEEP="${KEEP:-1}"' in prune
     # Counted per image, and never the image in use or the one to roll back to.
     assert "rank[$2]" in prune and "sast-studio:rollback-previous" in prune
     assert prune.rstrip().endswith("exit 0"), "pruning must never fail a deploy"

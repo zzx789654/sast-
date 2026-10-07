@@ -598,7 +598,7 @@ def test_gitleaks_findings_become_secrets_and_frontend_risks(tmp_path):
     assert r["summary"]["secrets"] == 3
     assert [s["frontend"] for s in r["secrets"]] == [True, False, False]
     assert r["risks"] == [{"kind": "frontend_leak", "file": "web/app.vue",
-                           "line": 3, "detail": "aws-access-key"}]
+                           "line": 3, "detail": "aws-access-key", "sample": False}]
 
 
 # --------------------------------------------------------- limits & safety
@@ -855,3 +855,443 @@ def test_python_file_is_not_parsed_after_the_deadline(tmp_path):
     ctx = asf._Context(set(), clock=lambda: 999.0, deadline=0.0)
     with pytest.raises(asf._OutOfTime):
         asf.extract_python("a.py", "x = 1\n", ctx)
+
+
+# ------------------------------------------------- round 46: samples and global auth
+@pytest.mark.parametrize("rel, sample", [
+    ("tests/test_x.py", True), ("app/tests/helper.py", True), ("docs/mockups/a.html", True),
+    ("src/__tests__/a.js", True), ("web/a.spec.ts", True), ("pkg/a_test.go", True),
+    ("test_api.py", True), ("go/testdata/x.json", True),
+    ("app/main.py", False), ("app/static/app.js", False), ("contest/a.py", False),
+    ("latest/a.js", False), ("doc.py", False),
+    # Directories that can hold shipping code are not samples by default:
+    # a wrong guess would hide a real risk.
+    ("docs/server.py", False), ("examples/demo.js", False), ("app/fixtures/seed.json", False),
+    ("web/spec/api.py", False), ("src/ab_test.py", False),
+])
+def test_what_counts_as_a_sample(rel, sample):
+    assert asf.is_sample(rel) is sample
+
+
+def test_extra_sample_paths_come_from_the_environment(monkeypatch):
+    monkeypatch.setenv("SAST_SURFACE_SAMPLE_PATHS", " sandbox/ , ,/legacy/demo,")
+    extra = asf._extra_sample_paths()
+    assert extra == ("sandbox", "legacy/demo")
+    assert asf.is_sample("sandbox/a.py", extra) and asf.is_sample("legacy/demo", extra)
+    assert not asf.is_sample("sandboxes/a.py", extra)
+    assert not asf.is_sample("a.py", ("",))
+
+
+def test_samples_are_listed_but_not_counted(tmp_path):
+    root = write(tmp_path, {
+        "app/main.py": "from fastapi import FastAPI\napp = FastAPI()\n"
+                       "@app.get('/real')\ndef r(): pass\n"
+                       "DB = 'http://10.1.1.1/x'\n",
+        "app/static/main.js": "fetch('/real');\nfetch('http://10.9.9.9/api');\n",
+        "tests/test_api.py": "from fastapi import FastAPI\napp = FastAPI()\n"
+                             "@app.get('/only-in-tests')\ndef t(): pass\n"
+                             "URL = 'http://10.1.1.1/x'\n",
+        "tests/e2e.js": "document.title; fetch('/real'); fetch('/ghost');\n",
+        "docs/mockups/a.html": "<script>fetch('http://10.0.3.15/api')</script>\n",
+    })
+    r = asf.collect(root)
+    s = r["summary"]
+    assert s["backend_routes"] == 1 and s["samples"]["endpoints"] >= 2
+    assert {h["host"] for h in r["hosts"] if not h["sample"]} == {"10.1.1.1", "10.9.9.9"}
+    assert s["hosts"] == 2 and s["samples"]["hosts"] == 1          # 10.0.3.15
+    shared = next(h for h in r["hosts"] if h["host"] == "10.1.1.1")
+    assert sorted(loc["sample"] for loc in shared["locations"]) == [False, True]
+    # The draft's address is listed and marked, not dropped; only the count leaves it out.
+    assert sorted((x["detail"], x["sample"]) for x in r["risks"]) == \
+        [("10.0.3.15", True), ("10.9.9.9", False)]
+    assert s["risks"] == 1 and s["samples"]["risks"] == 1
+    real = next(e for e in r["endpoints"] if e["path"] == "/real" and e["side"] == "backend")
+    assert [c["file"] for c in real["called_from"]] == ["app/static/main.js"]
+    ghost = next(e for e in r["endpoints"] if e["path"] == "/ghost")
+    assert ghost["sample"] and "unknown_backend" not in ghost["flags"]
+    assert s["frontend_calls"] == 2 and s["unknown_backend"] == 0
+
+
+def test_a_route_called_only_from_tests_is_unreferenced(tmp_path):
+    root = write(tmp_path, {
+        "app/main.py": "from fastapi import FastAPI\napp = FastAPI()\n"
+                       "@app.get('/a')\ndef a(): pass\n@app.get('/b')\ndef b(): pass\n",
+        "app/static/main.js": "fetch('/a');\n",
+        "tests/e2e.js": "document.title; fetch('/b');\n",
+    })
+    flags = {e["path"]: e["flags"] for e in routes(asf.collect(root)).values()}
+    assert "unreferenced" in flags["/b"] and "unreferenced" not in flags["/a"]
+
+
+def test_a_secret_is_counted_wherever_it_sits(tmp_path):
+    """A committed key is in the repository whatever directory holds it."""
+    root = write(tmp_path, {"tests/web/page.html": "<p>x</p>\n"})
+    leak = Finding(tool="gitleaks", rule_id="aws", file="tests/web/page.html", start_line=1,
+                   severity=Severity.HIGH, title="k")
+    r = asf.collect(root, [leak])
+    assert r["secrets"][0]["sample"] is True
+    assert r["summary"]["secrets"] == 1
+    assert [(x["kind"], x["sample"]) for x in r["risks"]] == [("frontend_leak", False)]
+    assert r["summary"]["risks"] == 1
+
+
+GATE = """
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+app = FastAPI()
+_PUBLIC_PATHS = {"/health", "/login"}
+OTHER = ["/not-a-gate-list"]
+
+@app.middleware("http")
+async def gate(request: Request, call_next):
+    path = request.url.path
+    public = (path in _PUBLIC_PATHS or path == "/mcp"
+              or path.startswith("/static/") or path in {"/app.js"})
+    if path.startswith("/api/"):
+        log(path)                       # not a decision about access
+    if public or current_user(request) is not None:
+        return await call_next(request)
+    return JSONResponse({"detail": "sign in"}, status_code=401)
+
+@app.get("/health")
+def h(): pass
+@app.get("/login")
+def l(): pass
+@app.get("/static/x.css")
+def s(): pass
+@app.post("/mcp")
+def m(): pass
+@app.get("/api/users")
+def u(): pass
+@app.get("/not-a-gate-list")
+def n(): pass
+"""
+
+
+def test_an_app_wide_gate_covers_every_route_but_its_public_ones(tmp_path):
+    r = asf.collect(write(tmp_path, {"app/main.py": GATE}))
+    auth = {e["path"]: e["auth"] for e in routes(r).values()}
+    assert auth == {"/health": "public", "/login": "public", "/static/x.css": "public",
+                    "/mcp": "public", "/api/users": "global", "/not-a-gate-list": "global"}
+    s = r["summary"]
+    assert (s["no_auth"], s["global_auth"], s["public"]) == (0, 2, 4)
+    assert not any("no_auth_detected" in e["flags"] for e in routes(r).values())
+    assert all("auth_inferred" in e["flags"] for e in routes(r).values())
+
+
+@pytest.mark.parametrize("gate", [
+    # A middleware that never refuses anyone is not a gate.
+    '@app.middleware("http")\nasync def g(request, call_next):\n    return await call_next(request)\n',
+    # A middleware for something other than http.
+    '@app.middleware("websocket")\nasync def g(request, call_next):\n'
+    '    return Response(status_code=401)\n',
+    # Not a middleware at all, though it answers 401.
+    'def helper():\n    return Response(status_code=401)\n',
+    # Refuses only /admin and lets everything else through: not app-wide.
+    '@app.middleware("http")\nasync def g(request, call_next):\n'
+    '    if request.url.path.startswith("/admin") and not authed(request):\n'
+    '        return Response(status_code=401)\n'
+    '    return await call_next(request)\n',
+    # A CSRF/CORS check answers 403 and says nothing about who you are.
+    '@app.middleware("http")\nasync def g(request, call_next):\n'
+    '    if same_origin(request):\n        return await call_next(request)\n'
+    '    return Response(status_code=403)\n',
+])
+def test_no_gate_means_routes_stay_undetected(tmp_path, gate):
+    src = "from fastapi import FastAPI\napp = FastAPI()\n" + gate + "@app.get('/x')\ndef x(): pass\n"
+    r = asf.collect(write(tmp_path, {"main.py": src}))
+    assert [e["auth"] for e in routes(r).values()] == ["not_detected"]
+
+
+def test_other_forms_of_an_app_wide_gate(tmp_path):
+    deps = ("from fastapi import FastAPI, Depends\n"
+            "app = FastAPI(dependencies=[Depends(get_current_user)])\n"
+            "@app.get('/x')\ndef x(): pass\n")
+    assert [e["auth"] for e in routes(asf.collect(write(tmp_path / "a", {"m.py": deps}))).values()] == ["global"]
+
+    named = ("from fastapi import FastAPI, status\napp = FastAPI()\n"
+             "ALLOWED = frozenset({'/open'})\n"
+             "@app.middleware('http')\nasync def g(request, call_next):\n"
+             "    if request.url.path in ALLOWED:\n        return await call_next(request)\n"
+             "    raise HTTPException(status.HTTP_401_UNAUTHORIZED)\n"
+             "@app.get('/open')\ndef o(): pass\n@app.get('/closed')\ndef c(): pass\n")
+    auth = {e["path"]: e["auth"] for e in routes(asf.collect(write(tmp_path / "b", {"m.py": named}))).values()}
+    assert auth == {"/open": "public", "/closed": "global"}
+
+
+def test_a_gate_in_one_file_covers_routers_in_another(tmp_path):
+    root = write(tmp_path, {
+        "app/main.py": GATE.split('@app.get("/health")')[0]
+                       + "from .users import router\napp.include_router(router, prefix='/u')\n",
+        "app/users.py": "from fastapi import APIRouter\nrouter = APIRouter()\n"
+                        "@router.get('/me')\ndef me(): pass\n",
+        "app/plain.py": "from flask import Flask\nf = Flask(__name__)\n"
+                        "@f.route('/flask')\ndef fl(): pass\n",
+    })
+    auth = {e["path"]: e["auth"] for e in routes(asf.collect(root)).values()}
+    assert auth["/u/me"] == "global"
+    assert auth["/flask"] == "not_detected", "the FastAPI gate does not cover a Flask app"
+
+
+def test_a_gate_covers_its_own_app_only(tmp_path):
+    gated_test = (GATE.replace("/api/users", "/never")
+                  .replace("app = FastAPI()", "other = FastAPI()").replace("@app.", "@other."))
+    root = write(tmp_path, {
+        "app/main.py": GATE,
+        "admin/server.py": "from fastapi import FastAPI\nother = FastAPI()\n"
+                           "@other.get('/admin/users')\ndef au(): pass\n",
+        # A gate in a test protects nothing that ships -- even for an app
+        # with the same name in a module with the same stem.
+        "tests/server.py": gated_test,
+    })
+    auth = {e["path"]: e["auth"] for e in routes(asf.collect(root)).values() if not e["sample"]}
+    assert auth["/api/users"] == "global"
+    assert auth["/admin/users"] == "not_detected", "one app's gate was applied to another"
+
+
+def test_tuple_and_constant_prefixes_open_a_route(tmp_path):
+    src = ("from fastapi import FastAPI\napp = FastAPI()\n"
+           "OPEN = ('/assets/', '/docs')\n"
+           "@app.middleware('http')\nasync def g(request, call_next):\n"
+           "    p = request.url.path\n"
+           "    if p.startswith(('/static/', '/img/')) or p.startswith(OPEN):\n"
+           "        return await call_next(request)\n"
+           "    return RedirectResponse('/login', status_code=302)\n"
+           "@app.get('/static/a')\ndef s(): pass\n@app.get('/img/b')\ndef i(): pass\n"
+           "@app.get('/assets/c')\ndef a(): pass\n@app.get('/private')\ndef p(): pass\n")
+    auth = {e["path"]: e["auth"] for e in routes(asf.collect(write(tmp_path, {"m.py": src}))).values()}
+    assert auth == {"/static/a": "public", "/img/b": "public", "/assets/c": "public",
+                    "/private": "global"}
+
+
+def test_mcp_brief_leaves_samples_out():
+    from app.mcp import _attack_surface_brief
+    surf = {"status": "ok", "endpoints": [
+        {"method": "GET", "path": "/a", "file": "a.py", "line": 1, "flags": ["no_auth_detected"]},
+        {"method": "GET", "path": "/t", "file": "tests/t.py", "line": 1,
+         "flags": ["no_auth_detected"], "sample": True}]}
+    assert [e["path"] for e in _attack_surface_brief(surf)["no_auth_detected"]] == ["/a"]
+    surf["endpoints"].append({"method": "GET", "path": "/g", "file": "m.py", "line": 2,
+                              "flags": ["auth_inferred"], "auth": "global"})
+    assert [e["path"] for e in _attack_surface_brief(surf)["auth_inferred"]] == ["/g"]
+
+
+def test_a_negated_path_test_makes_the_gate_unreadable(tmp_path):
+    src = ("from fastapi import FastAPI\napp = FastAPI()\n"
+           "@app.middleware('http')\nasync def g(request, call_next):\n"
+           "    p = request.url.path\n"
+           "    is_public = p != '/x' or p.startswith(BASE) or p.startswith('static')\n"
+           "    if is_public:\n        return await call_next(request)\n"
+           "    return Response(status_code=401)\n"
+           "@app.get('/x')\ndef x(): pass\n@app.get('/static/a')\ndef s(): pass\n")
+    r = asf.collect(write(tmp_path, {"m.py": src}))
+    # "p != '/x'" lets everything but /x through; reading it as "/x is
+    # public" would be backwards. So no inference at all.
+    assert {e["auth"] for e in routes(r).values()} == {"not_detected"}
+
+
+def test_gate_edge_cases_stay_conservative(tmp_path):
+    # Ends in something other than a refusal: not a gate, whatever came before.
+    ends_in_log = ("from fastapi import FastAPI\napp = FastAPI()\n"
+                   "@app.middleware('http')\nasync def g(request, call_next):\n"
+                   "    if bad(request):\n        return Response(status_code=401)\n"
+                   "    log(request)\n"
+                   "@app.get('/x')\ndef x(): pass\n")
+    r = asf.collect(write(tmp_path / "a", {"m.py": ends_in_log}))
+    assert [e["auth"] for e in routes(r).values()] == ["not_detected"]
+
+    # Tuple unpacking inside a real gate is simply not a path source.
+    unpacking = ("from fastapi import FastAPI\napp = FastAPI()\n"
+                 "@app.middleware('http')\nasync def g(request, call_next):\n"
+                 "    path, method = request.url.path, request.method\n"
+                 "    if path == '/open':\n        return await call_next(request)\n"
+                 "    return Response(status_code=401)\n"
+                 "@app.get('/open')\ndef o(): pass\n@app.get('/shut')\ndef s(): pass\n")
+    auth = {e["path"]: e["auth"] for e in routes(asf.collect(write(tmp_path / "b", {"m.py": unpacking}))).values()}
+    assert auth == {"/open": "public", "/shut": "global"}
+
+    # A gated app kept on an attribute is not tied to any route by name.
+    attribute = ("from fastapi import FastAPI, Depends\n"
+                 "class S:\n    def __init__(self):\n"
+                 "        self.app = FastAPI(dependencies=[Depends(get_current_user)])\n"
+                 "app = FastAPI()\n@app.get('/x')\ndef x(): pass\n")
+    r = asf.collect(write(tmp_path / "c", {"m.py": attribute}))
+    assert [e["auth"] for e in routes(r).values()] == ["not_detected"]
+
+
+
+def test_same_named_files_in_two_services_do_not_share_a_gate(tmp_path):
+    """A monorepo: svc_a/main.py and svc_b/main.py both say app = FastAPI()."""
+    root = write(tmp_path, {
+        "svc_a/main.py": GATE,
+        "svc_b/main.py": "from fastapi import FastAPI\napp = FastAPI()\n"
+                         "@app.get('/b/users')\ndef bu(): pass\n",
+        "svc_b/users.py": "from fastapi import APIRouter\nrouter = APIRouter()\n"
+                          "@router.get('/me')\ndef me(): pass\n",
+        "svc_a/users.py": "from fastapi import APIRouter\nrouter = APIRouter()\n"
+                          "@router.get('/me2')\ndef me2(): pass\n",
+    })
+    # svc_a's gate also includes "users" -- which exists in both services.
+    root.joinpath("svc_a/main.py").write_text(
+        GATE + "from .users import router\napp.include_router(router)\n", "utf-8")
+    auth = {e["path"]: e["auth"] for e in routes(asf.collect(root)).values()}
+    assert auth["/api/users"] == "global"
+    assert auth["/b/users"] == "not_detected", "svc_a's gate was applied to svc_b"
+    assert auth["/me"] == "not_detected", "svc_b's router took svc_a's gate"
+    assert auth["/me2"] == "global", "the router beside the app is covered"
+
+
+def test_a_negated_condition_is_not_read_backwards(tmp_path):
+    src = ("from fastapi import FastAPI\napp = FastAPI()\n"
+           "@app.middleware('http')\nasync def g(request, call_next):\n"
+           "    if user(request) or not request.url.path.startswith('/admin'):\n"
+           "        return await call_next(request)\n"
+           "    return Response(status_code=401)\n"
+           "@app.get('/admin/x')\ndef a(): pass\n@app.get('/api/users')\ndef u(): pass\n")
+    r = asf.collect(write(tmp_path, {"m.py": src}))
+    assert {e["auth"] for e in routes(r).values()} == {"not_detected"}
+
+
+def test_only_the_branch_that_hands_on_itself_counts(tmp_path):
+    src = ("from fastapi import FastAPI\napp = FastAPI()\n"
+           "@app.middleware('http')\nasync def g(request, call_next):\n"
+           "    if request.url.path.startswith('/api'):\n"
+           "        if verify_session(request):\n"
+           "            return await call_next(request)\n"
+           "    return Response(status_code=401)\n"
+           "@app.get('/api/x')\ndef x(): pass\n")
+    r = asf.collect(write(tmp_path, {"m.py": src}))
+    assert [e["auth"] for e in routes(r).values()] == ["global"], "/api was marked public"
+
+
+def test_an_identity_check_beside_the_paths_is_ignored(tmp_path):
+    src = ("from fastapi import FastAPI\napp = FastAPI()\n"
+           "@app.middleware('http')\nasync def g(request, call_next):\n"
+           "    if request.url.path == '/open' or current_user(request) is not None:\n"
+           "        return await call_next(request)\n"
+           "    return Response(status_code=401)\n"
+           "@app.get('/open')\ndef o(): pass\n@app.get('/shut')\ndef s(): pass\n")
+    auth = {e["path"]: e["auth"] for e in routes(asf.collect(write(tmp_path, {"m.py": src}))).values()}
+    assert auth == {"/open": "public", "/shut": "global"}
+
+
+@pytest.mark.parametrize("condition", [
+    "not needs_auth(path)",                        # a helper: direction unknown
+    "any(path.startswith(p) for p in PUB)",        # a generator over the prefixes
+    "re.match(r'^/public', path)",                 # a regular expression
+    "path in settings.PUBLIC",                     # a setting read at run time
+])
+def test_a_path_test_it_cannot_read_makes_no_inference(tmp_path, condition):
+    src = ("import re\nfrom fastapi import FastAPI\napp = FastAPI()\nPUB = ('/public',)\n"
+           "@app.middleware('http')\nasync def g(request, call_next):\n"
+           "    path = request.url.path\n"
+           f"    if {condition}:\n        return await call_next(request)\n"
+           "    return Response(status_code=401)\n"
+           "@app.get('/public/info')\ndef p(): pass\n@app.get('/api/users')\ndef u(): pass\n")
+    r = asf.collect(write(tmp_path, {"m.py": src}))
+    assert {e["auth"] for e in routes(r).values()} == {"not_detected"}
+
+
+def test_a_router_also_mounted_on_an_ungated_app_stays_undetected(tmp_path):
+    root = write(tmp_path, {
+        "svc/main.py": GATE + "from .users import router\napp.include_router(router)\n",
+        "svc/internal.py": "from fastapi import FastAPI\nfrom .users import router\n"
+                           "open_app = FastAPI()\nopen_app.include_router(router)\n",
+        "svc/users.py": "from fastapi import APIRouter\nrouter = APIRouter()\n"
+                        "@router.get('/me')\ndef me(): pass\n",
+    })
+    auth = {e["path"]: e["auth"] for e in routes(asf.collect(root)).values()}
+    assert auth["/me"] == "not_detected", "reachable through open_app without signing in"
+
+
+def test_an_include_is_matched_by_its_import_not_its_name(tmp_path):
+    root = write(tmp_path, {
+        # The gated app mounts a router from a package that is not scanned...
+        "app/main.py": GATE + "from shared.users import router\napp.include_router(router)\n",
+        # ...and the only users.py here is a different module altogether.
+        "tools/users.py": "from fastapi import APIRouter\nrouter = APIRouter()\n"
+                          "@router.get('/tool')\ndef t(): pass\n",
+        # Imported as a module and used as module.router, from a sibling.
+        "api/main.py": GATE.replace("/api/users", "/other")
+                       + "from . import items\napp.include_router(items.router)\n",
+        "api/items.py": "from fastapi import APIRouter\nrouter = APIRouter()\n"
+                        "@router.get('/items')\ndef i(): pass\n",
+        # An absolute import that does resolve to a scanned file.
+        "web/main.py": GATE.replace("/api/users", "/w")
+                       + "import web.pages\napp.include_router(web.pages.router)\n",
+        "web/pages.py": "from fastapi import APIRouter\nrouter = APIRouter()\n"
+                        "@router.get('/pages')\ndef pg(): pass\n",
+    })
+    auth = {e["path"]: e["auth"] for e in routes(asf.collect(root)).values()}
+    assert auth["/tool"] == "not_detected", "another module's gate was borrowed by name"
+    assert auth["/items"] == "global"
+    # web.pages.router is an attribute of an attribute: not resolved, so no
+    # inference rather than a guess.
+    assert auth["/pages"] == "not_detected"
+
+
+def test_routers_found_through_each_import_shape(tmp_path):
+    root = write(tmp_path, {
+        # The router lives in the same file as the gated app.
+        "one/main.py": GATE + "from fastapi import APIRouter\nlocal = APIRouter()\n"
+                       "@local.get('/local')\ndef lo(): pass\napp.include_router(local)\n",
+        # Two levels up: svc/api/main.py imports svc/common/users.py.
+        "svc/api/main.py": GATE.replace("/api/users", "/s")
+                           + "from ..common.users import router\napp.include_router(router)\n",
+        "svc/common/users.py": "from fastapi import APIRouter\nrouter = APIRouter()\n"
+                               "@router.get('/deep')\ndef d(): pass\n",
+        # "from . import router": a name from a package, no module file to point at.
+        "pkg/main.py": GATE.replace("/api/users", "/p")
+                       + "from . import router\napp.include_router(router)\n",
+        "pkg/router.py": "from fastapi import APIRouter\nrouter = APIRouter()\n"
+                         "@router.get('/pkg')\ndef pk(): pass\n",
+    })
+    auth = {e["path"]: e["auth"] for e in routes(asf.collect(root)).values()}
+    assert auth["/local"] == "global"
+    assert auth["/deep"] == "global"
+    assert auth["/pkg"] == "not_detected", "an unresolved import must not borrow a gate"
+
+
+def test_a_router_from_an_unknown_origin_borrows_no_gate(tmp_path):
+    # "users" is never imported here (built at run time, say): which file it
+    # is cannot be known, so the router's routes keep no inference.
+    root = write(tmp_path, {
+        "app/main.py": GATE + "users = load('users')\napp.include_router(users.router)\n",
+        "app/users.py": "from fastapi import APIRouter\nrouter = APIRouter()\n"
+                        "@router.get('/u')\ndef u(): pass\n",
+    })
+    auth = {e["path"]: e["auth"] for e in routes(asf.collect(root)).values()}
+    assert auth["/u"] == "not_detected"
+
+
+@pytest.mark.parametrize("condition, readable", [
+    ("is_public(request) or user", False),               # opaque: could test the path
+    ("not verify_token(request)", False),               # negated identity check
+    ("current_user(request) is not None", True),         # an identity check
+    ("verify_token(token=request) and request.method == 'GET'", True),
+])
+def test_a_helper_handed_the_request_is_trusted_only_as_an_identity_check(tmp_path, condition, readable):
+    src = ("from fastapi import FastAPI\napp = FastAPI()\n"
+           "@app.middleware('http')\nasync def g(request, call_next):\n"
+           f"    if {condition}:\n        return await call_next(request)\n"
+           "    return Response(status_code=401)\n"
+           "@app.get('/api/users')\ndef u(): pass\n")
+    r = asf.collect(write(tmp_path, {"m.py": src}))
+    assert [e["auth"] for e in routes(r).values()] == ["global" if readable else "not_detected"]
+
+
+def test_an_absolute_import_matching_two_files_names_neither(tmp_path):
+    root = write(tmp_path, {
+        "svc_a/main.py": GATE + "from app.routers.users import router\napp.include_router(router)\n",
+        "svc_a/app/routers/users.py": "from fastapi import APIRouter\nrouter = APIRouter()\n"
+                                      "@router.get('/a-me')\ndef am(): pass\n",
+        "svc_b/app/routers/users.py": "from fastapi import APIRouter\nrouter = APIRouter()\n"
+                                      "@router.get('/b-me')\ndef bm(): pass\n",
+        "solo/main.py": GATE.replace("/api/users", "/solo")
+                        + "from lib.pages import router as pages\napp.include_router(pages)\n",
+        "solo/lib/pages.py": "from fastapi import APIRouter\nrouter = APIRouter()\n"
+                             "@router.get('/pages')\ndef pg(): pass\n",
+    })
+    auth = {e["path"]: e["auth"] for e in routes(asf.collect(root)).values()}
+    assert auth["/a-me"] == "not_detected" and auth["/b-me"] == "not_detected"
+    assert auth["/pages"] == "global", "a unique match is still resolved"

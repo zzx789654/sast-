@@ -46,7 +46,7 @@ _last_sweep: Optional[float] = None
 
 
 def _connect() -> sqlite3.Connection:
-    return accounts._connect()  # noqa: SLF001 - one database, one connector
+    return accounts.connect()          # one database, one connector
 
 
 def _now() -> str:
@@ -142,7 +142,7 @@ def _maybe_sweep() -> None:
         _last_sweep = now
     try:
         purge()
-    except Exception:  # noqa: BLE001 - logging must never break the caller
+    except (sqlite3.Error, OSError):  # logging must never break the caller
         pass
 
 
@@ -172,7 +172,7 @@ def record(category: str, action: str, *, level: str = "info",
                 (_now(), category, str(action)[:64], level,
                  str(actor or "")[:64], str(source or "")[:64],
                  str(target or "")[:256], str(detail or "")[:1024]))
-    except Exception:  # noqa: BLE001
+    except (sqlite3.Error, OSError):  # a lost row, never a failed request
         return
     _maybe_sweep()
 

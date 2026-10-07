@@ -41,8 +41,11 @@ NOTE = ("Static analysis: the code was read, not run. Not detectable: URLs "
         "registered dynamically or by reflection, paths added by a reverse "
         "proxy or API gateway, and real traffic (which endpoints are called, "
         "how often, with what). 'no auth detected' and 'unreferenced' are "
-        "inferences from source; confirm them by hand. Does not affect the "
-        "verdict.")
+        "inferences from source; so are 'app-wide auth' and 'public' (read "
+        "from an http middleware that refuses with 401 or a login redirect -- "
+        "a configuration switch can still turn it off) and 'test/example' "
+        "(judged from the file's path). Confirm them by hand. Does not "
+        "affect the verdict.")
 
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_FILES = 20_000
@@ -71,6 +74,18 @@ FRONTEND_DIRS = {"static", "public", "assets", "frontend", "client", "web",
                  "www", "renderer", "components", "pages", "views", "ui"}
 
 HTTP_METHODS = {"get", "post", "put", "delete", "patch", "options", "head"}
+
+# Tests, documentation and design drafts are full of addresses, connection
+# strings and routes that exist only as examples -- this project's own tests
+# feed the extractor private IPs on purpose. They are listed, marked as
+# samples, and kept out of the counts, the risks and the graph.
+# Only names that mean "test" and nothing else: docs/, examples/, fixtures/
+# and spec/ can hold shipping code, and a sample is hidden by default -- a
+# wrong guess here hides a real risk. Add them per deployment with
+# SAST_SURFACE_SAMPLE_PATHS.
+SAMPLE_DIRS = {"test", "tests", "__tests__", "testdata", "mockup", "mockups"}
+_SAMPLE_NAME_RE = re.compile(
+    r"^test_.+\.py$|_test\.go$|\.(test|spec)\.(js|jsx|ts|tsx|mjs|cjs)$", re.IGNORECASE)
 
 # Names that mark an authentication check. Matched against decorator,
 # dependency and middleware names only, never against route paths.
@@ -163,6 +178,25 @@ def mask_credentials(url: str) -> str:
     return url[:i + 2] + "***" + head[at:]
 
 
+def is_sample(rel: str, extra: "tuple[str, ...]" = ()) -> bool:
+    """Is this file a test, a document or an example rather than the product?
+
+    By path only. `extra` adds path prefixes (SAST_SURFACE_SAMPLE_PATHS).
+    """
+    parts = rel.split("/")
+    if any(p.lower() in SAMPLE_DIRS for p in parts[:-1]):
+        return True
+    if _SAMPLE_NAME_RE.search(parts[-1]):
+        return True
+    return any(rel == p.rstrip("/") or rel.startswith(p.rstrip("/") + "/")
+               for p in extra if p.strip("/"))
+
+
+def _extra_sample_paths() -> "tuple[str, ...]":
+    raw = os.environ.get("SAST_SURFACE_SAMPLE_PATHS", "")
+    return tuple(p.strip().strip("/") for p in raw.split(",") if p.strip().strip("/"))
+
+
 def is_frontend(rel: str, text: str) -> bool:
     """Heuristic: does this file run in a browser? Labelled as heuristic in the UI."""
     ext = posixpath.splitext(rel)[1].lower()
@@ -236,6 +270,287 @@ def _py_framework(tree: ast.Module) -> str:
     return ""
 
 
+def _str_consts(node) -> list[str]:
+    """String constants of a literal collection (set, list, tuple)."""
+    if isinstance(node, (ast.Set, ast.List, ast.Tuple)):
+        return [s for s in (_const_str(e) for e in node.elts) if s is not None]
+    return []
+
+
+def _is_401(node) -> bool:
+    """401, as a number or a status constant. 403 alone does not count: a CORS
+    or CSRF check answers 403 too, and says nothing about who you are."""
+    if isinstance(node, ast.Constant) and node.value == 401:
+        return True
+    return isinstance(node, (ast.Attribute, ast.Name)) and "HTTP_401" in _name_of(node)
+
+
+def _denies(stmt) -> bool:
+    """A statement that turns the request away: answers 401, or redirects to
+    a login page."""
+    expr = stmt.value if isinstance(stmt, ast.Return) else (
+        stmt.exc if isinstance(stmt, ast.Raise) else None)
+    if expr is None:
+        return False
+    if any(_is_401(n) for n in ast.walk(expr)):
+        return True
+    return any(isinstance(n, ast.Call) and _name_of(n.func) in ("RedirectResponse", "redirect")
+               and any("login" in (_const_str(a) or "") for a in
+                       list(n.args) + [k.value for k in n.keywords])
+               for n in ast.walk(expr))
+
+
+def _prefix_values(arg, module_sets: dict) -> list[str]:
+    """startswith's argument: a literal, a tuple of literals, or a constant."""
+    if isinstance(arg, ast.Name):
+        return module_sets.get(arg.id, [])
+    return _str_consts(arg) or ([_const_str(arg)] if _const_str(arg) is not None else [])
+
+
+def _public_paths(expr, module_sets: dict) -> tuple[set, set]:
+    """Exact paths and prefixes an expression lets through."""
+    exact, prefixes = set(), set()
+    for node in ast.walk(expr):
+        if isinstance(node, ast.Compare):
+            for op, right in zip(node.ops, node.comparators):
+                if not isinstance(op, (ast.Eq, ast.In)):
+                    continue
+                values = _str_consts(right) or (
+                    [_const_str(right)] if _const_str(right) is not None else [])
+                if isinstance(right, ast.Name):
+                    values = module_sets.get(right.id, [])
+                exact |= {v for v in values if v.startswith("/")}
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr == "startswith" and node.args:
+            prefixes |= {p for p in _prefix_values(node.args[0], module_sets)
+                         if p.startswith("/")}
+    return exact, prefixes
+
+
+def _module_sets(tree: ast.Module) -> dict:
+    """Module-level names bound to literal collections of strings."""
+    found = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            values = _str_consts(node.value)
+            if isinstance(node.value, ast.Call) and _name_of(node.value.func) in (
+                    "set", "frozenset", "tuple") and node.value.args:
+                values = _str_consts(node.value.args[0])
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name) and values:
+                    found[tgt.id] = values
+    return found
+
+
+def _negates_a_path(expr) -> bool:
+    """Does this condition test a path the other way round -- ``not
+    path.startswith(...)``, ``path != "/x"``, ``path not in ...``? Then which
+    paths it lets through cannot be read off its literals."""
+    for node in ast.walk(expr):
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not) and any(
+                isinstance(n, ast.Compare) or (isinstance(n, ast.Call)
+                                               and _name_of(n.func).endswith("startswith"))
+                for n in ast.walk(node.operand)):
+            return True
+        if isinstance(node, ast.Compare) and any(
+                isinstance(op, (ast.NotEq, ast.NotIn)) for op in node.ops):
+            return True
+    return False
+
+
+def _is_path_ref(node, path_names: set) -> bool:
+    """``request.url.path``, or a name the gate bound to it."""
+    if isinstance(node, ast.Name):
+        return node.id in path_names
+    return isinstance(node, ast.Attribute) and node.attr == "path" \
+        and isinstance(node.value, ast.Attribute) and node.value.attr == "url"
+
+
+def _readable_literal(node, module_sets: dict) -> bool:
+    return (_const_str(node) is not None or bool(_str_consts(node))
+            or (isinstance(node, ast.Name) and node.id in module_sets))
+
+
+def _request_calls_readable(expr, request: str) -> bool:
+    """Calls that receive the request itself are opaque: ``is_public(request)``
+    may test the path in any direction. Accepted only when named like an
+    identity check (current_user, verify_token, ...) and not negated --
+    "signed in" is then the meaning, not a path rule."""
+    negated = {id(n) for u in ast.walk(expr)
+               if isinstance(u, ast.UnaryOp) and isinstance(u.op, ast.Not)
+               for n in ast.walk(u.operand)}
+    for node in ast.walk(expr):
+        if not isinstance(node, ast.Call):
+            continue
+        takes_request = any(
+            isinstance(n, ast.Name) and n.id == request
+            for a in list(node.args) + [k.value for k in node.keywords]
+            for n in ast.walk(a))
+        if not takes_request:
+            continue
+        if id(node) in negated or not AUTH_RE.search(_name_of(node.func)):
+            return False
+    return True
+
+
+def _path_tests_readable(expr, path_names: set, module_sets: dict) -> bool:
+    """Is every use of the path here one whose meaning is known?
+
+    Known: ``path == "/x"``, ``path in {...}`` (a literal or a module-level
+    collection), ``path.startswith("/x")`` or a tuple / module constant of
+    prefixes. Anything else that touches the path -- a helper function,
+    re.match, any(...), a setting -- could mean either direction.
+    """
+    parents = {}
+    for node in ast.walk(expr):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    for node in ast.walk(expr):
+        if not _is_path_ref(node, path_names):
+            continue
+        parent = parents.get(node)
+        if isinstance(parent, ast.Compare) and parent.left is node and all(
+                isinstance(op, (ast.Eq, ast.In)) for op in parent.ops) and all(
+                _readable_literal(c, module_sets) for c in parent.comparators):
+            continue
+        if isinstance(parent, ast.Attribute) and parent.attr == "startswith":
+            call = parents.get(parent)
+            if isinstance(call, ast.Call) and call.func is parent and call.args \
+                    and _readable_literal(call.args[0], module_sets):
+                continue
+        return False
+    return True
+
+
+def _gate_publics(fn, module_sets: dict) -> "tuple[set, set] | None":
+    """The paths a gate lets through, or None when that cannot be read.
+
+    Read from the condition of each ``if`` whose own body (not a nested one)
+    hands the request on with ``return await call_next(request)`` -- directly,
+    or through a variable assigned in the gate. A branch that does something
+    else (logging, CSRF) is ignored. A condition that tests a path negatively
+    makes the whole gate unreadable: guessing its direction wrong would mark
+    unprotected routes as protected.
+    """
+    passer = fn.args.args[1].arg if len(fn.args.args) > 1 else "call_next"
+    request = fn.args.args[0].arg if fn.args.args else "request"
+    assigned = {}
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    assigned[tgt.id] = node.value
+    path_names = {name for name, value in assigned.items() if _is_path_ref(value, set())}
+    exact, prefixes = set(), set()
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.If):
+            continue
+        hands_on = any(isinstance(stmt, ast.Return) and stmt.value is not None and any(
+            isinstance(c, ast.Call) and _name_of(c.func) == passer
+            for c in ast.walk(stmt.value)) for stmt in node.body)
+        if not hands_on:
+            continue
+        # The condition, and what its variables were set to -- except a
+        # variable that merely holds the path, which is not a test of it.
+        parts = [node.test] + [assigned[n.id] for n in ast.walk(node.test)
+                               if isinstance(n, ast.Name) and n.id in assigned
+                               and n.id not in path_names]
+        for part in parts:
+            if _negates_a_path(part) or not _path_tests_readable(part, path_names, module_sets) \
+                    or not _request_calls_readable(part, request):
+                return None
+            e, p = _public_paths(part, module_sets)
+            exact |= e
+            prefixes |= p
+    return exact, prefixes
+
+
+def _module_file(rel: str, level: int, parts: list) -> "tuple[str, bool] | None":
+    """The file a module import names: (path, absolute). For a relative
+    import, the path from the importing file's package; for an absolute one,
+    the dotted path as a suffix to match."""
+    if not parts:
+        return None
+    if level:
+        base = posixpath.dirname(rel)
+        for _ in range(level - 1):
+            base = posixpath.dirname(base)
+        return posixpath.join(base, *parts) + ".py", False
+    return "/".join(parts) + ".py", True
+
+
+def _router_file(rel: str, arg, origins: dict) -> "tuple[str, bool] | None":
+    """Which file defines the router passed to include_router, if known."""
+    if isinstance(arg, ast.Name):
+        if arg.id not in origins:
+            return rel, False               # defined in this same file
+        level, module, _name = origins[arg.id]
+        return _module_file(rel, level, module)
+    if isinstance(arg, ast.Attribute) and isinstance(arg.value, ast.Name) \
+            and arg.value.id in origins:
+        level, module, name = origins[arg.value.id]
+        return _module_file(rel, level, module + [name])
+    return None
+
+
+def _global_auth(tree: ast.Module, rel: str, stem: str, imports: dict,
+                 ctx: "_Context") -> None:
+    """App-wide auth gates in this module, recorded per app object.
+
+    A gate is an ``@<app>.middleware("http")`` function whose last statement
+    turns the request away (401, or a redirect to a login page) -- so every
+    request that no earlier branch let through is refused -- or
+    ``<app> = FastAPI(dependencies=[Depends(auth)])``. A middleware that
+    refuses only some paths and lets the rest fall through to call_next is
+    not a gate; nor is one that answers only 403 (CORS, CSRF). It covers the
+    routes of that app and of the routers included into it, nothing else.
+    """
+    module_sets = _module_sets(tree)
+    # name -> (level, module parts, imported name), for finding a router's file
+    origins = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                origins[a.asname or a.name] = (
+                    node.level, node.module.split(".") if node.module else [], a.name)
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                parts = a.name.split(".")
+                origins[a.asname or parts[0]] = (0, parts[:-1], parts[-1])
+    for node in ast.walk(tree):
+        ctx.tick()
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) \
+                and _name_of(node.value.func) == "FastAPI" \
+                and _has_auth_dep(_kw(node.value, "dependencies")):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    ctx.gates[(rel, tgt.id)] = (set(), set())
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr == "include_router" \
+                and isinstance(node.func.value, ast.Name) and node.args:
+            arg = node.args[0]
+            if isinstance(arg, ast.Attribute) and isinstance(arg.value, ast.Name):
+                key = (arg.value.id, arg.attr)
+            elif isinstance(arg, ast.Name):
+                key = imports.get(arg.id, (stem, arg.id))
+            else:
+                continue
+            ctx.app_includes.setdefault((rel, node.func.value.id), set()).add(
+                (key, _router_file(rel, arg, origins)))
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or not node.body:
+            continue
+        apps = [d.func.value.id for d in node.decorator_list
+                if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+                and d.func.attr == "middleware" and isinstance(d.func.value, ast.Name)
+                and d.args and _const_str(d.args[0]) == "http"]
+        if apps and _denies(node.body[-1]):
+            publics = _gate_publics(node, module_sets)
+            if publics is None:
+                continue                    # cannot tell what it lets through
+            for app_name in apps:
+                ctx.gates[(rel, app_name)] = publics
+
+
 def extract_python(rel: str, text: str, ctx: "_Context") -> None:
     ctx.check()          # parsing cannot be interrupted, so do not start late
     try:
@@ -296,6 +611,9 @@ def extract_python(rel: str, text: str, ctx: "_Context") -> None:
     if framework == "django":
         _django_urls(rel, tree, ctx)
         return
+    # A gate in a test or an example protects nothing that ships.
+    if framework == "fastapi" and not is_sample(rel, _extra_sample_paths()):
+        _global_auth(tree, rel, stem, imports, ctx)
 
     for node in ast.walk(tree):
         ctx.tick()
@@ -797,6 +1115,10 @@ class _Context:
         self.documented: set[str] = set()
         self.has_openapi = False
         self.frontend_files: set[str] = set()
+        # (module, app) -> (exact public paths, public prefixes) of its gate
+        self.gates: dict[tuple[str, str], tuple[set, set]] = {}
+        # (module, app) -> routers included into that app
+        self.app_includes: dict[tuple[str, str], set] = {}
 
     def check(self) -> None:
         if self.clock() > self.deadline:
@@ -848,10 +1170,48 @@ class _Context:
 
 
 # --------------------------------------------------------------- correlate
+def _same_file(where: "tuple[str, bool] | None", rel: str, files: set) -> bool:
+    if where is None:
+        return False
+    path, absolute = where
+    if not absolute:
+        return rel == path
+    # Matched by its tail: only when exactly one scanned file ends that way.
+    matches = [f for f in files if f == path or f.endswith("/" + path)]
+    return matches == [rel]
+
+
+def _gate_for(ctx: _Context, rel: str, mk):
+    """The gate covering a route, or None.
+
+    Its own app's gate, when the route is declared on that app in that very
+    file. Or, for a router, the gates of the apps that include it -- found
+    by the import that brings the router in, resolved to this exact file --
+    and only if every one of those apps has a gate: one ungated app that
+    mounts the router makes its routes reachable without signing in.
+    Anything less certain: no gate.
+    """
+    if not mk:
+        return None
+    own = ctx.gates.get((rel, mk[1]))
+    if own is not None and posixpath.splitext(posixpath.basename(rel))[0] == mk[0]:
+        return own
+    apps = [app for app, items in ctx.app_includes.items()
+            if any(key == mk and _same_file(where, rel, ctx.files) for key, where in items)]
+    if not apps or any(app not in ctx.gates for app in apps):
+        return None
+    exact, prefixes = set(), set()
+    for app in apps:                 # public anywhere is public
+        exact |= ctx.gates[app][0]
+        prefixes |= ctx.gates[app][1]
+    return exact, prefixes
+
+
 def _apply_mounts(ctx: _Context) -> list[dict]:
     routes = []
     for r in ctx.routes.values():
         mk, jf = r.pop("_mount"), r.pop("_js")
+        r["_gate"] = _gate_for(ctx, r["file"], mk)
         if mk and mk in ctx.py_mounts:
             prefix, auth = ctx.py_mounts[mk]
             r["path"] = _join(prefix, r["path"])
@@ -898,10 +1258,18 @@ def _methods_match(a: str, b: str) -> bool:
 
 def correlate(ctx: _Context, findings: "list | None") -> dict:
     routes = _apply_mounts(ctx)
+    extra = _extra_sample_paths()
     for r in routes:
         r["norm"] = normalize_path(r["path"])
         r["called_from"] = []
         r["flags"] = []
+        r["sample"] = is_sample(r["file"], extra)
+        gate = r.pop("_gate", None)
+        if gate is not None and r["auth"] == "not_detected":
+            exact, prefixes = gate
+            public = r["path"] in exact or any(r["path"].startswith(p) for p in prefixes)
+            r["auth"] = "public" if public else "global"
+            r["flags"].append("auth_inferred")
 
     # A call can only match a route that ends in the same segments (see
     # _match), so index routes by their last one or two segments instead of
@@ -929,6 +1297,11 @@ def correlate(ctx: _Context, findings: "list | None") -> dict:
     try:
         for c in ctx.calls:
             ctx.tick()
+            # A test calling an endpoint does not make it part of the product.
+            if is_sample(c["file"], extra):
+                unmatched.append({**c, "path": c["url"], "external": "://" in c["url"],
+                                  "sample": True})
+                continue
             external = "://" in c["url"]
             if external:
                 try:
@@ -970,25 +1343,36 @@ def correlate(ctx: _Context, findings: "list | None") -> dict:
 
     endpoints = [{k: v for k, v in r.items() if k != "norm"} for r in routes]
     for c in unmatched:          # already one per (method, url, file)
+        sample = c.get("sample", False)
         flags = ["external"] if c["external"] else (
-            ["unknown_backend"] if routes and matched_all else [])
+            ["unknown_backend"] if routes and matched_all and not sample else [])
         endpoints.append({
             "method": c["method"], "path": c["path"], "side": "frontend",
             "framework": c["kind"], "file": c["file"], "line": c["line"],
-            "auth": "n/a", "flags": flags, "called_from": []})
+            "auth": "n/a", "flags": flags, "called_from": [], "sample": sample})
 
     endpoints.sort(key=lambda e: (e["side"] != "backend", e["path"], e["method"]))
     hosts = sorted(ctx.hosts.values(), key=lambda h: (
         ["metadata", "private", "database", "cloud_storage", "loopback",
          "third_party"].index(h["category"]), h["host"]))
 
+    for h in hosts:
+        for loc in h["locations"]:
+            loc["sample"] = is_sample(loc["file"], extra)
+        # A host is a sample only when every place it appears is one.
+        h["sample"] = all(loc["sample"] for loc in h["locations"])
+
     secrets = []
     for f in findings or []:
         rel = f.file or ""
         frontend = rel in ctx.frontend_files or is_frontend(rel, "")
         secrets.append({"rule": f.rule_id, "file": rel, "line": f.start_line,
-                        "frontend": frontend})
+                        "frontend": frontend, "sample": is_sample(rel, extra)})
 
+    # Risks from samples are listed and marked, not dropped, so a wrong
+    # guess about a file is visible; only the count leaves them out. A
+    # leaked secret is never a sample: it is in the repository wherever
+    # the file sits.
     risks = []
     risk_kind = {"private": "frontend_private_host", "metadata": "frontend_metadata",
                  "database": "frontend_db_connection"}
@@ -997,24 +1381,32 @@ def correlate(ctx: _Context, findings: "list | None") -> dict:
             for loc in h["locations"]:
                 if loc["frontend"]:
                     risks.append({"kind": risk_kind[h["category"]], "file": loc["file"],
-                                  "line": loc["line"], "detail": h["host"]})
+                                  "line": loc["line"], "detail": h["host"],
+                                  "sample": loc["sample"]})
     for s in secrets:
         if s["frontend"]:
             risks.append({"kind": "frontend_leak", "file": s["file"],
-                          "line": s["line"], "detail": s["rule"]})
+                          "line": s["line"], "detail": s["rule"], "sample": False})
 
-    backend = [e for e in endpoints if e["side"] == "backend"]
+    # Counts describe the product: samples are listed but not counted.
+    real = [e for e in endpoints if not e["sample"]]
+    backend = [e for e in real if e["side"] == "backend"]
     summary = {
-        "endpoints": len(endpoints),
+        "endpoints": len(real),
         "backend_routes": len(backend),
-        "frontend_calls": len(ctx.calls),
+        "frontend_calls": sum(1 for c in ctx.calls if not is_sample(c["file"], extra)),
         "no_auth": sum("no_auth_detected" in e["flags"] for e in backend),
+        "global_auth": sum(e["auth"] == "global" for e in backend),
+        "public": sum(e["auth"] == "public" for e in backend),
         "unreferenced": sum("unreferenced" in e["flags"] for e in backend),
         "undocumented": sum("undocumented" in e["flags"] for e in backend),
-        "unknown_backend": sum("unknown_backend" in e["flags"] for e in endpoints),
-        "hosts": len(hosts),
-        "risks": len(risks),
+        "unknown_backend": sum("unknown_backend" in e["flags"] for e in real),
+        "hosts": sum(1 for h in hosts if not h["sample"]),
+        "risks": sum(1 for x in risks if not x["sample"]),
         "secrets": len(secrets),
+        "samples": {"endpoints": len(endpoints) - len(real),
+                    "hosts": sum(1 for h in hosts if h["sample"]),
+                    "risks": sum(1 for x in risks if x["sample"])},
     }
     truncated = {"endpoints": max(0, len(endpoints) - MAX_ENDPOINTS),
                  "hosts": max(0, len(hosts) - MAX_HOSTS),

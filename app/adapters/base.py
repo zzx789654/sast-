@@ -146,7 +146,7 @@ class BaseAdapter:
         if callback:
             try:
                 callback(stage)
-            except Exception:  # noqa: BLE001 - progress must never break a scan
+            except Exception:  # last line: progress must never break a scan
                 pass
 
     # ---- template method ----------------------------------------------
@@ -199,7 +199,7 @@ class BaseAdapter:
         except TimeoutError as exc:
             result.status = ToolStatus.TIMEOUT
             result.error = str(exc) or "tool timed out"
-        except Exception as exc:  # noqa: BLE001 - surface any tool failure
+        except Exception as exc:  # last line: surface any tool failure
             result.status = ToolStatus.ERROR
             result.error = f"{type(exc).__name__}: {exc}"
         result.duration_ms = int((time.monotonic() - start) * 1000)

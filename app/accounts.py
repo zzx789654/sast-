@@ -65,6 +65,11 @@ def _db_path() -> Path:
     return Path(config.ACCOUNTS_DB)
 
 
+def connect() -> sqlite3.Connection:
+    """The one connection factory for the shared database (events uses it)."""
+    return _connect()
+
+
 def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -387,6 +392,11 @@ def password_expired(user) -> bool:
         changed = datetime.fromisoformat(stamp)
     except (TypeError, ValueError):
         return False
+    if changed.tzinfo is None:
+        # Stored without a zone (older rows, a manual edit): it was UTC.
+        # Subtracting it from an aware time would raise TypeError inside the
+        # auth gate, on every request that user made.
+        changed = changed.replace(tzinfo=timezone.utc)
     age = datetime.now(timezone.utc) - changed
     return age.days >= policy["max_age_days"]
 
@@ -614,7 +624,7 @@ def record_login(username: str, success: bool, source: str = "") -> None:
         events.record("auth", "login", level="info" if success else "warn",
                       actor=username, source=source,
                       detail="signed in" if success else "wrong credentials")
-    except Exception:  # noqa: BLE001 - logging must not break signing in
+    except Exception:  # last line: logging must not break signing in
         pass
 
     with _lock, _connect() as conn:
