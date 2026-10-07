@@ -138,37 +138,41 @@ def _require_upgrade_admin(request: Request) -> None:
 
 
 @app.get("/api/admin/upgrades")
-async def admin_upgrades(request: Request, check: bool = False) -> dict:
-    """The upgrade panel: progress of any upgrade, and with `check`, what an
-    upgrade would install now (asks GitHub and PyPI, so only on request)."""
+async def admin_upgrades(request: Request) -> dict:
+    """The upgrade panel: the prepared candidate, the last check, the events.
+    Reads files only: the checking is the host's job."""
     from . import upgrades
 
     _require_upgrade_admin(request)
-    out = upgrades.status()
-    if check and out["enabled"]:
-        out["tools"] = await run_in_threadpool(upgrades.check)
-    return out
+    return upgrades.status()
 
 
-@app.post("/api/admin/upgrades")
-async def admin_request_upgrade(request: Request,
-                                targets: Optional[str] = Form(None)) -> JSONResponse:
-    """Ask the host updater to upgrade scanners. `targets` is
-    "tool=version,tool=version", the versions the panel offered."""
+@app.post("/api/admin/upgrades/check")
+async def admin_upgrade_check(request: Request) -> JSONResponse:
+    """Ask the host to check for new versions now."""
     from . import upgrades
 
     _require_upgrade_admin(request)
-    wanted = {}
-    for part in (targets or "").split(","):
-        tool, _, version = part.strip().partition("=")
-        if tool:
-            wanted[tool.strip()] = version.strip()
-    result = await run_in_threadpool(
-        upgrades.request_upgrade, wanted, _owner_name(request) or "")
+    result = upgrades.request_check(_owner_name(request) or "")
     events.record("service", "upgrade", level="info" if result["started"] else "warn",
                   actor=_owner_name(request), source=_client_ip(request),
-                  detail=(f"requested {targets}" if result["started"]
-                          else f"refused: {result['reason']}"))
+                  detail="check requested" if result["started"]
+                  else f"check refused: {result['reason']}")
+    return JSONResponse(result, status_code=202 if result["started"] else 409)
+
+
+@app.post("/api/admin/upgrades/apply")
+async def admin_upgrade_apply(request: Request,
+                              candidate: Optional[str] = Form(None)) -> JSONResponse:
+    """Approve the candidate the host prepared and accepted."""
+    from . import upgrades
+
+    _require_upgrade_admin(request)
+    result = upgrades.request_apply((candidate or "").strip(), _owner_name(request) or "")
+    events.record("service", "upgrade", level="info" if result["started"] else "warn",
+                  actor=_owner_name(request), source=_client_ip(request),
+                  detail=f"apply {candidate} requested" if result["started"]
+                  else f"apply refused: {result['reason']}")
     return JSONResponse(result, status_code=202 if result["started"] else 409)
 
 

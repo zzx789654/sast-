@@ -3,6 +3,28 @@
 > 每次安全確認（G3）追加一則，最新在上，不覆蓋。命中密鑰只記位置與類型。
 > 第 42 輪以前的紀錄在 `待修改.md` 各輪與 `lessons.md`。
 
+## [2026-10-07] 第 47 輪 — 每日預先建置、網頁核准套用、說明文字網址
+
+### 自動掃描
+| 類別 | 工具與範圍 | 結果 |
+|---|---|---|
+| SAST | Semgrep `p/default`，`app/`、`scripts/`、`tests/` | 9 項，本輪改動部分 0 項：`tests/test_updater.py` 的刻意 setuid 測試樣本（第 45 輪已記錄）＋ 8 項在本輪未改動的檔案（`accounts.py`／`events.py` 的 sqlalchemy 參數化查詢、`releases.py` 已指定 ssl context 的 HTTPSConnection、3 支 JS 測試以 eval 載入被測檔），皆為既有項目 |
+| Secret | Gitleaks 8.30.1，整個工作目錄 | 0 |
+| 抑制註解 | `app/`、`scripts/` | 0 |
+| SCA | 無相依變更 | — |
+
+### 人工複核（獨立子代理）
+- 結果：Critical 0、High 0、Medium 4、Low 6，**全部修正並各補測試**（明細見 `待修改.md` 第 47 輪）。
+- 已確認守住：被攻破的容器無法指定版本、無法套用未驗收的映像、無法重放舊候選或繞過 14 天期限；主機狀態檔不在容器可寫範圍；前端通知全用 textContent。
+- Medium 摘要：
+  - recover 讀不可信的 status.json，可讓 cron 永久停擺或偽造事件 → 改用主機狀態檔的 `running` 標記；
+  - 手動部署後舊候選可把程式退回 → 候選綁定 base／image 映像 ID；
+  - 說明文字判定會藏住 curl 指令與不加引號的 HTML 屬性 → 改白名單判定。
+- 已接受殘餘（Low）：候選 id 容器讀得到，可不經管理員套用「已驗收且仍有效」的候選（`架構.md` §2C）。
+
+### 實測
+- .145 容器（Python 3.11）706 passed、1 failed（`test_orchestrator_stores_map_and_verdict_is_unchanged`，容器內有真掃描器，已知環境差異）；`sast_updater.py`、`attack_surface.py` 行＋分支 100%；JS 測試 3 支通過。
+
 ## [2026-10-07] 第 46 輪 — 攻擊面準確度、proxy 收斂、清除抑制註解
 
 ### 自動掃描

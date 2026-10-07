@@ -17,6 +17,8 @@
     </div>
     <div class="topbar-right">
       <div id="tool-status" class="tool-status" aria-label="tool availability"></div>
+      <!-- Administrators only: a prepared update, or news about one. -->
+      <button id="upg-banner" class="upg-banner hidden" type="button"></button>
       <span id="me-label" class="me-label"></span>
       <button id="logout-btn" class="lang-toggle" data-i18n="settings.logout">登出</button>
       <button id="lang-toggle" class="lang-toggle" title="切換語言 / switch language">EN</button>
@@ -622,13 +624,17 @@
         <span id="upg-state" class="admin-state"></span>
       </div>
       <p class="mon-hint" data-i18n="upg.hint"></p>
+      <div id="upg-candidate" class="upg-candidate hidden"></div>
       <div class="admin-actions">
-        <button id="upg-check" class="btn ghost" data-i18n="upg.check">檢查新版</button>
-        <button id="upg-start" class="btn" data-i18n="upg.start" disabled>開始更新</button>
+        <button id="upg-start" class="btn" data-i18n="upg.apply" disabled>套用更新</button>
+        <button id="upg-check" class="btn ghost" data-i18n="upg.checkNow">立即檢查</button>
       </div>
+      <p id="upg-last" class="mon-subnote"></p>
       <div id="upg-tools" class="upg-tools"></div>
       <ol id="upg-steps" class="upg-steps hidden"></ol>
       <p id="upg-result" class="upg-result hidden"></p>
+      <h3 class="upg-events-title" data-i18n="upg.eventsTitle">通知</h3>
+      <ul id="upg-events" class="upg-events"></ul>
       <p id="upg-overrides" class="mon-subnote hidden"></p>
       <pre id="upg-log" class="admin-log hidden"></pre>
     </div>

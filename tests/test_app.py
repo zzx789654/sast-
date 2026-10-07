@@ -5274,7 +5274,10 @@ def test_bearer_file_past_its_deadline_is_incomplete_not_ok(monkeypatch, tmp_pat
     calls = []
 
     def fake_run(args, **kw):
-        calls.append(args)
+        # Only this scan's calls: a background scan left by another test
+        # would otherwise be counted as a retry.
+        if str(tmp_path) in args:
+            calls.append(args)
         return CommandResult(0, _BEARER_ONE_FINDING, _BEARER_DEADLINE)
 
     _pretend_available(monkeypatch, bearer.BearerAdapter)
@@ -5663,7 +5666,10 @@ def test_concurrent_scans_keep_their_own_custom_rules(monkeypatch, tmp_path):
     executed = []
 
     def fake_run(args, **kw):
-        executed.append(args)
+        # Only this test's scans: run_command is patched module-wide, and a
+        # background scan left by another test would land here too.
+        if str(tmp_path) in args:
+            executed.append(args)
         return CommandResult(0, '{"results": []}', "")
 
     monkeypatch.setattr(semgrep.SemgrepAdapter, "probe", probe)

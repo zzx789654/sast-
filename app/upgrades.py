@@ -2,12 +2,13 @@
 
 This process cannot rebuild its own image: that needs control of the Docker
 daemon, which is control of the host, and the rebuild ends by replacing this
-very container. So it only asks. It writes a request into a directory shared
-with the host, and scripts/sast_updater.py, running on the host as the
-deployment's user, does the work and writes its progress back.
+very container. So it only asks. scripts/sast_updater.py, on the host,
+prepares a candidate every morning on its own; from here an administrator
+can only ask it to check now, or to apply the candidate it prepared. No
+versions are chosen here.
 
 Files in OPS_DIR (the only things either side reads or writes there):
-    request.json  written here: which tools, which versions, who asked
+    request.json  written here: "check", or "apply" a candidate id; who asked
     status.json   written by the host: phase, per-step results, overrides
     drain.json    written here: how many scans are still running
     update.log    written by the host: the tail of what it ran
@@ -24,7 +25,6 @@ import stat
 import threading
 from datetime import datetime, timezone
 
-from . import releases
 from .config import config
 
 REQUEST, STATUS, DRAIN, LOG = "request.json", "status.json", "drain.json", "update.log"
@@ -81,54 +81,57 @@ def _write_json(name: str, data: dict) -> None:
     os.replace(tmp, config.OPS_DIR / name)
 
 
-def installed_versions() -> dict:
-    from . import admin
-    return {tool: admin._installed_version(tool) for tool in releases.SOURCES}
-
-
-def check(installed=None, assess=releases.assess) -> list[dict]:
-    """What an upgrade would install for each tool, or why not."""
-    installed = installed if installed is not None else installed_versions()
-    return [assess(tool, installed.get(tool, "")) for tool in releases.SOURCES]
-
-
 def status() -> dict:
     if not enabled():
         return {"enabled": False}
     return {
         "enabled": True,
+        "upstream_check": config.UPSTREAM_CHECK,
         "pending": bool(_read(REQUEST)),
         "status": _read_json(STATUS),
         "log": _read(LOG, LOG_TAIL, tail=True).decode("utf-8", "replace"),
     }
 
 
-def request_upgrade(targets: dict, requested_by: str, check_fn=None) -> dict:
-    """Ask the host to upgrade `targets` ({tool: version}).
-
-    The versions must be exactly what a fresh check offers now -- what the
-    administrator saw. The host repeats the same check and refuses anything
-    else, so this is the first of two gates, not the only one.
-    """
+def _refusal() -> "str | None":
     if not enabled():
-        return {"started": False, "reason": "upgrades are not set up on this host"}
-    if (_read_json(STATUS).get("phase") in BUSY) or _read(REQUEST):
-        return {"started": False, "reason": "an upgrade is already in progress"}
-    if not targets:
-        return {"started": False, "reason": "choose at least one tool"}
-    unknown = sorted(set(targets) - set(releases.SOURCES))
-    if unknown:
-        return {"started": False, "reason": f"cannot upgrade: {', '.join(unknown)}"}
-    offered = {row["tool"]: row for row in (check_fn or check)()}
-    for tool, version in sorted(targets.items()):
-        row = offered[tool]
-        if not row["eligible"] or row["eligible"] != version:
-            why = row["reason"] or f"{row['eligible']} is on offer, not {version}"
-            return {"started": False, "reason": f"{tool}: {why}"}
+        return "upgrades are not set up on this host"
+    if _read_json(STATUS).get("phase") in BUSY or _read(REQUEST):
+        return "the updater is busy; try again when it finishes"
+    return None
+
+
+def _ask(action: str, requested_by: str, **extra) -> dict:
     request = {"id": secrets.token_hex(8), "requested_by": requested_by,
-               "requested_at": _now(), "targets": dict(sorted(targets.items()))}
+               "requested_at": _now(), "action": action, **extra}
     _write_json(REQUEST, request)
     return {"started": True, "id": request["id"]}
+
+
+def request_check(requested_by: str) -> dict:
+    """Ask the host to check for new versions now (the 08:00 check, early)."""
+    why = _refusal()
+    if why is None and not config.UPSTREAM_CHECK:
+        why = "version checks are off (SAST_UPSTREAM_CHECK=false)"
+    if why:
+        return {"started": False, "reason": why}
+    return _ask("check", requested_by)
+
+
+def request_apply(candidate_id: str, requested_by: str) -> dict:
+    """Ask the host to switch to the candidate it prepared and accepted.
+
+    The id must be the one the panel shows now -- what the administrator
+    saw. The host checks it against its own record again, so this is the
+    first of two gates.
+    """
+    why = _refusal()
+    cand = (_read_json(STATUS).get("candidate") or {}) if why is None else {}
+    if why is None and (not isinstance(cand, dict) or cand.get("id") != candidate_id):
+        why = "that update is no longer on offer; reload the panel"
+    if why:
+        return {"started": False, "reason": why}
+    return _ask("apply", requested_by, candidate=candidate_id)
 
 
 def sync_drain(manager) -> bool:

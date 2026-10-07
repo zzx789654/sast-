@@ -1023,8 +1023,53 @@ class _Spans:
         return i >= 0 and pos < self.ends[i]
 
 
+#: Files where an address can be told apart from a mention of one by where
+#: it sits. Config files are not among them: an unquoted URL there is
+#: usually exactly what the program connects to.
+_CODE_EXT = PY_EXT | JS_EXT | JAVA_EXT | PHP_EXT | FRONTEND_EXT
+
+
+#: A line that is a comment and nothing else.
+_COMMENT_LINE = re.compile(r"^\s*(#|//|/\*|\*|<!--)")
+#: Words that make the text a command which fetches the URL, whatever else
+#: it says: the string may well be run.
+_FETCH_CMD = re.compile(
+    r"(?i)(?<![\w-])(curl|wget|iwr|invoke-webrequest|invoke-restmethod|aria2c|"
+    r"git\s+clone|pip3?\s+install|npm\s+(install|i|ci)|yarn\s+add|pnpm\s+add|"
+    r"docker\s+pull|helm\s+(install|repo)|go\s+(get|install)|"
+    r"apt(-get)?\s+install|bash\s+-c|sh\s+-c)\s")
+_LOOK_BACK = 400
+_PLACEHOLDER = re.compile(r"(?i)(?<![\w-])placeholder\s*=\s*$")
+
+
+def _is_mention(text: str, start: int) -> bool:
+    """Is the URL at `start` written about rather than connected to?
+
+    Only when that is plain. The address sits on a comment line, or it is
+    the value of an HTML placeholder, or it follows a space inside text that
+    is not a command fetching it (an install hint, a "see ... for details").
+    Anything else -- right after a quote, an "=", a "(", a "}" or any other
+    mark, or in a string that runs curl or wget -- is counted as a
+    connection: a wrong guess here would hide one.
+    """
+    # A bounded look back: a minified bundle is one line, with many URLs.
+    line_start = text.rfind("\n", max(0, start - _LOOK_BACK), start) + 1
+    whole_line = line_start > start - _LOOK_BACK
+    before = text[max(line_start, start - _LOOK_BACK):start]
+    if whole_line and _COMMENT_LINE.match(before):
+        return True
+    quote = max(before.rfind(q) for q in "\"'`")
+    if quote >= 0 and quote == len(before) - 1:
+        return bool(_PLACEHOLDER.search(before[:quote]))
+    if not before or before[-1] not in " \t":
+        return False
+    # The text of the string (or the line) up to the address.
+    return not _FETCH_CMD.search(before[quote + 1:] + " ")
+
+
 def extract_hosts(rel: str, src: _Text, ctx: "_Context", frontend: bool) -> None:
     text = src.text
+    code = posixpath.splitext(rel)[1].lower() in _CODE_EXT
     conn_spans = _Spans()
     for m in _CONN_RE.finditer(text):
         ctx.tick()
@@ -1049,7 +1094,8 @@ def extract_hosts(rel: str, src: _Text, ctx: "_Context", frontend: bool) -> None
             continue
         cat = classify_host(host)
         if cat:
-            ctx.add_host(host, cat, rel, src.line(m.start()), frontend)
+            ctx.add_host(host, cat, rel, src.line(m.start()), frontend,
+                         mention=code and _is_mention(text, m.start()))
     for m in _IP_RE.finditer(text):
         ctx.tick()
         if url_spans.covers(m.start()) or conn_spans.covers(m.start()):
@@ -1157,7 +1203,7 @@ class _Context:
         self.calls.append({"method": method, "url": url, "file": rel,
                            "line": line, "kind": kind, "frontend": frontend})
 
-    def add_host(self, host, category, rel, line, frontend) -> None:
+    def add_host(self, host, category, rel, line, frontend, mention=False) -> None:
         entry = self.hosts.get(host)
         if entry is None:
             entry = {"host": host, "category": category, "frontend": False,
@@ -1166,7 +1212,8 @@ class _Context:
         entry["count"] += 1
         entry["frontend"] = entry["frontend"] or frontend
         if len(entry["locations"]) < MAX_LOCATIONS:
-            entry["locations"].append({"file": rel, "line": line, "frontend": frontend})
+            entry["locations"].append({"file": rel, "line": line, "frontend": frontend,
+                                       "mention": mention})
 
 
 # --------------------------------------------------------------- correlate
@@ -1359,8 +1406,11 @@ def correlate(ctx: _Context, findings: "list | None") -> dict:
     for h in hosts:
         for loc in h["locations"]:
             loc["sample"] = is_sample(loc["file"], extra)
-        # A host is a sample only when every place it appears is one.
+        # A host is a sample (or only mentioned) when every place it appears
+        # is one; a single real use anywhere makes it a connection.
         h["sample"] = all(loc["sample"] for loc in h["locations"])
+        h["mention"] = not h["sample"] and all(
+            loc["sample"] or loc["mention"] for loc in h["locations"])
 
     secrets = []
     for f in findings or []:
@@ -1382,7 +1432,7 @@ def correlate(ctx: _Context, findings: "list | None") -> dict:
                 if loc["frontend"]:
                     risks.append({"kind": risk_kind[h["category"]], "file": loc["file"],
                                   "line": loc["line"], "detail": h["host"],
-                                  "sample": loc["sample"]})
+                                  "sample": loc["sample"] or loc["mention"]})
     for s in secrets:
         if s["frontend"]:
             risks.append({"kind": "frontend_leak", "file": s["file"],
@@ -1401,11 +1451,12 @@ def correlate(ctx: _Context, findings: "list | None") -> dict:
         "unreferenced": sum("unreferenced" in e["flags"] for e in backend),
         "undocumented": sum("undocumented" in e["flags"] for e in backend),
         "unknown_backend": sum("unknown_backend" in e["flags"] for e in real),
-        "hosts": sum(1 for h in hosts if not h["sample"]),
+        "hosts": sum(1 for h in hosts if not h["sample"] and not h["mention"]),
         "risks": sum(1 for x in risks if not x["sample"]),
         "secrets": len(secrets),
         "samples": {"endpoints": len(endpoints) - len(real),
                     "hosts": sum(1 for h in hosts if h["sample"]),
+                    "mentions": sum(1 for h in hosts if h["mention"]),
                     "risks": sum(1 for x in risks if x["sample"])},
     }
     truncated = {"endpoints": max(0, len(endpoints) - MAX_ENDPOINTS),

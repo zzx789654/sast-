@@ -206,6 +206,8 @@ def _latest_upstream() -> dict:
     from .releases import _fetch_json
 
     found = {}
+    if not config.UPSTREAM_CHECK:
+        return found                 # SAST_UPSTREAM_CHECK=false: ask nobody
     for name, repo in UPSTREAM.items():
         # The same fetch as the upgrade panel: https, release hosts only.
         try:

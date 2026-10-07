@@ -190,7 +190,7 @@ cd sast-
 | `scripts/fetch-vendor.sh` | 把掃描器二進位預先下載到 `./vendor` | 由上面兩支自動呼叫；網路慢時可單獨先跑 |
 | `scripts/install-tools.sh` | 把掃描器安裝到主機 | 由 `setup.sh` 自動呼叫；手動安裝時使用 |
 | `scripts/install-updater.sh` | 開啟「網頁升級掃描工具」：建立 `ops/`、在 crontab 加入每分鐘執行的 `scripts/sast_updater.py` | `setup.sh --docker` 自動呼叫；既有部署手動執行一次 |
-| `scripts/sast_updater.py` | 主機服務：處理網頁送出的升級請求（查核→下載驗證→建置→驗收→等待掃描→切換） | 由 cron 呼叫，不需手動執行 |
+| `scripts/sast_updater.py` | 主機服務：每日 08:00 檢查並預先建置、驗收候選；處理網頁的「立即檢查」與「套用」（等待掃描→切換）。`--check` 可手動立即檢查 | 由 cron 呼叫，不需手動執行 |
 | `scripts/prune-rollbacks.sh` | 映像只保留 2 版：目前版本與前一版 | 部署與升級後自動呼叫 |
 
 ### `setup.sh` — 安裝與更新
@@ -306,15 +306,20 @@ SKIP_VENDOR=1 ./setup.sh --update    # 重建映像，不碰 ./vendor 快取
 - **二進位版本固定**：要升版就同時修改 `Dockerfile`、`scripts/install-tools.sh`、`scripts/fetch-vendor.sh`
   的版本號（以及 `fetch-vendor.sh` 的 checksum），再跑 `./setup.sh --update`。
 - **網頁上就地更新**：「維護動作」的「更新掃描工具」只更新 Trivy 的弱點 DB。
-- **網頁上升級版本**（第 45 輪）：監控分頁「升級掃描工具」→「檢查新版」→ 勾選 →「開始更新」。
-  適用 Semgrep、Trivy、OSV-Scanner、Gitleaks；**只提供最新版，且發布（含所有檔案的最後更新）滿 7 天**。
-  網頁容器只送出請求，由主機上的 `scripts/sast_updater.py`（cron 每分鐘）執行：
-  重新查核版本 → 下載並比對官方 checksum → 下載後再查核一次 → 建置候選映像（舊版持續服務）→
-  自動驗收（六個掃描器能啟動、樣本專案每個工具都抓到預期發現、候選映像 CRITICAL 不多於現行）→
-  有掃描進行中就暫停接受新掃描並等它們結束（最多 60 分鐘）→ 切換；任何一步失敗都保留舊版，切換後異常會自動退回。
-  升級後的版本寫在主機 `.env`，之後 `deploy.sh` 會沿用；畫面會提示「本機版本比 repo 新」，請找時間把 repo 的版本號也改上去，CI 才會測到同樣的版本。
-  前提：**必須啟用帳號**（`SAST_REQUIRE_AUTH=true`）且由管理員操作；主機已執行 `scripts/install-updater.sh`；磁碟至少 3 GB 可用。
-  進度與記錄在 `ops/status.json`、`ops/update.log`。
+- **每日預先建置＋網頁核准套用**（第 47 輪）：
+  - 適用 Semgrep、Trivy、OSV-Scanner、Gitleaks；**只採用最新版，且發布滿 7 天**（以所有檔案的最後更新時間計）。
+  - **檢查**：主機上的 `scripts/sast_updater.py`（cron 每分鐘判斷）每天 08:00（`SAST_UPGRADE_CHECK_AT`、`SAST_UPGRADE_TZ`，預設台北時間；關機錯過會補做；失敗 3 小時後重試）自動檢查。也可以在監控分頁「升級掃描工具」按「立即檢查」。
+  - **有新版時，自動準備候選映像**，舊版持續服務：下載並比對官方 checksum → 下載後再查核一次 → 建置候選映像 → 自動驗收（六個掃描器能啟動、樣本專案每個工具都抓到預期發現、候選映像 CRITICAL 不多於現行）。
+  - **通知**：頁首與監控分頁會顯示下載中、下載完成（可套用）、下載失敗、開始更新、更新完成、更新失敗、候選過期。
+  - **套用**：管理員按「套用」才會切換。切換前先等進行中的掃描結束（最多 60 分鐘，期間新掃描回 503），切換後異常會自動退回。網頁只能核准主機已驗收的候選，不能指定版本。
+  - **候選失效**：14 天未套用自動刪除。之後若手動部署過，或候選映像被換掉，候選會作廢，需重新檢查。
+  - **版本紀錄**：升級後的版本寫在主機 `.env`，之後 `deploy.sh` 會沿用。畫面會提示「本機版本比 repo 新」，請找時間把 repo 的版本號也改上去，CI 才會測到同樣的版本。
+  - **前提**：
+    - **必須啟用帳號**（`SAST_REQUIRE_AUTH=true`），且由管理員操作；
+    - 主機已執行 `scripts/install-updater.sh`；
+    - 磁碟至少 3 GB 可用。
+  - **關閉對外查詢**：`.env` 設 `SAST_UPSTREAM_CHECK=false`，網頁與主機都不再連 api.github.com／pypi.org。
+  - **紀錄位置**：狀態與通知存在主機 `.updater-state.json`；`ops/status.json`、`ops/update.log` 是給網頁顯示的副本。
 - **查看已安裝版本**：監控分頁，或 `GET /api/tools`。
 
 ### 手動安裝（不用腳本）
@@ -664,8 +669,9 @@ echo "判定：$STATUS"
 | `GET /api/admin/status?check_upstream=true` | 🔑 | 維護工作狀態、可更新的工具；`check_upstream` 會向 GitHub 查新版 |
 | `POST /api/admin/update-tools` | 🔑 | 就地更新掃描器（`tools` 逗號分隔，可省略）；回 `202`，用 status 輪詢 |
 | `POST /api/admin/restart` | 🔑 | 重啟應用程式（每分鐘最多一次；會清空記憶體中的掃描記錄） |
-| `GET /api/admin/upgrades?check=true` | 🔑 | 升級進度（`status`、`log`、`pending`）；`check` 時另回每個工具可升級的版本或原因。未啟用帳號時一律 403 |
-| `POST /api/admin/upgrades` | 🔑 | 送出升級請求：`targets=tool=version,tool=version`，版本必須等於「檢查新版」提供的版本；回 `202`／`409`。升級等待切換期間，新的掃描請求回 `503`（`Retry-After: 120`） |
+| `GET /api/admin/upgrades` | 🔑 | 升級狀態：`status`（階段、候選、通知事件、各工具查核結果、上次檢查時間）、`log`、`pending`、`upstream_check`。未啟用帳號時一律 403 |
+| `POST /api/admin/upgrades/check` | 🔑 | 要求主機立即檢查新版（同每日 08:00 流程）；`SAST_UPSTREAM_CHECK=false` 或已有作業進行中回 `409` |
+| `POST /api/admin/upgrades/apply` | 🔑 | 表單欄位 `candidate`＝目前候選的 id，核准套用；候選不符回 `409`。等待切換期間，新的掃描請求回 `503`（`Retry-After: 120`） |
 | `GET /api/mcp/config` | 👤 | 產生可直接貼上的 MCP 用戶端設定與 `.env` 範本 |
 | `GET /api/health` | 🌐 | 健康檢查，回 `{"status":"ok"}`（nginx 另提供 `/healthz`） |
 
@@ -749,6 +755,8 @@ Docker 部署預設**啟用登入**（`SAST_REQUIRE_AUTH=true`）。
 | 變數 | 預設 | 說明 |
 |---|---|---|
 | `SAST_REQUIRE_AUTH` | `false`（compose 設為 `true`） | 是否需要登入 |
+| `SAST_UPSTREAM_CHECK` | `true` | 是否查詢 GitHub／PyPI 上的新版本（網頁與主機每日檢查）；`false` 時都不連外 |
+| `SAST_UPGRADE_CHECK_AT` / `SAST_UPGRADE_TZ` | `08:00` / `Asia/Taipei` | 主機每日檢查的時間與時區（讀主機 `.env`） |
 | `SAST_ADMIN_USER` / `SAST_ADMIN_PASSWORD` | `admin` / 自動產生 | 首次建立的管理員 |
 | `SAST_PUBLIC_URL` | 空 | 對外網址，例如 `https://sast.example.com`；用於產生 MCP 設定 |
 | `SAST_ALLOWED_HOSTS` | 空 | 未設 `SAST_PUBLIC_URL` 時允許的主機名稱（逗號分隔） |

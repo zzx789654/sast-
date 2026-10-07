@@ -147,5 +147,10 @@ class Config:
     # progress (scripts/sast_updater.py). Unset: the upgrade button is off.
     OPS_DIR = Path(os.environ["SAST_OPS_DIR"]) if os.environ.get("SAST_OPS_DIR") else None
 
+    # Off: no question goes to GitHub or PyPI about new scanner versions --
+    # neither the Monitor tab's version check nor the upgrade panel. The host
+    # updater reads the same setting from .env.
+    UPSTREAM_CHECK = _env_bool("SAST_UPSTREAM_CHECK", True)
+
 
 config = Config()

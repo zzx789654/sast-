@@ -49,6 +49,9 @@ services:
       # Scanner upgrades from the Monitor tab: this app writes a request here
       # and scripts/sast_updater.py, on the host, does the work.
       SAST_OPS_DIR: "/data/ops"
+      # "false" in .env: no version questions to GitHub or PyPI, from here or
+      # from the host updater (which reads .env itself).
+      SAST_UPSTREAM_CHECK: "${SAST_UPSTREAM_CHECK:-true}"
     volumes:
       # Two volumes, not one: filling the rules directory must not take the
       # scan workspaces down with it, and vice versa.

@@ -74,6 +74,11 @@ async function init() {
     console.error("startup load failed:", e);
   })));
 
+  if (AUTH.user && AUTH.user.is_admin) {
+    loadUpgradeBanner();
+    state.upgBannerTimer = setInterval(loadUpgradeBanner, 60000);
+  }
+
   // Reopen the tab this browser was last on. It waits for the loads above
   // because whoami decides which tabs this account may see, and restoring a
   // tab that is not allowed would land on a hidden panel.
@@ -1165,8 +1170,9 @@ function wireViewNav() {
 
   $("#admin-update").addEventListener("click", runToolUpdate);
   $("#admin-restart").addEventListener("click", runRestart);
-  $("#upg-check").addEventListener("click", () => loadUpgrade(true));
+  $("#upg-check").addEventListener("click", checkUpgradeNow);
   $("#upg-start").addEventListener("click", startUpgrade);
+  $("#upg-banner").addEventListener("click", () => showView("monitor"));
   $("#report-refresh").addEventListener("click", () => refreshScanList(state.selectedJob));
   $("#export-csv").addEventListener("click", exportCsv);
   const pkgBtn = $("#export-packages");
@@ -1229,7 +1235,7 @@ async function renderMonitor() {
   renderMonitorTools();
   await loadMonitorDocker();
   await loadAdminStatus();
-  await loadUpgrade(false);
+  await loadUpgrade();
 }
 
 // ---------------------------------------------------------------- operator
@@ -1483,44 +1489,109 @@ function startMonitorPolling() {
   // Upgrade progress, but only while one is under way: the endpoint is for
   // administrators, and an idle panel has nothing to refresh.
   clearInterval(state.upgTimer);
-  state.upgTimer = setInterval(() => { if (state.upgBusy) loadUpgrade(false); }, 5000);
+  state.upgTimer = setInterval(() => { if (state.upgBusy) loadUpgrade(); }, 5000);
 }
 function stopMonitorPolling() { clearInterval(state.monTimer); clearInterval(state.upgTimer); }
 
 // ---------------------------------------------------------------- upgrades
-// Scanner versions that need a new image. The host rebuilds, checks the new
-// image and switches; this panel only asks and reports. While it switches,
-// the service restarts, so a failed poll here is expected, not an error.
+// The host checks every morning and prepares a verified candidate on its own.
+// This panel shows what it found and did, and can ask for two things only:
+// check now, or apply the candidate it prepared. While it switches, the
+// service restarts, so a failed poll here is expected, not an error.
 const UPG_PHASES = ["checking", "downloading", "building", "verifying",
   "waiting_for_scans", "switching", "done"];
 const UPG_BUSY = new Set(UPG_PHASES.slice(0, -1).concat(["queued"]));
+const UPG_SEEN_KEY = "sast-upg-seen";
 
-async function loadUpgrade(check) {
-  const panel = $("#upgrade-panel");
+function upgSeen() {
+  try { return localStorage.getItem(UPG_SEEN_KEY) || ""; } catch (e) { return ""; }
+}
+function upgMarkSeen(at) {
+  try { if (at) localStorage.setItem(UPG_SEEN_KEY, at); } catch (e) { /* private mode */ }
+}
+
+function upgVersions(targets, previous) {
+  return Object.entries(targets || {}).map(([tool, v]) =>
+    `${tool} ${(previous || {})[tool] || "?"} \u2192 ${v}`).join(", ");
+}
+
+function upgEventText(ev) {
+  const versions = upgVersions(ev.targets, ev.previous);
+  const text = t("upg.ev." + ev.kind, { versions, step: ev.step ? t("upg.phase." + ev.step) : "",
+    reason: ev.reason || "" });
+  return ev.count > 1 ? text + t("upg.ev.repeat", { n: ev.count }) : text;
+}
+
+async function fetchUpgrade() {
   let res;
   try {
-    res = await fetch("/api/admin/upgrades" + (check ? "?check=true" : ""), { cache: "no-store" });
+    res = await fetch("/api/admin/upgrades", { cache: "no-store" });
   } catch (e) {
-    return;                       // restarting mid-switch; the next poll answers
+    return null;                  // restarting mid-switch; the next poll answers
   }
-  if (res.status === 401 || res.status === 403) { panel.classList.add("hidden"); return; }
-  if (!res.ok) return;
-  const d = await res.json();
+  if (res.status === 401 || res.status === 403) return { forbidden: true };
+  if (!res.ok) return null;
+  return res.json();
+}
+
+// The header: something to apply, or news since this browser last looked.
+async function loadUpgradeBanner() {
+  const d = await fetchUpgrade();
+  const banner = $("#upg-banner");
+  if (!d) return;
+  if (d.forbidden || !d.enabled) { banner.classList.add("hidden"); clearInterval(state.upgBannerTimer); return; }
+  const st = d.status || {};
+  const events = st.events || [];
+  const unseen = events.filter((e) => e.at > upgSeen());
+  const latest = unseen[unseen.length - 1];
+  const cand = st.candidate;
+  let text = "";
+  if (UPG_BUSY.has(st.phase)) text = t("upg.banner.busy", { phase: t("upg.phase." + st.phase) });
+  else if (latest) text = upgEventText(latest);
+  else if (cand) text = t("upg.banner.ready", { versions: upgVersions(cand.targets, cand.previous) });
+  banner.textContent = text;
+  banner.className = "upg-banner" + (text ? "" : " hidden")
+    + (latest && /failed/.test(latest.kind) ? " bad" : "");
+}
+
+async function loadUpgrade() {
+  const panel = $("#upgrade-panel");
+  const d = await fetchUpgrade();
+  if (!d) return;
+  if (d.forbidden) { panel.classList.add("hidden"); return; }
   panel.classList.remove("hidden");
   const st = d.status || {};
   state.upgBusy = !!d.pending || UPG_BUSY.has(st.phase);
 
   const label = $("#upg-state");
   label.textContent = !d.enabled ? t("upg.off")
+    : d.upstream_check === false ? t("upg.upstreamOff")
     : d.pending ? t("upg.pending")
     : st.phase ? t("upg.phase." + st.phase) : "";
   label.className = "admin-state" + (state.upgBusy ? " busy"
-    : st.phase === "failed" ? " bad" : st.phase === "done" ? " good" : "");
-  $("#upg-check").disabled = !d.enabled || state.upgBusy;
+    : st.phase === "failed" ? " bad" : ["done", "ready"].includes(st.phase) ? " good" : "");
 
-  if (d.tools) renderUpgradeTools(d.tools);
-  $("#upg-start").disabled = !d.enabled || state.upgBusy || !upgradeTargets().length;
+  const cand = st.candidate;
+  const card = $("#upg-candidate");
+  card.textContent = "";
+  card.classList.toggle("hidden", !cand);
+  if (cand) {
+    card.appendChild(el("strong", null, t("upg.candidate", {
+      versions: upgVersions(cand.targets, cand.previous) })));
+    const crit = cand.critical || {};
+    card.appendChild(el("div", "mon-subnote", t("upg.candidateDetail", {
+      built: fmtTime(cand.built_at), expires: fmtTime(cand.expires_at),
+      current: crit.current ?? "?", candidate: crit.candidate ?? "?" })));
+  }
+  $("#upg-start").disabled = !d.enabled || state.upgBusy || !cand;
+  $("#upg-start").dataset.candidate = cand ? cand.id : "";
+  $("#upg-check").disabled = !d.enabled || state.upgBusy || d.upstream_check === false;
+  $("#upg-last").textContent = st.last_check
+    ? t("upg.lastCheck", { at: fmtTime(st.last_check) }) : t("upg.neverChecked");
+
+  renderUpgradeTools(st.tools || []);
   renderUpgradeSteps(st);
+  renderUpgradeEvents(st.events || []);
 
   const ov = $("#upg-overrides");
   const rows = Object.entries(st.overrides || {});
@@ -1532,26 +1603,28 @@ async function loadUpgrade(check) {
   log.classList.toggle("hidden", !d.log);
   log.textContent = d.log || "";
   log.scrollTop = log.scrollHeight;
+
+  // Opening the panel is reading the news.
+  const events = st.events || [];
+  if (events.length) upgMarkSeen(events[events.length - 1].at);
+  loadUpgradeBanner();
+}
+
+function fmtTime(iso) {
+  if (!iso) return "?";
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString();
 }
 
 function renderUpgradeTools(tools) {
   const box = $("#upg-tools");
   box.textContent = "";
   tools.forEach((row) => {
-    const line = el("label", "upg-row" + (row.eligible ? "" : " upg-off"));
-    const box1 = el("input");
-    box1.type = "checkbox";
-    box1.disabled = !row.eligible;
-    box1.dataset.tool = row.tool;
-    box1.dataset.version = row.eligible || "";
-    box1.addEventListener("change", () => {
-      $("#upg-start").disabled = state.upgBusy || !upgradeTargets().length;
-    });
-    line.appendChild(box1);
+    const line = el("div", "upg-row" + (row.eligible ? "" : " upg-off"));
     line.appendChild(el("span", "av-name", row.tool));
     line.appendChild(el("span", "av-have", row.installed || "?"));
     if (row.eligible) {
-      line.appendChild(el("span", "av-arrow", "→"));
+      line.appendChild(el("span", "av-arrow", "\u2192"));
       line.appendChild(el("span", "av-new", row.eligible));
     } else {
       line.appendChild(el("span", "upg-why", row.reason === "up to date"
@@ -1561,20 +1634,30 @@ function renderUpgradeTools(tools) {
   });
 }
 
-function upgradeTargets() {
-  return [...document.querySelectorAll("#upg-tools input:checked")]
-    .map((b) => `${b.dataset.tool}=${b.dataset.version}`);
+function renderUpgradeEvents(events) {
+  const list = $("#upg-events");
+  list.textContent = "";
+  if (!events.length) { list.appendChild(el("li", "mon-note", t("upg.noEvents"))); return; }
+  events.slice(-10).reverse().forEach((ev) => {
+    const li = el("li", "upg-event " + ev.kind);
+    li.appendChild(el("span", "upg-ev-at", fmtTime(ev.at)));
+    li.appendChild(el("span", "upg-ev-text", upgEventText(ev)));
+    list.appendChild(li);
+  });
 }
 
 function renderUpgradeSteps(st) {
   const list = $("#upg-steps");
   const result = $("#upg-result");
   list.textContent = "";
-  list.classList.toggle("hidden", !st.phase);
-  result.classList.toggle("hidden", !st.phase || UPG_BUSY.has(st.phase));
-  if (!st.phase) return;
-  const at = st.phase === "failed" ? UPG_PHASES.indexOf(st.step) : UPG_PHASES.indexOf(st.phase);
-  UPG_PHASES.slice(0, -1).forEach((phase, i) => {
+  const shown = st.phase && !["idle", "ready"].includes(st.phase);
+  list.classList.toggle("hidden", !shown);
+  result.classList.toggle("hidden", !shown || UPG_BUSY.has(st.phase));
+  if (!shown) return;
+  // A check stops after "verifying"; an apply starts at "waiting for scans".
+  const steps = st.action === "apply" ? UPG_PHASES.slice(4, -1) : UPG_PHASES.slice(0, 4);
+  const at = st.phase === "failed" ? steps.indexOf(st.step) : steps.indexOf(st.phase);
+  steps.forEach((phase, i) => {
     const cls = st.phase === "done" || i < at ? "done"
       : i === at ? (st.phase === "failed" ? "failed" : "now") : "";
     list.appendChild(el("li", "upg-step " + cls, t("upg.phase." + phase)));
@@ -1584,28 +1667,36 @@ function renderUpgradeSteps(st) {
     result.textContent = t("upg.failedAt", { step: t("upg.phase." + (st.step || "checking")),
       reason: st.reason || "" });
   } else if (st.phase === "done") {
-    // Switched, but the host could not record the versions: say so loudly,
-    // since the next deploy would otherwise quietly go back.
     result.className = "upg-result " + (st.warning ? "bad" : "good");
-    result.textContent = t("upg.doneMsg", { list: Object.entries(st.targets || {})
-      .map(([tool, v]) => `${tool} ${v}`).join(", ") }) + (st.warning ? " " + st.warning : "");
+    result.textContent = t("upg.doneMsg", { list: upgVersions(st.targets, {}) })
+      + (st.warning ? " " + st.warning : "");
   }
 }
 
-async function startUpgrade() {
-  const targets = upgradeTargets();
-  if (!targets.length || !confirm(t("upg.confirm", { list: targets.join(", ") }))) return;
-  const body = new FormData();
-  body.append("targets", targets.join(","));
+async function upgradePost(path, body, confirmText) {
+  if (confirmText && !confirm(confirmText)) return;
   try {
-    const res = await fetch("/api/admin/upgrades", { method: "POST", body });
+    const res = await fetch(path, { method: "POST", body });
     const d = await res.json();
     if (!d.started) { alert(d.reason || t("admin.failed")); return; }
   } catch (e) {
     alert(t("admin.failed") + ": " + e.message);
     return;
   }
-  loadUpgrade(false);
+  loadUpgrade();
+}
+
+function startUpgrade() {
+  const id = $("#upg-start").dataset.candidate;
+  if (!id) return;
+  const body = new FormData();
+  body.append("candidate", id);
+  upgradePost("/api/admin/upgrades/apply", body,
+    t("upg.confirmApply", { versions: $("#upg-candidate strong").textContent }));
+}
+
+function checkUpgradeNow() {
+  upgradePost("/api/admin/upgrades/check", new FormData(), null);
 }
 
 function wireTabs() {
@@ -2851,8 +2942,8 @@ function surfaceOf(job) {
   return {
     ...surf,
     endpoints: surf.endpoints.filter((e) => !e.sample),
-    hosts: (surf.hosts || []).filter((h) => !h.sample).map((h) => ({
-      ...h, locations: (h.locations || []).filter((l) => !l.sample) })),
+    hosts: (surf.hosts || []).filter((h) => !h.sample && !h.mention).map((h) => ({
+      ...h, locations: (h.locations || []).filter((l) => !l.sample && !l.mention) })),
   };
 }
 
@@ -2942,11 +3033,11 @@ function renderSurface(job) {
   });
 
   const samples = s.samples || {};
-  const nSamples = (samples.endpoints || 0) + (samples.hosts || 0);
+  const nSamples = (samples.endpoints || 0) + (samples.hosts || 0) + (samples.mentions || 0);
   $("#surface-samples").classList.toggle("hidden", !nSamples);
   $("#surface-show-samples").checked = !!state.surfaceShowSamples;
   $("#surface-samples-label").textContent = t("surface.showSamples", {
-    endpoints: samples.endpoints || 0, hosts: samples.hosts || 0 });
+    endpoints: samples.endpoints || 0, hosts: (samples.hosts || 0) + (samples.mentions || 0) });
 
   body.classList.remove("hidden");
   renderSurfaceChart(job);
@@ -3368,6 +3459,7 @@ function renderSurfaceHosts(surf) {
     const tr = el("tr", risky ? "sf-risk-row" : "");
     const name = el("td", "mono", h.host);
     if (h.sample) name.appendChild(el("span", "sf-flag sample", t("surface.sampleTag")));
+    else if (h.mention) name.appendChild(el("span", "sf-flag sample", t("surface.mentionTag")));
     tr.appendChild(name);
     tr.appendChild(el("td", null, t("surface.cat." + h.category)));
     tr.appendChild(el("td", null, h.frontend ? t("surface.yes") : "—"));

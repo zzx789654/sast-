@@ -139,10 +139,13 @@ def ops(tmp_path, monkeypatch):
     return tmp_path
 
 
-OFFER = [{"tool": "trivy", "eligible": "0.75.0", "reason": ""},
-         {"tool": "semgrep", "eligible": "", "reason": "up to date"},
-         {"tool": "osv_scanner", "eligible": "", "reason": "up to date"},
-         {"tool": "gitleaks", "eligible": "", "reason": "up to date"}]
+CAND = "0123456789abcdef"
+
+
+def ready(ops):
+    """The host has prepared and accepted a candidate."""
+    (ops / "status.json").write_text(json.dumps({
+        "phase": "ready", "candidate": {"id": CAND, "targets": {"trivy": "0.75.0"}}}))
 
 
 def test_upgrades_are_off_without_an_ops_dir(monkeypatch):
@@ -150,12 +153,14 @@ def test_upgrades_are_off_without_an_ops_dir(monkeypatch):
     monkeypatch.setattr(config, "OPS_DIR", None)
     assert upgrades.enabled() is False
     assert upgrades.status() == {"enabled": False}
-    assert upgrades.request_upgrade({"trivy": "0.75.0"}, "a")["started"] is False
+    assert upgrades.request_check("a")["started"] is False
+    assert upgrades.request_apply(CAND, "a")["started"] is False
     assert upgrades.start_watcher(object()) is False
 
 
 def test_status_reads_the_host_files(ops):
-    assert upgrades.status() == {"enabled": True, "pending": False, "status": {}, "log": ""}
+    assert upgrades.status() == {"enabled": True, "upstream_check": True, "pending": False,
+                                 "status": {}, "log": ""}
     (ops / "status.json").write_text(json.dumps({"phase": "building"}))
     (ops / "update.log").write_text("x" * (upgrades.LOG_TAIL + 10) + "END")
     st = upgrades.status()
@@ -181,42 +186,66 @@ def test_a_link_in_ops_is_never_followed(ops, tmp_path_factory):
     assert not (ops / "status.json").is_symlink()
 
 
-def test_a_request_must_match_what_is_on_offer(ops):
-    def offer():
-        return OFFER
-
-    assert upgrades.request_upgrade({}, "a", offer)["reason"] == "choose at least one tool"
-    assert "cannot upgrade: bearer" in upgrades.request_upgrade({"bearer": "1.0.0"}, "a", offer)["reason"]
-    assert "0.75.0 is on offer, not 0.76.0" in \
-        upgrades.request_upgrade({"trivy": "0.76.0"}, "a", offer)["reason"]
-    assert upgrades.request_upgrade({"semgrep": "1.2.3"}, "a", offer)["reason"] == "semgrep: up to date"
-    assert not (ops / "request.json").exists()
-
-    out = upgrades.request_upgrade({"trivy": "0.75.0"}, "alice", offer)
+def test_a_check_request_names_no_versions(ops):
+    out = upgrades.request_check("alice")
     assert out["started"] is True
     req = json.loads((ops / "request.json").read_text())
-    assert req["id"] == out["id"] and len(req["id"]) == 16
-    assert req["targets"] == {"trivy": "0.75.0"} and req["requested_by"] == "alice"
+    assert (req["action"], req["requested_by"], req["id"]) == ("check", "alice", out["id"])
+    assert set(req) == {"id", "requested_by", "requested_at", "action"}
 
 
-def test_one_upgrade_at_a_time(ops):
-    offer = lambda: OFFER
+def test_only_the_candidate_on_offer_can_be_applied(ops):
+    assert "no longer on offer" in upgrades.request_apply(CAND, "a")["reason"]
+    ready(ops)
+    assert "no longer on offer" in upgrades.request_apply("f" * 16, "a")["reason"]
+    (ops / "status.json").write_text(json.dumps({"phase": "ready", "candidate": "odd"}))
+    assert "no longer on offer" in upgrades.request_apply(CAND, "a")["reason"]
+    ready(ops)
+    out = upgrades.request_apply(CAND, "alice")
+    assert out["started"] is True
+    req = json.loads((ops / "request.json").read_text())
+    assert (req["action"], req["candidate"]) == ("apply", CAND)
+
+
+def test_one_thing_at_a_time(ops):
+    ready(ops)
     (ops / "request.json").write_text("{}")
-    assert "already in progress" in upgrades.request_upgrade({"trivy": "0.75.0"}, "a", offer)["reason"]
+    assert "busy" in upgrades.request_check("a")["reason"]
+    assert "busy" in upgrades.request_apply(CAND, "a")["reason"]
     (ops / "request.json").unlink()
     (ops / "status.json").write_text(json.dumps({"phase": "verifying"}))
-    assert "already in progress" in upgrades.request_upgrade({"trivy": "0.75.0"}, "a", offer)["reason"]
+    assert "busy" in upgrades.request_check("a")["reason"]
     (ops / "status.json").write_text(json.dumps({"phase": "failed"}))
-    assert upgrades.request_upgrade({"trivy": "0.75.0"}, "a", offer)["started"] is True
+    assert upgrades.request_check("a")["started"] is True
 
 
-def test_check_asks_about_every_upgradable_tool(monkeypatch):
-    from app import admin
-    monkeypatch.setattr(admin, "_installed_version", lambda name: {"trivy": "0.74.0"}.get(name, ""))
-    seen = {}
-    rows = upgrades.check(assess=lambda tool, inst: seen.setdefault(tool, inst) and {"tool": tool})
-    assert set(seen) == set(releases.SOURCES) and seen["trivy"] == "0.74.0"
-    assert len(rows) == len(releases.SOURCES)
+def test_with_checks_off_the_panel_cannot_ask_for_one(ops, monkeypatch):
+    from app.config import config
+    monkeypatch.setattr(config, "UPSTREAM_CHECK", False)
+    assert "SAST_UPSTREAM_CHECK=false" in upgrades.request_check("a")["reason"]
+    assert upgrades.status()["upstream_check"] is False
+    ready(ops)
+    assert upgrades.request_apply(CAND, "a")["started"] is True, \
+        "a candidate prepared before the switch was turned off can still be applied"
+
+
+def test_the_version_check_obeys_the_switch(monkeypatch):
+    from app import admin, releases
+    from app.config import config
+    monkeypatch.setattr(config, "UPSTREAM_CHECK", False)
+    monkeypatch.setattr(admin, "_upstream_cache", {"at": 0.0, "versions": {}})
+    asked = []
+    monkeypatch.setattr(releases, "_fetch_json", lambda url, timeout=10.0: asked.append(url))
+    assert admin._latest_upstream() == {} and asked == []
+
+
+def test_the_switch_is_read_from_the_environment(monkeypatch):
+    from app.config import _env_bool
+    for value, on in [("false", False), ("OFF", False), ("0", False), ("true", True), ("on", True)]:
+        monkeypatch.setenv("SAST_UPSTREAM_CHECK", value)
+        assert _env_bool("SAST_UPSTREAM_CHECK", True) is on
+    monkeypatch.delenv("SAST_UPSTREAM_CHECK")
+    assert _env_bool("SAST_UPSTREAM_CHECK", True) is True
 
 
 class _Manager:
@@ -291,8 +320,10 @@ def test_upgrades_are_refused_while_accounts_are_off(client, ops, monkeypatch):
     in-place buttons; not for one that rebuilds and swaps the service."""
     from app.config import config
     monkeypatch.setattr(config, "REQUIRE_AUTH", False)
+    ready(ops)
     assert client.get("/api/admin/upgrades").status_code == 403
-    assert client.post("/api/admin/upgrades", data={"targets": "trivy=0.75.0"}).status_code == 403
+    assert client.post("/api/admin/upgrades/check").status_code == 403
+    assert client.post("/api/admin/upgrades/apply", data={"candidate": CAND}).status_code == 403
     assert not (ops / "request.json").exists()
 
 
@@ -315,21 +346,28 @@ def signed_in(tmp_path, monkeypatch):
     return admin, user
 
 
-def test_upgrade_endpoints(signed_in, ops, monkeypatch):
+def test_upgrade_endpoints(signed_in, ops):
     admin, user = signed_in
-    monkeypatch.setattr(upgrades, "check", lambda: OFFER)
-    assert user.get("/api/admin/upgrades").status_code == 403
-    assert user.post("/api/admin/upgrades", data={"targets": "trivy=0.75.0"}).status_code == 403
+    ready(ops)
+    for method, path, data in [("get", "/api/admin/upgrades", None),
+                               ("post", "/api/admin/upgrades/check", {}),
+                               ("post", "/api/admin/upgrades/apply", {"candidate": CAND})]:
+        assert getattr(user, method)(path, **({"data": data} if data is not None else {})) \
+            .status_code == 403, path
 
     body = admin.get("/api/admin/upgrades").json()
-    assert body["enabled"] is True and "tools" not in body
-    assert admin.get("/api/admin/upgrades?check=true").json()["tools"] == OFFER
+    assert body["enabled"] is True and body["status"]["candidate"]["id"] == CAND
 
-    res = admin.post("/api/admin/upgrades", data={"targets": "trivy=0.76.0"})
+    res = admin.post("/api/admin/upgrades/apply", data={"candidate": "f" * 16})
     assert res.status_code == 409 and "on offer" in res.json()["reason"]
-    res = admin.post("/api/admin/upgrades", data={"targets": " trivy = 0.75.0 ,"})
-    assert res.status_code == 202 and res.json()["started"] is True
-    assert json.loads((ops / "request.json").read_text())["requested_by"] == "admin"
+    res = admin.post("/api/admin/upgrades/apply", data={"candidate": f" {CAND} "})
+    assert res.status_code == 202
+    req = json.loads((ops / "request.json").read_text())
+    assert (req["action"], req["requested_by"]) == ("apply", "admin")
+    res = admin.post("/api/admin/upgrades/check")
+    assert res.status_code == 409 and "busy" in res.json()["reason"]
+    (ops / "request.json").unlink()
+    assert admin.post("/api/admin/upgrades/check").status_code == 202
 
 
 def test_a_scan_started_while_draining_gets_503(client, monkeypatch):
@@ -363,7 +401,11 @@ def test_mcp_says_not_now_while_draining(monkeypatch):
 def test_the_panel_strings_exist_in_both_languages():
     text = (Path(__file__).resolve().parents[1] / "app/static/i18n.js").read_text("utf-8")
     keys = [k for k in ("upg.title", "upg.failedAt", "upg.phase.waiting_for_scans",
-                        "upg.overrides", "upg.off")]
+                        "upg.overrides", "upg.off", "upg.apply", "upg.checkNow",
+                        "upg.banner.ready", "upg.upstreamOff", "surface.mentionTag")
+            ] + [f"upg.ev.{kind}" for kind in ("downloading", "ready", "download_failed",
+                                               "updating", "updated", "update_failed",
+                                               "expired", "repeat")]
     for key in keys:
         assert text.count(f'"{key}"') == 2, key
 

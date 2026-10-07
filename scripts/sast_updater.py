@@ -1,29 +1,35 @@
 #!/usr/bin/env python3
-"""Upgrade scanners when the web panel asks for it. Runs on the host.
+"""Prepare scanner upgrades every morning; apply one when an admin says so.
 
-The web app cannot rebuild its own image (that takes control of the Docker
-daemon, and the rebuild replaces the app's own container), so it writes a
-request into ops/ and this script, started every minute by cron as the
-deployment's user, does the work:
+Runs on the host, every minute, from cron, as the deployment's user. The web
+app cannot rebuild its own image (that takes control of the Docker daemon,
+and the rebuild replaces the app's own container); it can only ask, through
+ops/, for one of two things: check now, or apply the prepared candidate.
 
-    checking           the request is well formed; each version is still the
-                       newest release and has been out for COOLDOWN_DAYS --
-                       checked again here, not taken from the request
-    downloading        scanner binaries into vendor/, verified against the
-                       checksums each project publishes
-    building           a candidate image; the running service is untouched
-    verifying          every scanner starts; on a small sample project each
-                       finds what it must; the image has no more CRITICAL
-                       vulnerabilities than the one it would replace
-    waiting_for_scans  the app stops taking scans; wait for running ones
-    switching          candidate becomes latest; healthy and scanners up, or
-                       the previous image comes back
-    done / failed      versions recorded in .env, which deploy.sh keeps
+Check (each day at SAST_UPGRADE_CHECK_AT in SAST_UPGRADE_TZ, default 08:00
+Asia/Taipei, or when asked):
+    every scanner's newest release that has been out for COOLDOWN_DAYS ->
+    download, verified against the published checksums, checked again ->
+    a candidate image, built while the service keeps running -> accepted
+    only if every scanner starts, each finds what it must in a sample
+    project, and it has no more CRITICAL vulnerabilities than the running
+    image. Nothing new: nothing happens and nobody is told.
+
+Apply (only a candidate this script built and accepted, by its id):
+    wait for running scans -> switch -> healthy and scanners up, or the
+    previous image comes back -> versions recorded in .env.
+
+Each step is an event the web panel shows: downloading, ready,
+download_failed, updating, updated, update_failed. A candidate nobody
+applies is removed after CANDIDATE_DAYS.
 
 ops/ is writable by the container, so everything read from it is untrusted:
-size-limited, never followed through a link, and validated field by field.
+size-limited, never followed through a link, validated field by field. What
+this script must believe -- the candidate, the events -- lives in a file
+the container cannot reach (STATE_FILE).
 
-    python3 scripts/sast_updater.py      process a pending request, if any
+    python3 scripts/sast_updater.py           requests, schedule, expiry
+    python3 scripts/sast_updater.py --check   check now
 """
 from __future__ import annotations
 
@@ -39,8 +45,9 @@ import stat
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 ROOT = Path(__file__).resolve().parents[1]
 # The same release rules the web app shows, from the same file. It is
@@ -52,6 +59,7 @@ OPS = ROOT / "ops"
 ENV_FILE = ROOT / ".env"
 LOCK_FILE = ROOT / ".updater.lock"
 TMP = ROOT / ".updater-tmp"
+STATE_FILE = ROOT / ".updater-state.json"     # host only: candidate, events
 
 IMAGE = "sast-studio:latest"
 CANDIDATE = "sast-studio:candidate"
@@ -64,11 +72,19 @@ DRAIN_TIMEOUT = 60 * 60
 DRAIN_POLL = 5
 MAX_REQUEST = 8 * 1024
 MAX_LOG = 1024 * 1024
+CANDIDATE_DAYS = 14
+#: A scheduled check that failed is tried again this many hours later.
+RETRY_HOURS = 3
+MAX_EVENTS = 50
+DEFAULT_CHECK_AT = "08:00"
+DEFAULT_TZ = "Asia/Taipei"
+EVENTS = {"downloading", "ready", "download_failed", "updating", "updated", "update_failed"}
 
 ID_RE = re.compile(r"^[0-9a-f]{16}$")
 NAME_RE = re.compile(r"^[A-Za-z0-9._@-]{0,64}$")
 BUSY = {"queued", "checking", "downloading", "building", "verifying",
         "waiting_for_scans", "switching"}
+ACTIONS = {"check", "apply"}
 
 
 class Failed(Exception):
@@ -209,7 +225,11 @@ def _load(raw: bytes):
 
 
 def parse_request(raw: bytes) -> dict:
-    """The request, or Failed. Every field is checked; nothing else is kept."""
+    """The request, or Failed. Every field is checked; nothing else is kept.
+
+    Two actions only: "check", and "apply" with the id of a candidate. No
+    versions: what to install is decided here, never by the request.
+    """
     if not raw:
         raise Failed("checking", "no request")
     if len(raw) > MAX_REQUEST:
@@ -221,19 +241,29 @@ def parse_request(raw: bytes) -> dict:
         raise Failed("checking", "request is not an object")
     req_id = data.get("id")
     who = data.get("requested_by", "")
-    targets = data.get("targets")
+    action = data.get("action")
     if not isinstance(req_id, str) or not ID_RE.match(req_id):
         raise Failed("checking", "bad request id")
     if not isinstance(who, str) or not NAME_RE.match(who):
         raise Failed("checking", "bad requester name")
-    if not isinstance(targets, dict) or not 1 <= len(targets) <= len(releases.SOURCES):
-        raise Failed("checking", "bad target list")
-    for tool, version in targets.items():
-        if tool not in releases.SOURCES:
-            raise Failed("checking", f"cannot upgrade {tool!r}")
-        if not isinstance(version, str) or not releases.VERSION_RE.match(version):
-            raise Failed("checking", f"bad version for {tool}")
-    return {"id": req_id, "requested_by": who, "targets": dict(sorted(targets.items()))}
+    if not isinstance(action, str) or action not in ACTIONS:
+        raise Failed("checking", "unknown action")
+    out = {"id": req_id, "requested_by": who, "action": action}
+    if action == "apply":
+        cand = data.get("candidate")
+        if not isinstance(cand, str) or not ID_RE.match(cand):
+            raise Failed("checking", "bad candidate id")
+        out["candidate"] = cand
+    return out
+
+
+def env_setting(text: str, key: str) -> str:
+    """A plain KEY=value from .env, or ""."""
+    for line in text.splitlines():
+        k, _, v = line.strip().partition("=")
+        if k.strip() == key:
+            return v.strip()
+    return ""
 
 
 # ------------------------------------------------------------- versions
@@ -285,12 +315,70 @@ class Updater:
     def __init__(self, run=_run, fetch=releases._fetch_json, sleep=time.sleep,
                  clock=time.monotonic, free_bytes=_free_bytes, http_ok=_http_ok,
                  ops: Path = OPS, env_file: Path = ENV_FILE, tmp: Path = TMP,
-                 dockerfile: Path = ROOT / "Dockerfile"):
+                 dockerfile: Path = ROOT / "Dockerfile", state_file: Path = STATE_FILE,
+                 wallclock=lambda: datetime.now(timezone.utc)):
         self.run_cmd, self.fetch, self.sleep, self.clock = run, fetch, sleep, clock
         self.free_bytes, self.http_ok = free_bytes, http_ok
         self.ops, self.env_file, self.tmp, self.dockerfile = ops, env_file, tmp, dockerfile
+        self.state_file, self.wallclock = state_file, wallclock
         self.status: dict = {}
         self.checked: dict = {}
+        self.state: dict = self._load_state()
+
+    # -- host-only state: the candidate and the events
+    def _load_state(self) -> dict:
+        try:
+            data = json.loads(self.state_file.read_text("utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def save_state(self) -> bool:
+        try:
+            write_replace(self.state_file, json.dumps(self.state), mode=0o600)
+        except OSError as exc:
+            self.log(f"could not save {self.state_file.name}: {exc}")
+            return False
+        return True
+
+    def stamp(self) -> str:
+        """Now, by this run's clock (the one expiry and the schedule use)."""
+        return self.wallclock().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def event(self, kind: str, **detail) -> None:
+        events = self.state.setdefault("events", [])
+        last = events[-1] if events and isinstance(events[-1], dict) else {}
+        same = {k: v for k, v in last.items() if k not in ("at", "count")}
+        if same == {"kind": kind, **detail}:
+            # The same thing again (a request refused every minute): one
+            # line with a count, not fifty that push the real news out.
+            last.update(at=self.stamp(), count=int(last.get("count", 1)) + 1)
+        else:
+            events.append({"at": self.stamp(), "kind": kind, **detail})
+        del events[:-MAX_EVENTS]
+        self.save_state()
+        self.log(f"event: {kind} {json.dumps(detail, sort_keys=True)}")
+
+    def candidate(self) -> dict | None:
+        """The candidate in the host state, if every field of it is sound."""
+        cand = self.state.get("candidate")
+        if not isinstance(cand, dict):
+            return None
+        targets, cid = cand.get("targets"), cand.get("id")
+        sound = (isinstance(cid, str) and ID_RE.match(cid)
+                 and isinstance(targets, dict) and targets
+                 and all(t in releases.BUILD_ARGS and isinstance(v, str)
+                         and releases.VERSION_RE.match(v) for t, v in targets.items())
+                 and isinstance(cand.get("previous", {}), dict)
+                 and _plus_days(cand.get("built_at"), 0) != ""
+                 and all(isinstance(cand.get(k), str) and cand[k].startswith("sha256:")
+                         for k in ("base", "image")))
+        return cand if sound else None
+
+    def drop_candidate(self) -> None:
+        self.run_cmd(["docker", "rmi", CANDIDATE], 120, None)
+        self.state.pop("candidate", None)
+        self.save_state()
 
     # -- reporting
     # Reporting is best effort. ops/ is the container's to break (a directory
@@ -306,8 +394,27 @@ class Updater:
             pass
 
     def report(self, phase: str, **extra) -> None:
+        running = {"phase": phase, "action": self.status.get("action", "")} \
+            if phase in BUSY else None
+        if self.state.get("running") != running:
+            # What recover() reads after a restart. Kept here, where the
+            # container cannot write, never taken from status.json.
+            if running is None:
+                self.state.pop("running", None)
+            else:
+                self.state["running"] = running
+            self.save_state()
         self.status.update(phase=phase, updated_at=_now(), **extra)
         self.status["overrides"] = self.overrides()
+        # What the panel shows comes from the host's own state, written whole
+        # each time: nothing the container put in status.json survives.
+        cand = self.candidate()
+        self.status["candidate"] = None if cand is None else {
+            **cand, "expires_at": _plus_days(cand["built_at"], CANDIDATE_DAYS)}
+        self.status["events"] = self.state.get("events", [])
+        self.status["tools"] = self.state.get("tools", [])
+        self.status["last_check"] = self.state.get("last_check", "")
+        self.status["upstream_check"] = self.upstream_enabled()
         try:
             write_replace(self.ops / "status.json", json.dumps(self.status))
         except OSError:
@@ -323,6 +430,43 @@ class Updater:
         local = env_versions(self._env_text())
         return {t: {"repo": repo.get(t, ""), "local": v}
                 for t, v in local.items() if v != repo.get(t)}
+
+    def upstream_enabled(self) -> bool:
+        """SAST_UPSTREAM_CHECK=false in .env turns every outside query off."""
+        # Read as the app reads it (config._env_bool): unset is on.
+        value = env_setting(self._env_text(), "SAST_UPSTREAM_CHECK").lower()
+        return value == "" or value in ("1", "true", "yes", "on")
+
+    def scheduled_due(self) -> bool:
+        """Past today's check time, and today's check not yet done. Judged
+        every minute, so a check missed while the host was off still runs."""
+        text = self._env_text()
+        try:
+            zone = ZoneInfo(env_setting(text, "SAST_UPGRADE_TZ") or DEFAULT_TZ)
+        except (ZoneInfoNotFoundError, ValueError):
+            zone = ZoneInfo(DEFAULT_TZ)
+        at = env_setting(text, "SAST_UPGRADE_CHECK_AT") or DEFAULT_CHECK_AT
+        if not re.match(r"^([01][0-9]|2[0-3]):[0-5][0-9]$", at):
+            at = DEFAULT_CHECK_AT
+        local = self.wallclock().astimezone(zone)
+        today = local.strftime("%Y-%m-%d")
+        if local.strftime("%H:%M") < at:
+            return False
+        if self.state.get("last_scheduled") == today:
+            retry = self.state.get("retry_at")
+            if not isinstance(retry, str) or self.stamp() < retry:
+                return False
+        self.state["last_scheduled"] = today
+        self.state.pop("retry_at", None)
+        # Not saved, it would be due again next minute: skip rather than
+        # ask GitHub every minute while the disk is full.
+        return self.save_state()
+
+    def image_id(self, ref: str) -> str:
+        rc, out = self.run_cmd(["docker", "image", "inspect", "--format", "{{.Id}}", ref],
+                               60, None)
+        out = out.strip()
+        return out if rc == 0 and re.match(r"^sha256:[0-9a-f]{64}$", out) else ""
 
     def _env_text(self) -> str:
         try:
@@ -345,20 +489,11 @@ class Updater:
         versions.update(env_versions(self._env_text()))
         return versions
 
-    def check(self, req: dict) -> dict:
-        current = self.current_versions()
-        self.checked = {}
-        for tool, version in req["targets"].items():
-            row = releases.assess(tool, current.get(tool, ""), fetch=self.fetch)
-            if row["eligible"] != version:
-                raise Failed("checking", f"{tool} {version}: "
-                             f"{row['reason'] or 'not the version on offer'}")
-            self.checked[tool] = (current.get(tool, ""), version, row["latest_published"])
+    def disk_ok(self) -> None:
         free = self.free_bytes(ROOT)
         if free < MIN_FREE_BYTES:
             raise Failed("checking", f"{free / 1024 ** 3:.1f} GB free; need 3 GB "
                          "(remove old images or grow the disk)")
-        return {**current, **req["targets"]}
 
     def recheck(self) -> None:
         """The same release, unchanged, after the download as before it.
@@ -448,13 +583,13 @@ class Updater:
         raise Failed("waiting_for_scans", "scans still running after 60 minutes; "
                      "nothing was switched -- try again later")
 
-    def switch(self) -> None:
+    def switch(self, image: str) -> None:
         self.report("switching")
         stamp = format(int(time.time()), "x")
         self.sh("switching", ["docker", "tag", IMAGE, PREVIOUS], 60)
         self.sh("switching", ["docker", "tag", IMAGE, f"sast-studio:rollback-{stamp}"], 60)
         try:
-            self.sh("switching", ["docker", "tag", CANDIDATE, IMAGE], 60)
+            self.sh("switching", ["docker", "tag", image, IMAGE], 60)
             self.sh("switching", ["docker", "compose", "up", "-d", "--no-build"], 600)
             self.wait_healthy()
             self.sh("switching", ["docker", "compose", "exec", "-T", "sast-studio",
@@ -499,51 +634,185 @@ class Updater:
         self.run_cmd(["docker", "rmi", CANDIDATE], 120, None)
         # Same retention as deploy.sh: each switch leaves the old image behind.
         self.run_cmd(["bash", "scripts/prune-rollbacks.sh"], 300, None)
-        self.report("done", finished_at=_now(), warning=warning)
+        self.status["warning"] = warning
+
+    def run_check(self, trigger: str, req_id: str = "") -> bool:
+        """Look for new versions; if there are, prepare and accept a candidate."""
+        self.status = {"id": req_id, "action": "check", "trigger": trigger,
+                       "started_at": _now()}
+        if not self.upstream_enabled():
+            self.report("idle", reason="SAST_UPSTREAM_CHECK=false: version checks are off")
+            return True
+        self.report("checking")
+        current = self.current_versions()
+        rows = [releases.assess(t, current.get(t, ""), fetch=self.fetch)
+                for t in releases.SOURCES]
+        self.state["tools"], self.state["last_check"] = rows, _now()
+        self.save_state()
+        targets = {r["tool"]: r["eligible"] for r in rows if r["eligible"]}
+        base = self.image_id(IMAGE)
+        cand = self.candidate()
+        if cand is not None and cand["targets"] == targets and cand["base"] == base \
+                and self.image_id(CANDIDATE) == cand["image"]:
+            self.report("ready")                    # prepared already
+            return True
+        if "candidate" in self.state:
+            # A newer set, a deploy since (the code it was built from is
+            # gone), or an image that is not the one verified.
+            self.drop_candidate()
+        if not targets:
+            self.report("idle")
+            return True
+        from_versions = {t: current.get(t, "") for t in targets}
+        self.event("downloading", targets=targets, previous=from_versions)
+        try:
+            self.checked = {r["tool"]: (current.get(r["tool"], ""), r["eligible"],
+                                        r["latest_published"]) for r in rows if r["eligible"]}
+            self.disk_ok()
+            self.build({**current, **targets})
+            self.verify()
+            image = self.image_id(CANDIDATE)
+            if not base or not image:
+                raise Failed("verifying", "could not read the image IDs")
+        except Exception as exc:
+            step, reason = (exc.step, exc.reason) if isinstance(exc, Failed) else \
+                (self.status.get("phase", "checking"), f"{type(exc).__name__}: {exc}")
+            self.drop_candidate()
+            if trigger == "schedule":
+                self.state["retry_at"] = (self.wallclock() + timedelta(hours=RETRY_HOURS)) \
+                    .strftime("%Y-%m-%dT%H:%M:%SZ")
+            self.event("download_failed", targets=targets, step=step, reason=reason)
+            self.report("failed", step=step, reason=reason, finished_at=_now())
+            return False
+        self.state["candidate"] = {
+            "id": secrets.token_hex(8), "targets": targets, "previous": from_versions,
+            "built_at": self.stamp(), "critical": self.status.get("critical", {}),
+            "base": base, "image": image}
+        self.save_state()
+        self.event("ready", targets=targets, previous=from_versions,
+                   critical=self.status.get("critical", {}))
+        self.report("ready", finished_at=_now())
+        return True
+
+    def run_apply(self, req: dict) -> bool:
+        """Switch to the candidate this script built, if it is still good."""
+        self.status = {"id": req["id"], "action": "apply",
+                       "requested_by": req["requested_by"], "started_at": _now()}
+        cand = self.candidate()
+        why = ""
+        if cand is None or cand["id"] != req["candidate"]:
+            why = "that candidate does not exist (check again)"
+        elif self._expired(cand):
+            why = f"the candidate is older than {CANDIDATE_DAYS} days; check again"
+        elif self.image_id(IMAGE) != cand["base"]:
+            why = "the service was redeployed after the candidate was built; check again"
+        elif self.image_id(CANDIDATE) != cand["image"]:
+            why = "the candidate image is gone or not the one verified; check again"
+        elif all(self.current_versions().get(t) == v for t, v in cand["targets"].items()):
+            why = "these versions are already running"
+        if why:
+            if cand is not None and cand["id"] == req["candidate"]:
+                self.drop_candidate()
+            self.event("update_failed", step="checking", reason=why)
+            self.report("failed", step="checking", reason=why, finished_at=_now())
+            return False
+        self.status["targets"] = cand["targets"]
+        self.event("updating", targets=cand["targets"], previous=cand.get("previous", {}),
+                   requested_by=req["requested_by"])
+        try:
+            self.wait_for_scans(req["id"])
+            self.switch(cand["image"])
+            self.finish(cand["targets"])
+        except Exception as exc:
+            step, reason = (exc.step, exc.reason) if isinstance(exc, Failed) else \
+                (self.status.get("phase", "switching"), f"{type(exc).__name__}: {exc}")
+            if step != "waiting_for_scans":
+                self.drop_candidate()           # it failed live: do not offer it again
+            self.event("update_failed", targets=cand["targets"], step=step, reason=reason)
+            self.report("failed", step=step, reason=reason, finished_at=_now())
+            return False
+        self.state.pop("candidate", None)
+        self.save_state()
+        self.event("updated", targets=cand["targets"], previous=cand.get("previous", {}),
+                   warning=self.status.get("warning", ""))
+        self.report("done", finished_at=_now())
+        return True
+
+    def _expired(self, cand: dict) -> bool:
+        try:
+            built = datetime.fromisoformat(cand["built_at"].replace("Z", "+00:00"))
+        except (KeyError, ValueError, AttributeError):
+            return True
+        return self.wallclock() - built > timedelta(days=CANDIDATE_DAYS)
+
+    def expire(self) -> None:
+        """A candidate nobody applied within CANDIDATE_DAYS is removed."""
+        cand = self.candidate()
+        if cand is not None and self._expired(cand):
+            self.drop_candidate()
+            self.event("expired", targets=cand["targets"], previous=cand.get("previous", {}))
 
     def process(self, raw: bytes) -> bool:
         try:
             req = parse_request(raw)
-        except Failed as exc:
-            self.status = {"id": "", "started_at": _now()}
-            self.report("failed", step=exc.step, reason=exc.reason, finished_at=_now())
-            return False
-        self.status = {"id": req["id"], "requested_by": req["requested_by"],
-                       "targets": req["targets"], "started_at": _now()}
-        try:
-            self.report("checking")
-            versions = self.check(req)
-            self.build(versions)
-            self.verify()
-            self.wait_for_scans(req["id"])
-            self.switch()
-            self.finish({t: versions[t] for t in req["targets"]})
-            return True
         except Exception as exc:
-            # Failed is the expected way out; anything else is a bug or a
-            # broken host, and still must not leave a candidate or a busy
-            # phase behind. (switch() has already rolled back by now.)
             step, reason = (exc.step, exc.reason) if isinstance(exc, Failed) else \
-                (self.status.get("phase", "checking"), f"{type(exc).__name__}: {exc}")
-            self.run_cmd(["docker", "rmi", CANDIDATE], 120, None)
+                ("checking", f"unreadable request ({type(exc).__name__})")
+            self.status = {"id": "", "started_at": _now()}
             self.report("failed", step=step, reason=reason, finished_at=_now())
+            return False
+        flow = (lambda: self.run_check("request", req["id"])) if req["action"] == "check" \
+            else (lambda: self.run_apply(req))
+        try:
+            return flow()
+        except Exception as exc:
+            # The flows report their own expected failures; this is a bug or
+            # a broken host, and must still end in a failed phase, an event
+            # and no half-built candidate -- not a crash every minute.
+            reason = f"{type(exc).__name__}: {exc}"
+            if req["action"] == "check":
+                self.drop_candidate()
+            self.event("download_failed" if req["action"] == "check" else "update_failed",
+                       step=self.status.get("phase", "checking"), reason=reason)
+            self.report("failed", step=self.status.get("phase", "checking"),
+                        reason=reason, finished_at=_now())
             return False
 
     def recover(self) -> None:
-        """A run that died part-way (a reboot) left a busy phase behind."""
-        last = _load(read_untrusted(self.ops / "status.json", 64 * 1024) or b"{}")
-        if isinstance(last, dict) and last.get("phase") in BUSY:
-            phase = last.get("phase")
-            self.status = last
+        """A run that died part-way (a reboot) left its mark behind.
+
+        The mark is in the host state. status.json is the container's to
+        write, so nothing in it can start this -- or carry over.
+        """
+        running = self.state.get("running")
+        phase = running.get("phase") if isinstance(running, dict) else None
+        if isinstance(phase, str) and phase in BUSY:
+            action = running.get("action")
+            self.status = {"id": "", "action": action if isinstance(action, str)
+                           and action in ACTIONS else "",
+                           "started_at": _now()}
             reason = ("the updater stopped while switching (a restart?); check the "
                       "service -- the image it replaced is sast-studio:rollback-previous"
                       if phase == "switching" else
                       "the updater stopped part-way (a restart?); nothing was switched")
+            applying = phase in ("waiting_for_scans", "switching")
+            self.event("update_failed" if applying else "download_failed",
+                       step=phase, reason=reason)
             self.report("failed", step=phase, reason=reason, finished_at=_now())
 
 
-def main(updater: Updater | None = None, lock_file: Path = LOCK_FILE) -> int:
+def _plus_days(stamp: str, days: int) -> str:
+    try:
+        when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return ""
+    return (when + timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def main(updater: Updater | None = None, lock_file: Path = LOCK_FILE,
+         argv: list[str] | None = None) -> int:
     updater = updater or Updater()
+    argv = sys.argv[1:] if argv is None else argv
     if not updater.ops.is_dir():
         return 0
     with open(lock_file, "w") as lock:
@@ -551,14 +820,21 @@ def main(updater: Updater | None = None, lock_file: Path = LOCK_FILE) -> int:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return 0              # an upgrade (or deploy.sh) is already running
-        tidy_ops(updater.ops)
-        updater.recover()
+        for step in (lambda: tidy_ops(updater.ops), updater.recover, updater.expire):
+            try:
+                step()
+            except Exception as exc:          # logged; the request still runs
+                updater.log(f"housekeeping failed: {type(exc).__name__}: {exc}")
+        if "--check" in argv:
+            return 0 if updater.run_check("manual") else 1
         request = updater.ops / "request.json"
         raw = read_untrusted(request, MAX_REQUEST)
-        if not raw:
-            return 0
-        request.unlink(missing_ok=True)
-        return 0 if updater.process(raw) else 1
+        if raw:
+            request.unlink(missing_ok=True)
+            return 0 if updater.process(raw) else 1
+        if updater.scheduled_due():
+            return 0 if updater.run_check("schedule") else 1
+        return 0
 
 
 if __name__ == "__main__":
