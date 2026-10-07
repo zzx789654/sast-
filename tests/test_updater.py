@@ -104,7 +104,7 @@ def make(env, run=None, drain_active=0, http_ok=True, free=10 * 1024 ** 3,
                       wallclock=lambda: now)
 
 
-def request(action="check", **over):
+def request(action="apply", **over):
     body = {"id": REQ_ID, "requested_by": "alice", "action": action}
     body.update(over)
     return json.dumps(body).encode()
@@ -125,14 +125,14 @@ def kinds(env):
 def prepared(env, run=None):
     """A candidate built and accepted, as after a morning check."""
     u = make(env, run)
-    assert u.process(request("check")) is True
+    assert u.run_check("manual") is True
     return state(env)["candidate"]["id"]
 
 
 # ------------------------------------------------------------ the morning check
 def test_a_check_prepares_a_verified_candidate_and_says_so(env):
     run = FakeRun()
-    assert make(env, run).process(request("check")) is True
+    assert make(env, run).run_check("manual") is True
 
     st, cand = status(env), state(env)["candidate"]
     assert st["phase"] == "ready"
@@ -161,7 +161,7 @@ def test_a_check_prepares_a_verified_candidate_and_says_so(env):
 def test_nothing_new_means_nothing_happens_and_nobody_is_told(env):
     run = FakeRun()
     u = make(env, run, fetch=releases_feed(trivy="0.74.0"))
-    assert u.process(request("check")) is True
+    assert u.run_check("manual") is True
     assert status(env)["phase"] == "idle"
     assert kinds(env) == [] and not run.ran("docker build")
 
@@ -169,7 +169,7 @@ def test_nothing_new_means_nothing_happens_and_nobody_is_told(env):
 def test_a_release_still_in_its_cooldown_is_not_prepared(env):
     run = FakeRun()
     u = make(env, run, fetch=releases_feed(trivy_at="2026-10-18T00:00:00Z"))
-    assert u.process(request("check")) is True
+    assert u.run_check("manual") is True
     assert status(env)["phase"] == "idle" and not run.ran("docker build")
     trivy = next(r for r in status(env)["tools"] if r["tool"] == "trivy")
     assert "eligible from 2026-10-25" in trivy["reason"]
@@ -178,7 +178,7 @@ def test_a_release_still_in_its_cooldown_is_not_prepared(env):
 def test_a_prepared_candidate_is_not_rebuilt_every_morning(env):
     prepared(env)
     run = FakeRun()
-    assert make(env, run).process(request("check")) is True
+    assert make(env, run).run_check("manual") is True
     assert status(env)["phase"] == "ready" and not run.ran("docker build")
     assert kinds(env) == ["downloading", "ready"]
 
@@ -186,7 +186,7 @@ def test_a_prepared_candidate_is_not_rebuilt_every_morning(env):
 def test_a_newer_release_replaces_the_candidate(env):
     first = prepared(env)
     run = FakeRun()
-    assert make(env, run, fetch=releases_feed(trivy="0.76.0")).process(request("check")) is True
+    assert make(env, run, fetch=releases_feed(trivy="0.76.0")).run_check("manual") is True
     cand = state(env)["candidate"]
     assert cand["targets"] == {"trivy": "0.76.0"} and cand["id"] != first
     assert run.ran(f"docker rmi {up.CANDIDATE}")
@@ -196,7 +196,7 @@ def test_a_candidate_overtaken_by_a_deploy_is_dropped(env):
     prepared(env)
     (env / ".env").write_text("TRIVY_VERSION=0.75.0\n")      # deployed by hand meanwhile
     run = FakeRun()
-    assert make(env, run).process(request("check")) is True
+    assert make(env, run).run_check("manual") is True
     assert status(env)["phase"] == "idle" and "candidate" not in state(env)
     assert run.ran(f"docker rmi {up.CANDIDATE}")
 
@@ -205,7 +205,7 @@ def test_with_checks_off_nothing_is_asked_of_anyone(env):
     (env / ".env").write_text("SAST_UPSTREAM_CHECK=false\n")
     asked = []
     u = make(env, fetch=lambda url: asked.append(url))
-    assert u.process(request("check")) is True
+    assert u.run_check("manual") is True
     assert asked == [] and status(env)["phase"] == "idle"
     assert "SAST_UPSTREAM_CHECK=false" in status(env)["reason"]
     assert status(env)["upstream_check"] is False
@@ -222,7 +222,7 @@ def test_with_checks_off_nothing_is_asked_of_anyone(env):
 ])
 def test_a_failing_step_is_a_download_failure_with_no_candidate_left(env, prefix, step):
     run = FakeRun({prefix: (1, "line1\nline2\nCHECKSUM MISMATCH\n")})
-    assert make(env, run).process(request("check")) is False
+    assert make(env, run).run_check("manual") is False
     st = status(env)
     assert (st["phase"], st["step"]) == ("failed", step) and "CHECKSUM MISMATCH" in st["reason"]
     assert kinds(env) == ["downloading", "download_failed"]
@@ -232,13 +232,13 @@ def test_a_failing_step_is_a_download_failure_with_no_candidate_left(env, prefix
 
 
 def test_a_step_with_no_output_still_says_why(env):
-    make(env, FakeRun({"docker build": (2, "")})).process(request("check"))
+    make(env, FakeRun({"docker build": (2, "")})).run_check("manual")
     assert status(env)["reason"] == "exit 2"
 
 
 def test_a_full_disk_stops_before_downloading(env):
     run = FakeRun()
-    assert make(env, run, free=1024 ** 3).process(request("check")) is False
+    assert make(env, run, free=1024 ** 3).run_check("manual") is False
     assert "1.0 GB free; need 3 GB" in status(env)["reason"]
     assert kinds(env) == ["downloading", "download_failed"] and not run.ran("bash")
 
@@ -247,7 +247,7 @@ def test_more_critical_vulnerabilities_reject_the_candidate(env):
     worse = json.dumps({"Results": [{"Vulnerabilities": [{"Severity": "CRITICAL"}] * 3}]})
     answers = iter([(0, "WARN noise\n" + worse), (0, TRIVY_OK)])
     run = FakeRun({"docker run --rm --entrypoint /opt/t/trivy": lambda: next(answers)})
-    assert make(env, run).process(request("check")) is False
+    assert make(env, run).run_check("manual") is False
     st = status(env)
     assert st["step"] == "verifying" and "3 CRITICAL" in st["reason"]
     assert st["critical"] == {"current": 1, "candidate": 3}
@@ -255,7 +255,7 @@ def test_more_critical_vulnerabilities_reject_the_candidate(env):
 
 def test_an_unreadable_trivy_report_is_a_failure(env):
     run = FakeRun({"docker run --rm --entrypoint /opt/t/trivy": (0, "no json here")})
-    assert make(env, run).process(request("check")) is False
+    assert make(env, run).run_check("manual") is False
     assert status(env)["reason"] == "could not read Trivy's report"
     assert not (env / ".tmp").exists()
 
@@ -269,7 +269,7 @@ def test_a_release_changed_during_the_download_is_refused(env):
                      "draft": False, "prerelease": False}]
         return releases_feed()(url)
     run = FakeRun()
-    assert make(env, run, fetch=fetch).process(request("check")) is False
+    assert make(env, run, fetch=fetch).run_check("manual") is False
     st = status(env)
     assert st["step"] == "downloading" and "changed while it was being downloaded" in st["reason"]
     assert not run.ran("docker build")
@@ -278,17 +278,39 @@ def test_a_release_changed_during_the_download_is_refused(env):
 def test_an_unexpected_error_in_a_check_is_reported_and_cleaned_up(env):
     (env / "Dockerfile").unlink()
     run = FakeRun()
-    assert make(env, run).process(request("check")) is False
+    assert make(env, run).run_check("manual") is False
     st = status(env)
     assert st["phase"] == "failed" and "FileNotFoundError" in st["reason"]
-    assert kinds(env)[-1] == "download_failed" and run.ran(f"docker rmi {up.CANDIDATE}")
+    assert kinds(env)[-1] == "download_failed"
+
+
+def test_a_failure_before_building_keeps_the_candidate_on_offer(env):
+    """Round 48 review: a Dockerfile that cannot be read for a moment must
+    not take away the update the administrator is about to approve."""
+    cand = prepared(env)
+    dockerfile = (env / "Dockerfile").read_text()
+    (env / "Dockerfile").unlink()
+    run = FakeRun()
+    assert make(env, run).run_check("schedule") is False
+    assert state(env)["candidate"]["id"] == cand and not run.ran(f"docker rmi {up.CANDIDATE}")
+    assert state(env)["retry_at"]
+    (env / "Dockerfile").write_text(dockerfile)
+
+
+def test_a_candidate_that_cannot_be_removed_still_ends_in_failed(env, monkeypatch):
+    u = make(env, FakeRun({"docker build": (1, "no")}))
+    monkeypatch.setattr(u, "drop_candidate", lambda: 1 / 0)
+    assert u.run_check("schedule") is False
+    assert status(env)["phase"] == "failed" and state(env)["retry_at"]
+    assert "could not remove the candidate: division by zero" in \
+        (env / "ops" / "update.log").read_text()
 
 
 def test_a_failure_while_building_is_reported_with_its_step(env):
     def boom():
         raise RuntimeError("daemon went away")
     run = FakeRun({"docker build": boom})
-    assert make(env, run).process(request("check")) is False
+    assert make(env, run).run_check("manual") is False
     assert status(env)["step"] == "building" and "RuntimeError" in status(env)["reason"]
 
 
@@ -318,7 +340,7 @@ def test_a_deploy_since_the_build_retires_the_candidate(env):
     assert first["base"] == IDS[up.IMAGE] and first["image"] == IDS[up.CANDIDATE]
     run = FakeRun({f"docker image inspect --format {{{{.Id}}}} {up.IMAGE}":
                    (0, "sha256:" + "b" * 64)})
-    assert make(env, run).process(request("check")) is True
+    assert make(env, run).run_check("manual") is True
     assert run.ran(f"docker rmi {up.CANDIDATE}") and run.ran("docker build")
     assert state(env)["candidate"]["id"] != first["id"]
     assert state(env)["candidate"]["base"] == "sha256:" + "b" * 64
@@ -326,7 +348,7 @@ def test_a_deploy_since_the_build_retires_the_candidate(env):
 
 def test_a_candidate_whose_image_ids_cannot_be_read_is_not_offered(env):
     run = FakeRun({f"docker image inspect --format {{{{.Id}}}} {up.CANDIDATE}": (0, "odd")})
-    assert make(env, run).process(request("check")) is False
+    assert make(env, run).run_check("manual") is False
     assert status(env)["step"] == "verifying" and "image IDs" in status(env)["reason"]
     assert "candidate" not in state(env)
 
@@ -347,7 +369,7 @@ def test_an_unsound_candidate_in_the_state_is_no_candidate(env, field, value):
     u.report("idle")                             # once a KeyError every minute
     assert status(env)["candidate"] is None
     run = FakeRun()
-    assert make(env, run).process(request("check")) is True
+    assert make(env, run).run_check("manual") is True
     assert run.ran(f"docker rmi {up.CANDIDATE}") and state(env)["candidate"]["id"] != "x"
 
 
@@ -492,6 +514,7 @@ def test_switched_but_unrecorded_versions_are_flagged(env):
     (request(id="../../etc"), "bad request id"),
     (request(requested_by="a b;rm"), "bad requester name"),
     (request(action="install"), "unknown action"),
+    (request(action="check"), "unknown action"),          # round 48: the host's alone
     (request(action=["check"]), "unknown action"),       # unhashable: once a TypeError
     (request(action={"a": 1}), "unknown action"),
     (request(action="apply"), "bad candidate id"),
@@ -507,13 +530,13 @@ def test_a_bad_request_is_refused_before_anything_runs(env, raw, reason):
 
 def test_a_request_that_breaks_the_parser_still_ends_failed(env, monkeypatch):
     monkeypatch.setattr(up, "parse_request", lambda raw: [][1])
-    assert make(env).process(request("check")) is False
+    assert make(env).process(request()) is False
     assert status(env)["reason"] == "unreadable request (IndexError)"
 
 
 def test_a_request_cannot_name_versions():
-    parsed = up.parse_request(request("check", targets={"trivy": "9.9.9"}))
-    assert "targets" not in parsed and parsed["action"] == "check"
+    parsed = up.parse_request(request("apply", candidate=REQ_ID, targets={"trivy": "9.9.9"}))
+    assert "targets" not in parsed and parsed["action"] == "apply"
 
 
 # ------------------------------------------------------------ schedule and expiry
@@ -734,7 +757,6 @@ def test_housekeeping_that_fails_does_not_stop_the_run(env, tmp_path, monkeypatc
     u = make(env)
     monkeypatch.setattr(u, "recover", lambda: 1 / 0)
     monkeypatch.setattr(u, "expire", lambda: [][1])
-    (env / "ops" / "request.json").write_bytes(request("check"))
     assert up.main(u, tmp_path / "lock", argv=[]) == 0
     assert status(env)["phase"] == "ready"
     log = (env / "ops" / "update.log").read_text()
@@ -762,9 +784,9 @@ def test_a_failed_scheduled_check_is_tried_again_later(env, tmp_path):
     assert later.scheduled_due() is True and "retry_at" not in state(env)
     assert make(env, now=NOW + timedelta(hours=up.RETRY_HOURS, minutes=2)).scheduled_due() \
         is False, "one retry per failure"
-    # A failure from the button does not schedule anything.
+    # A failure from a manual check does not schedule anything.
     (env / "state.json").unlink()
-    make(env, FakeRun({"docker build": (1, "no")})).process(request("check"))
+    make(env, FakeRun({"docker build": (1, "no")})).run_check("manual")
     assert "retry_at" not in state(env)
 
 
@@ -785,20 +807,30 @@ def test_main_runs_the_daily_check_when_it_is_due(env, tmp_path):
 
 def test_main_check_flag_and_requests(env, tmp_path):
     lock = tmp_path / "lock"
-    assert up.main(make(env, now=datetime(2026, 10, 19, 22, 0, tzinfo=timezone.utc)),
-                   lock, argv=["--check"]) == 0
+    early = datetime(2026, 10, 19, 22, 0, tzinfo=timezone.utc)        # 06:00 Taipei
+    assert up.main(make(env, now=early), lock, argv=["--check"]) == 0
     assert status(env)["trigger"] == "manual"
     cand = state(env)["candidate"]["id"]
     (env / "ops" / "request.json").write_text(request("apply", candidate=cand).decode())
     (env / "ops" / "stray").write_text("x")
-    assert up.main(make(env), lock, argv=[]) == 0
+    assert up.main(make(env, now=early), lock, argv=[]) == 0
     assert not (env / "ops" / "request.json").exists(), "the request would run again"
     assert not (env / "ops" / "stray").exists(), "main did not tidy ops/"
     assert status(env)["phase"] == "done"
     (env / "ops" / "request.json").write_text(request("apply", candidate="a" * 16).decode())
-    assert up.main(make(env), lock, argv=[]) == 1
+    assert up.main(make(env, now=early), lock, argv=[]) == 1
     run = FakeRun({"docker build": (1, "no")})
     assert up.main(make(env, run), lock, argv=["--check"]) == 0     # already at 0.75.0
+
+
+def test_a_request_every_minute_cannot_keep_the_daily_check_away(env, tmp_path):
+    """Round 48 review: the schedule goes first; a request waits a minute."""
+    (env / "ops" / "request.json").write_text(request("apply", candidate="a" * 16).decode())
+    assert up.main(make(env), tmp_path / "lock", argv=[]) == 0
+    assert status(env)["trigger"] == "schedule"
+    assert (env / "ops" / "request.json").exists(), "the request is still there for next time"
+    assert up.main(make(env), tmp_path / "lock", argv=[]) == 1
+    assert not (env / "ops" / "request.json").exists()
 
 
 def test_main_expires_an_old_candidate(env, tmp_path):

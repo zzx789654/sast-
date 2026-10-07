@@ -92,45 +92,10 @@ async def system_status() -> dict:
     return {"docker": await run_in_threadpool(docker_stats.collect)}
 
 
-@app.get("/api/admin/status")
-async def admin_status(request: Request, check_upstream: bool = False) -> dict:
-    """State of the operator panel: any job running, and what can be updated.
-
-    `check_upstream` asks GitHub whether a newer release of each pinned tool
-    exists. Off by default because the panel polls, and the answer changes
-    about as often as a release is cut.
-    """
-    from . import admin
-
-    require_admin(request)
-    return await run_in_threadpool(admin.status, check_upstream)
-
-
-@app.post("/api/admin/update-tools")
-async def admin_update_tools(request: Request,
-                             tools: Optional[str] = Form(None)) -> JSONResponse:
-    """Update the scanners that can be updated in place.
-
-    Returns immediately; the Monitor tab polls /api/admin/status for progress.
-    """
-    from . import admin
-
-    # Installing packages on the host is an administrator's job. Being signed
-    # in only says who you are, not that you may do this.
-    require_admin(request)
-    wanted = [t.strip() for t in (tools or "").split(",") if t.strip()]
-    # An update is the one thing that changes a version, so the cached probe
-    # is wrong from here on. A stale version after an update would look like
-    # the update failed, which is worse than the second it costs to re-probe.
-    _tool_cache.clear()
-    result = admin.start_update(wanted)
-    return JSONResponse(result, status_code=202 if result.get("started") else 409)
-
-
 def _require_upgrade_admin(request: Request) -> None:
     """An administrator, and accounts must be on. With accounts off,
-    require_admin lets everyone through -- acceptable for buttons that run
-    in place, not for one that rebuilds and swaps the service."""
+    require_admin lets everyone through -- not acceptable for a button that
+    swaps the service."""
     if not config.REQUIRE_AUTH:
         raise HTTPException(403, "scanner upgrades need accounts turned on "
                                  "(SAST_REQUIRE_AUTH=true)")
@@ -140,25 +105,12 @@ def _require_upgrade_admin(request: Request) -> None:
 @app.get("/api/admin/upgrades")
 async def admin_upgrades(request: Request) -> dict:
     """The upgrade panel: the prepared candidate, the last check, the events.
-    Reads files only: the checking is the host's job."""
+    Reads files only: checking for new versions is the host's job, every
+    morning, and nothing here can ask it to check (round 48)."""
     from . import upgrades
 
     _require_upgrade_admin(request)
     return upgrades.status()
-
-
-@app.post("/api/admin/upgrades/check")
-async def admin_upgrade_check(request: Request) -> JSONResponse:
-    """Ask the host to check for new versions now."""
-    from . import upgrades
-
-    _require_upgrade_admin(request)
-    result = upgrades.request_check(_owner_name(request) or "")
-    events.record("service", "upgrade", level="info" if result["started"] else "warn",
-                  actor=_owner_name(request), source=_client_ip(request),
-                  detail="check requested" if result["started"]
-                  else f"check refused: {result['reason']}")
-    return JSONResponse(result, status_code=202 if result["started"] else 409)
 
 
 @app.post("/api/admin/upgrades/apply")
@@ -174,20 +126,6 @@ async def admin_upgrade_apply(request: Request,
                   detail=f"apply {candidate} requested" if result["started"]
                   else f"apply refused: {result['reason']}")
     return JSONResponse(result, status_code=202 if result["started"] else 409)
-
-
-@app.post("/api/admin/restart")
-async def admin_restart(request: Request) -> JSONResponse:
-    """Restart the application process so updated scanners are picked up."""
-    from . import admin
-
-    require_admin(request)
-    result = admin.restart_app()
-    ok = bool(result.get("restarting"))
-    events.record("service", "restart", level="warn" if ok else "error",
-                  actor=_owner_name(request), source=_client_ip(request),
-                  detail=result.get("detail") or ("restarting" if ok else "refused"))
-    return JSONResponse(result, status_code=202 if ok else 409)
 
 
 # The published rulesets we offer for Semgrep. "auto" is deliberately absent:
@@ -1248,8 +1186,8 @@ async def list_tools() -> dict:
         with ThreadPoolExecutor(max_workers=len(ADAPTERS)) as pool:
             return list(pool.map(describe, ADAPTERS))
 
-    # A scanner's version only changes when someone updates it, which happens
-    # from the Maintenance panel and clears this cache. Re-probing on every
+    # A scanner's version only changes when an upgrade is applied, and that
+    # recreates the container -- and this cache with it. Re-probing on every
     # page load spent a second re-learning something that had not changed.
     #
     # Cache the whole payload, not just the tools: returning a different shape

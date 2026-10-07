@@ -824,44 +824,32 @@ def test_finding_card_i18n_keys_exist_in_both_languages():
 
 
 # ------------------------------------------------------------------- operator
-def test_admin_status_reports_updatable_tools():
-    from app import admin
-
-    st = admin.status()
-    assert st["running"] is False
-    names = {t["name"] for t in st["tools_available"]}
-    assert "semgrep" in names
-    # Pinned binaries must be flagged, otherwise the button looks like it did
-    # nothing when it silently cannot change their version.
-    pinned = {t["name"] for t in st["tools_available"] if not t["in_place"]}
-    assert "gitleaks" in pinned and "osv_scanner" in pinned
-
-
-def test_admin_update_commands_are_fixed_argv(monkeypatch):
-    """Update commands must never be built from request input."""
-    from app import admin
-
-    monkeypatch.setattr(admin.shutil, "which", lambda name: "/usr/local/bin/" + name)
-    cmds = admin._update_commands(["trivy", "gitleaks", "not-a-tool"])
-    assert cmds, "trivy's database should be updatable"
-    for _name, cmd in cmds:
-        assert isinstance(cmd, list)          # argv, never a shell string
-        assert all(isinstance(part, str) for part in cmd)
-    # An unknown name contributes no command at all.
-    assert all(n in {"semgrep", "trivy", "npm_audit"} for n, _ in cmds)
+@pytest.mark.parametrize("method, path", [
+    ("GET", "/api/admin/status"), ("POST", "/api/admin/update-tools"),
+    ("POST", "/api/admin/restart"), ("POST", "/api/admin/upgrades/check"),
+])
+def test_the_maintenance_buttons_are_gone(client, method, path):
+    """Round 48: the daily check covers them. "Update scanners" only fetched
+    Trivy's database (a scan does that itself), "Check versions" repeated the
+    daily check, and "Restart" was for after an in-place update -- applying
+    an upgrade recreates the container anyway."""
+    assert client.request(method, path).status_code in (404, 405)
 
 
-def test_semgrep_is_not_upgraded_in_place():
-    """It used to pip-upgrade itself from PyPI, unpinned, with the app's
-    python. Done in its own venv instead, the app's account would have to
-    own that venv -- code every later scan runs. Now pinned like the rest."""
-    from app import admin
-
-    assert admin._update_commands(["semgrep"]) == []
-    assert not hasattr(admin, "_semgrep_python")
-    rows = {r["name"]: r for r in admin.updatable_tools()}
-    assert rows["semgrep"]["in_place"] is False
-    assert "semgrep" in admin.UPSTREAM, "nothing would say a newer one exists"
+def test_the_app_never_asks_github_for_versions():
+    """Only the host asks, once a day. Nothing in the app reaches the
+    release feeds: the module that did is gone, and so are its buttons."""
+    root = Path(__file__).resolve().parents[1]
+    assert not (root / "app/admin.py").exists()
+    for path in (root / "app").rglob("*.py"):
+        text = path.read_text("utf-8")
+        assert "_latest_upstream" not in text and "from . import admin" not in text, path
+    html = (root / "app/static/index.html").read_text("utf-8")
+    js = (root / "app/static/app.js").read_text("utf-8")
+    for gone in ("admin-panel", "admin-update", "admin-restart", "admin-check-versions",
+                 "upg-check", "/api/admin/status", "/api/admin/restart",
+                 "/api/admin/update-tools", "/api/admin/upgrades/check"):
+        assert gone not in html and gone not in js, gone
 
 
 def test_semgrep_does_not_share_the_apps_environment():
@@ -909,184 +897,6 @@ def test_semgrep_does_not_share_the_apps_environment():
     assert deploy.index("Checking every scanner starts") < \
         deploy.index('step "Switching to the new image"'), (
         "a broken image would already be serving when the check fails")
-
-
-def test_admin_update_rejects_unknown_tools_via_api(monkeypatch):
-    from app import admin
-
-    started = {}
-    # Trivy's database is the one thing left that updates in place.
-    monkeypatch.setattr(admin.shutil, "which", lambda name: "/usr/local/bin/" + name)
-    monkeypatch.setattr(admin.threading, "Thread",
-                        lambda **kw: type("T", (), {"start": lambda s: started.setdefault("ran", True)})())
-    try:
-        res = admin.start_update(["definitely-not-a-tool"])
-        # Falls back to every known tool rather than running nothing at all.
-        assert res["started"] is True
-    finally:
-        with admin.state.lock:
-            admin.state.running = False
-
-
-def test_admin_rejects_concurrent_jobs(monkeypatch):
-    """Two installs at once would fight over the same files."""
-    from app import admin
-
-    monkeypatch.setattr(admin.shutil, "which", lambda name: "/usr/local/bin/" + name)
-    with admin.state.lock:
-        admin.state.running = True
-    try:
-        res = admin.start_update(["trivy"])
-        assert res["started"] is False
-        assert "already running" in res["reason"]
-        # A restart must not interrupt an update either.
-        assert admin.restart_app()["restarting"] is False
-    finally:
-        with admin.state.lock:
-            admin.state.running = False
-
-
-def test_admin_endpoints_are_post_only(client):
-    """A GET must not be able to trigger an update or a restart.
-
-    The static mount swallows unmatched routes, so a rejected GET surfaces as
-    404 rather than 405; either way it must not reach the handler.
-    """
-    assert client.get("/api/admin/update-tools").status_code in (404, 405)
-    assert client.get("/api/admin/restart").status_code in (404, 405)
-    assert client.get("/api/admin/status").status_code == 200
-
-    body = client.get("/api/admin/status").json()
-    assert body["running"] is False          # a GET started nothing
-
-
-@pytest.mark.parametrize("text,secret", [
-    # The fake values below are spelled so that a secret scanner does not
-    # mistake them for real ones: a high-entropy placeholder here costs a
-    # false positive on every future scan, which teaches people to skim past
-    # gitleaks output -- exactly the habit this project exists to prevent.
-    ("https://user:NOT-A-REAL-SECRET@pypi.internal/simple/", "NOT-A-REAL-SECRET"),
-    ("NPM_TOKEN=NOT-A-REAL-TOKEN", "NOT-A-REAL-TOKEN"),
-    ("api_key: NOT-A-REAL-KEY", "NOT-A-REAL-KEY"),
-    ("Authorization: Bearer NOT-A-REAL-BEARER", "NOT-A-REAL-BEARER"),
-    ("Authorization: Basic NOT-A-REAL-BASIC", "NOT-A-REAL-BASIC"),
-    ("machine pypi.org login bob password NOT-A-REAL-PASSWORD", "NOT-A-REAL-PASSWORD"),
-    ("ERROR: cannot write /usr/local/lib/python3.11/site-packages/x", "site-packages"),
-    ("config at /home/appuser/.config/pip/pip.conf", "appuser"),
-    ("cannot write /usr/local/bin/trivy", "/usr/local/bin"),
-    ("temp at /tmp/pip-build-abc/foo", "/tmp/pip-build"),
-    ("cfg /etc/pip.conf", "/etc/pip.conf"),
-])
-def test_admin_log_scrubs_secrets_and_paths(text, secret):
-    """/api/admin/status has no login, so the log must not carry credentials.
-
-    Each case is a way a package manager leaks its surroundings into stdout.
-    """
-    from app.admin import _scrub
-
-    assert secret not in _scrub(text)
-
-
-def test_admin_log_keeps_ordinary_output_readable():
-    """Scrubbing must not eat the output people actually need to read."""
-    from app.admin import _scrub
-
-    line = "Successfully installed semgrep-1.177.0"
-    assert line in _scrub(line)
-
-
-def test_restart_releases_the_job_slot_if_the_signal_fails():
-    """If SIGTERM does not end the process, the panel must not stay locked."""
-    import app.admin as admin
-
-    with admin.state.lock:
-        admin.state.running = True
-        admin.state.kind = "restart"
-
-    # Simulate the tail of _stop() after a SIGTERM that did nothing.
-    with admin.state.lock:
-        admin.state.running = False
-        admin.state.kind = ""
-        admin.state.ok = False
-    assert admin.state.snapshot()["running"] is False
-    # And the real code must contain that recovery path at all.
-    src = (Path(__file__).resolve().parents[1] / "app/admin.py").read_text("utf-8")
-    assert "RESTART_GRACE" in src
-    assert src.count("state.running = False") >= 2  # update path + restart path
-
-
-def test_restart_is_throttled_and_claims_the_job_slot(tmp_path, monkeypatch):
-    """Repeated restarts could keep the service bouncing; one per minute.
-
-    The marker has to live on disk: an in-memory timestamp would be erased by
-    the very restart it is meant to limit, so every request would look like
-    the first one (which is exactly how this failed on the real deployment).
-    """
-    from app import admin
-
-    marker = tmp_path / ".last-restart"
-    monkeypatch.setattr(admin, "RESTART_MARKER", marker)
-
-    with admin.state.lock:
-        admin.state.running = False
-
-    calls = []
-    original = admin.threading.Thread
-    admin.threading.Thread = lambda **kw: type(
-        "T", (), {"start": lambda s: calls.append(kw.get("target"))})()
-    try:
-        first = admin.restart_app()
-        assert first["restarting"] is True
-        assert marker.exists()             # survives the process going away
-
-        # The slot is claimed inside the lock, so an update cannot slip into
-        # the gap and then be killed half-way through installing.
-        assert admin.start_update(["semgrep"])["started"] is False
-
-        # Simulate the process actually restarting: in-memory state is new,
-        # but the on-disk marker is still there.
-        with admin.state.lock:
-            admin.state.running = False
-        second = admin.restart_app()
-        assert second["restarting"] is False
-        assert "wait" in second["reason"]
-    finally:
-        admin.threading.Thread = original
-        with admin.state.lock:
-            admin.state.running = False
-
-
-def test_restart_throttle_survives_a_missing_marker(tmp_path, monkeypatch):
-    """A read-only or absent volume must not block restarting entirely."""
-    from app import admin
-
-    monkeypatch.setattr(admin, "RESTART_MARKER",
-                        tmp_path / "nonexistent" / ".last-restart")
-    assert admin._last_restart_age() is None      # unknown, not "just now"
-
-
-def test_update_always_releases_the_job_slot(monkeypatch):
-    """An escaping error must not wedge the panel permanently."""
-    from app import admin
-
-    monkeypatch.setattr(admin, "_run_updates",
-                        lambda tools: (_ for _ in ()).throw(RuntimeError("boom")))
-    with admin.state.lock:
-        admin.state.running = True
-        admin.state.ok = None
-    admin._run_update(["semgrep"])
-
-    snap = admin.state.snapshot()
-    assert snap["running"] is False      # released despite the error
-    assert snap["ok"] is False
-    assert "boom" in snap["log"]
-
-
-def test_npm_is_not_updated_in_place():
-    """npm -g fails as non-root and only produced noisy, leaky output."""
-    from app import admin
-
-    assert not any(n == "npm_audit" for n, _ in admin._update_commands(["npm_audit"]))
 
 
 # ---------------------------------------------------------------- rule editor
@@ -1548,12 +1358,10 @@ def test_tool_probes_run_in_parallel():
     assert "pool.map" in block
 
 
-def test_tool_probe_result_is_cached_and_cleared_by_an_update():
-    """A version only changes when someone updates a scanner.
-
-    Caching it is safe only if updating clears it -- a stale version after an
-    update looks exactly like an update that did not work.
-    """
+def test_tool_probe_result_is_cached_and_can_be_cleared():
+    """A version only changes when a scanner is upgraded, and an upgrade
+    recreates the container (round 48: there is no in-place update left),
+    so a cached probe never outlives the versions it describes."""
     from app.main import _tool_cache
 
     _tool_cache.clear()
@@ -1564,12 +1372,6 @@ def test_tool_probe_result_is_cached_and_cleared_by_an_update():
 
     _tool_cache.clear()
     assert _tool_cache.get() is None
-
-    # The update endpoint must be the thing that clears it.
-    src = (Path(__file__).resolve().parents[1] / "app/main.py").read_text("utf-8")
-    update = src[src.index("async def admin_update_tools"):]
-    update = update[:update.index("@app.")]
-    assert "_tool_cache.clear()" in update
 
 
 def test_tool_cache_expires():
@@ -1949,9 +1751,8 @@ def two_users(tmp_path, monkeypatch):
 # the authorisation check. Sending a well-formed request is what proves the
 # guard is what refuses it.
 @pytest.mark.parametrize("method,path,body", [
-    ("GET", "/api/admin/status", None),
-    ("POST", "/api/admin/update-tools", None),
-    ("POST", "/api/admin/restart", None),
+    ("GET", "/api/admin/upgrades", None),
+    ("POST", "/api/admin/upgrades/apply", {"candidate": "0123456789abcdef"}),
     ("POST", "/api/inspect", {"source_kind": "path", "local_path": "/tmp"}),
     ("POST", "/api/rules/semgrep/x", {"content": "rules: []"}),
     ("DELETE", "/api/rules/semgrep/x", None),
@@ -3466,30 +3267,10 @@ def test_the_monitor_hint_does_not_send_container_users_in_a_loop():
     for key in ["mon.updateHintHost", "mon.updateHintDocker"]:
         assert i18n.count(f'"{key}"') == 2, f"{key} missing in one language"
 
-    # The page picks one based on what the server reports.
-    assert "d.containerised" in js, "the page never asks how it is deployed"
-
-
-def test_the_server_reports_whether_it_runs_in_a_container():
-    from app import admin
-
-    snap = admin.status()
-    assert "containerised" in snap
-    assert isinstance(snap["containerised"], bool)
-
-
-def test_container_detection_survives_a_missing_cgroup_file(monkeypatch):
-    """A read that throws must answer "not a container" rather than blow up
-    the whole operator panel."""
-    from app import admin
-
-    monkeypatch.setattr(admin.os.path, "exists", lambda p: False)
-
-    def boom(*a, **k):
-        raise OSError("no /proc here")
-
-    monkeypatch.setattr("builtins.open", boom)
-    assert admin.in_container() is False
+    # The page picks one based on how it is deployed (ops/ only exists
+    # in the container deployment, so the upgrade panel's "enabled").
+    assert 'd.enabled ? "mon.updateHintDocker" : "mon.updateHintHost"' in js, \
+        "the page never asks how it is deployed"
 
 
 def test_update_says_when_it_did_not_touch_the_container():
@@ -3731,124 +3512,6 @@ def test_update_fills_the_cache_before_installing():
     assert fetch_at < install_at, (
         "the cache is filled after the install that was supposed to use it"
     )
-
-
-# ------------------------------------------------ what can actually update
-def test_only_the_tools_that_can_update_in_place_are_offered():
-    """Five of the six are pinned in the image; only trivy's database updates.
-
-    Verified on the deployment rather than assumed: /usr/local/bin is not
-    writable by the account the app runs as, npm's global install fails for
-    the same reason, and gitleaks, osv-scanner and bearer have no
-    self-update command at all. So offering an update button for them would
-    promise something that cannot happen.
-    """
-    from app.admin import _update_commands
-
-    for pinned in ["bearer", "gitleaks", "osv_scanner", "npm_audit", "semgrep"]:
-        assert not _update_commands([pinned]), (
-            f"{pinned} is a pinned binary and cannot be updated in place"
-        )
-
-
-def test_an_unknown_tool_cannot_smuggle_in_a_command():
-    """The update runs shell commands, so the name has to be a known one."""
-    from app.admin import _update_commands
-
-    assert _update_commands(["; rm -rf /"]) == []
-    assert _update_commands(["semgrep; whoami"]) == []
-
-
-def test_a_pinned_tool_reports_whether_a_newer_release_exists(monkeypatch):
-    """"Needs a rebuild" does not say whether it needs one now.
-
-    osv-scanner sat at 1.9.2 while 2.6.0 was current and nothing said so.
-    """
-    from app import admin
-
-    monkeypatch.setattr(admin, "_latest_upstream",
-                        lambda: {"osv_scanner": "2.6.0", "gitleaks": "8.30.1"})
-    monkeypatch.setattr(admin, "_installed_version",
-                        lambda name: {"osv_scanner": "1.9.2",
-                                      "gitleaks": "8.30.1"}.get(name, ""))
-
-    rows = {r["name"]: r for r in admin.updatable_tools(check_upstream=True)}
-    assert rows["osv_scanner"]["outdated"] is True
-    assert rows["osv_scanner"]["latest"] == "2.6.0"
-    assert "outdated" not in rows["gitleaks"], "a current tool was called outdated"
-
-
-def test_the_installed_version_is_actually_read_from_the_tool(monkeypatch):
-    """It was not: probe() returns (available, version) and the code read
-    .version off the tuple. The broad except swallowed the AttributeError,
-    so every tool reported no version and nothing was ever outdated -- the
-    check looked like it worked and could not fire.
-    """
-    from app import admin
-
-    class FakeAdapter:
-        name = "gitleaks"
-
-        def probe(self):
-            return True, "8.30.1"
-
-    monkeypatch.setattr(admin, "ADAPTERS", [FakeAdapter()])
-    assert admin._installed_version("gitleaks") == "8.30.1"
-
-    # Each tool prints the number in its own way, with its own punctuation.
-    for reported, expected in [
-        ("osv-scanner version: 1.9.2", "1.9.2"),
-        ("bearer version 2.1.1, build 600e551c", "2.1.1"),   # trailing comma
-        ("Version: 0.74.0", "0.74.0"),
-        ("v1.2.3", "1.2.3"),
-    ]:
-        class Labelled(FakeAdapter):
-            def probe(self, _r=reported):
-                return True, _r
-
-        monkeypatch.setattr(admin, "ADAPTERS", [Labelled()])
-        assert admin._installed_version("gitleaks") == expected, reported
-
-    # A tool that is not installed has no version to report.
-    class Missing(FakeAdapter):
-        def probe(self):
-            return False, ""
-
-    monkeypatch.setattr(admin, "ADAPTERS", [Missing()])
-    assert admin._installed_version("gitleaks") == ""
-
-
-def test_an_unreadable_version_is_not_reported_as_outdated(monkeypatch):
-    """Saying "out of date" on a version we could not read would send
-    somebody rebuilding for nothing."""
-    from app import admin
-
-    monkeypatch.setattr(admin, "_latest_upstream", lambda: {"gitleaks": "8.30.1"})
-    monkeypatch.setattr(admin, "_installed_version", lambda name: "")
-
-    rows = {r["name"]: r for r in admin.updatable_tools(check_upstream=True)}
-    assert "outdated" not in rows["gitleaks"]
-
-
-def test_the_upstream_check_is_skipped_by_default(monkeypatch):
-    """The panel polls; a release check per poll would be a network call
-    every few seconds for an answer that changes weekly."""
-    from app import admin
-
-    called = []
-    monkeypatch.setattr(admin, "_latest_upstream",
-                        lambda: called.append(1) or {})
-    admin.updatable_tools()
-    assert not called, "the upstream check ran without being asked for"
-
-
-def test_version_comparison_handles_a_major_bump():
-    from app.admin import _version_tuple
-
-    assert _version_tuple("1.9.2") < _version_tuple("2.6.0")
-    # Not a string compare: "1.9" must not beat "1.10".
-    assert _version_tuple("1.9.0") < _version_tuple("1.10.0")
-    assert _version_tuple("v8.30.1".lstrip("v")) == (8, 30, 1)
 
 
 # ------------------------------------------------------- password expiry

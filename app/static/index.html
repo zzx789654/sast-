@@ -599,25 +599,8 @@
       <h2 data-i18n="mon.containers">Docker 容器效能</h2>
       <div id="mon-docker"></div>
     </div>
-    <div class="panel" id="admin-panel">
-      <div class="mon-head">
-        <h2 data-i18n="admin.title">維護動作</h2>
-        <span id="admin-state" class="admin-state"></span>
-      </div>
-      <p class="mon-hint" data-i18n="admin.warn"></p>
-      <div class="admin-actions">
-        <button id="admin-update" class="btn" data-i18n="admin.update">更新掃描工具</button>
-        <button id="admin-restart" class="btn ghost" data-i18n="admin.restart">重啟服務</button>
-        <button id="admin-check-versions" class="btn ghost"
-                data-i18n="admin.checkVersions">檢查版本</button>
-      </div>
-      <p class="mon-subnote" id="admin-updatable"></p>
-      <div id="admin-versions" class="admin-versions hidden"></div>
-      <div id="admin-outcome" class="admin-outcome hidden"></div>
-      <pre id="admin-log" class="admin-log hidden"></pre>
-    </div>
     <!-- Upgrades that need a new image. The host does the work
-         (scripts/sast_updater.py); this panel asks and shows progress. -->
+         (scripts/sast_updater.py); this panel shows it and approves. -->
     <div class="panel hidden" id="upgrade-panel">
       <div class="mon-head">
         <h2 data-i18n="upg.title">升級掃描工具</h2>
@@ -627,7 +610,6 @@
       <div id="upg-candidate" class="upg-candidate hidden"></div>
       <div class="admin-actions">
         <button id="upg-start" class="btn" data-i18n="upg.apply" disabled>套用更新</button>
-        <button id="upg-check" class="btn ghost" data-i18n="upg.checkNow">立即檢查</button>
       </div>
       <p id="upg-last" class="mon-subnote"></p>
       <div id="upg-tools" class="upg-tools"></div>

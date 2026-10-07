@@ -153,7 +153,6 @@ def test_upgrades_are_off_without_an_ops_dir(monkeypatch):
     monkeypatch.setattr(config, "OPS_DIR", None)
     assert upgrades.enabled() is False
     assert upgrades.status() == {"enabled": False}
-    assert upgrades.request_check("a")["started"] is False
     assert upgrades.request_apply(CAND, "a")["started"] is False
     assert upgrades.start_watcher(object()) is False
 
@@ -186,12 +185,9 @@ def test_a_link_in_ops_is_never_followed(ops, tmp_path_factory):
     assert not (ops / "status.json").is_symlink()
 
 
-def test_a_check_request_names_no_versions(ops):
-    out = upgrades.request_check("alice")
-    assert out["started"] is True
-    req = json.loads((ops / "request.json").read_text())
-    assert (req["action"], req["requested_by"], req["id"]) == ("check", "alice", out["id"])
-    assert set(req) == {"id", "requested_by", "requested_at", "action"}
+def test_the_web_cannot_ask_for_a_check():
+    """Round 48: the host checks every morning; the panel only approves."""
+    assert not hasattr(upgrades, "request_check")
 
 
 def test_only_the_candidate_on_offer_can_be_applied(ops):
@@ -205,38 +201,31 @@ def test_only_the_candidate_on_offer_can_be_applied(ops):
     assert out["started"] is True
     req = json.loads((ops / "request.json").read_text())
     assert (req["action"], req["candidate"]) == ("apply", CAND)
+    assert set(req) == {"id", "requested_by", "requested_at", "action", "candidate"}, \
+        "an apply names a candidate, never versions"
 
 
 def test_one_thing_at_a_time(ops):
     ready(ops)
     (ops / "request.json").write_text("{}")
-    assert "busy" in upgrades.request_check("a")["reason"]
     assert "busy" in upgrades.request_apply(CAND, "a")["reason"]
     (ops / "request.json").unlink()
-    (ops / "status.json").write_text(json.dumps({"phase": "verifying"}))
-    assert "busy" in upgrades.request_check("a")["reason"]
-    (ops / "status.json").write_text(json.dumps({"phase": "failed"}))
-    assert upgrades.request_check("a")["started"] is True
+    for phase in ("verifying", "checking"):
+        (ops / "status.json").write_text(json.dumps({"phase": phase, "candidate": {"id": CAND}}))
+        assert "busy" in upgrades.request_apply(CAND, "a")["reason"]
+    for odd in ([], {}):                             # unhashable: not busy, not a crash
+        (ops / "status.json").write_text(json.dumps({"phase": odd, "candidate": {"id": CAND}}))
+        assert upgrades.request_apply(CAND, "a")["started"] is True
+        (ops / "request.json").unlink()
 
 
-def test_with_checks_off_the_panel_cannot_ask_for_one(ops, monkeypatch):
+def test_with_checks_off_the_panel_says_so(ops, monkeypatch):
     from app.config import config
     monkeypatch.setattr(config, "UPSTREAM_CHECK", False)
-    assert "SAST_UPSTREAM_CHECK=false" in upgrades.request_check("a")["reason"]
     assert upgrades.status()["upstream_check"] is False
     ready(ops)
     assert upgrades.request_apply(CAND, "a")["started"] is True, \
         "a candidate prepared before the switch was turned off can still be applied"
-
-
-def test_the_version_check_obeys_the_switch(monkeypatch):
-    from app import admin, releases
-    from app.config import config
-    monkeypatch.setattr(config, "UPSTREAM_CHECK", False)
-    monkeypatch.setattr(admin, "_upstream_cache", {"at": 0.0, "versions": {}})
-    asked = []
-    monkeypatch.setattr(releases, "_fetch_json", lambda url, timeout=10.0: asked.append(url))
-    assert admin._latest_upstream() == {} and asked == []
 
 
 def test_the_switch_is_read_from_the_environment(monkeypatch):
@@ -268,6 +257,9 @@ def test_scans_stop_only_while_the_host_waits_to_switch(ops):
         assert json.loads((ops / "drain.json").read_text())["active"] == 2
     (ops / "status.json").write_text(json.dumps({"phase": "done"}))
     assert upgrades.sync_drain(m) is False and m.draining is False
+    for odd in ([], {}):                       # unhashable: once the watcher's end
+        (ops / "status.json").write_text(json.dumps({"phase": odd}))
+        assert upgrades.sync_drain(m) is False and m.draining is False
 
 
 def test_the_watcher_follows_the_host_and_survives_errors(ops, monkeypatch):
@@ -279,6 +271,8 @@ def test_the_watcher_follows_the_host_and_survives_errors(ops, monkeypatch):
         calls.append(manager)
         if len(calls) == 1:
             raise OSError("disk full")
+        if len(calls) == 2:
+            raise TypeError("something odd in status.json")
         done.set()
 
     monkeypatch.setattr(upgrades, "sync_drain", fake_sync)
@@ -316,13 +310,12 @@ def client():
 
 
 def test_upgrades_are_refused_while_accounts_are_off(client, ops, monkeypatch):
-    """With accounts off, require_admin lets anyone through. Fine for the
-    in-place buttons; not for one that rebuilds and swaps the service."""
+    """With accounts off, require_admin lets anyone through -- not good
+    enough for a button that swaps the service."""
     from app.config import config
     monkeypatch.setattr(config, "REQUIRE_AUTH", False)
     ready(ops)
     assert client.get("/api/admin/upgrades").status_code == 403
-    assert client.post("/api/admin/upgrades/check").status_code == 403
     assert client.post("/api/admin/upgrades/apply", data={"candidate": CAND}).status_code == 403
     assert not (ops / "request.json").exists()
 
@@ -350,7 +343,6 @@ def test_upgrade_endpoints(signed_in, ops):
     admin, user = signed_in
     ready(ops)
     for method, path, data in [("get", "/api/admin/upgrades", None),
-                               ("post", "/api/admin/upgrades/check", {}),
                                ("post", "/api/admin/upgrades/apply", {"candidate": CAND})]:
         assert getattr(user, method)(path, **({"data": data} if data is not None else {})) \
             .status_code == 403, path
@@ -364,10 +356,8 @@ def test_upgrade_endpoints(signed_in, ops):
     assert res.status_code == 202
     req = json.loads((ops / "request.json").read_text())
     assert (req["action"], req["requested_by"]) == ("apply", "admin")
-    res = admin.post("/api/admin/upgrades/check")
+    res = admin.post("/api/admin/upgrades/apply", data={"candidate": CAND})
     assert res.status_code == 409 and "busy" in res.json()["reason"]
-    (ops / "request.json").unlink()
-    assert admin.post("/api/admin/upgrades/check").status_code == 202
 
 
 def test_a_scan_started_while_draining_gets_503(client, monkeypatch):
@@ -401,7 +391,7 @@ def test_mcp_says_not_now_while_draining(monkeypatch):
 def test_the_panel_strings_exist_in_both_languages():
     text = (Path(__file__).resolve().parents[1] / "app/static/i18n.js").read_text("utf-8")
     keys = [k for k in ("upg.title", "upg.failedAt", "upg.phase.waiting_for_scans",
-                        "upg.overrides", "upg.off", "upg.apply", "upg.checkNow",
+                        "upg.overrides", "upg.off", "upg.apply",
                         "upg.banner.ready", "upg.upstreamOff", "surface.mentionTag")
             ] + [f"upg.ev.{kind}" for kind in ("downloading", "ready", "download_failed",
                                                "updating", "updated", "update_failed",

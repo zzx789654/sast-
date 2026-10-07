@@ -1158,19 +1158,6 @@ function wireViewNav() {
     });
   });
   $("#mon-refresh").addEventListener("click", renderMonitor);
-  const checkBtn = $("#admin-check-versions");
-  if (checkBtn) {
-    checkBtn.addEventListener("click", async () => {
-      checkBtn.disabled = true;
-      // loadAdminStatus fetches for itself, so ask it to include the check.
-      await loadAdminStatus(true);
-      checkBtn.disabled = false;
-    });
-  }
-
-  $("#admin-update").addEventListener("click", runToolUpdate);
-  $("#admin-restart").addEventListener("click", runRestart);
-  $("#upg-check").addEventListener("click", checkUpgradeNow);
   $("#upg-start").addEventListener("click", startUpgrade);
   $("#upg-banner").addEventListener("click", () => showView("monitor"));
   $("#report-refresh").addEventListener("click", () => refreshScanList(state.selectedJob));
@@ -1234,166 +1221,7 @@ async function renderMonitor() {
   await loadTools();            // refresh installed versions/availability
   renderMonitorTools();
   await loadMonitorDocker();
-  await loadAdminStatus();
   await loadUpgrade();
-}
-
-// ---------------------------------------------------------------- operator
-// Updating the scanners and restarting run on the server, so the panel makes
-// the state obvious: buttons disable while a job runs, output streams into the
-// log, and a restart says plainly that it drops scan history.
-async function loadAdminStatus(checkUpstream) {
-  let d;
-  try {
-    // The upstream release check is a network call, so it is only made when
-    // asked for, not on every poll of this panel.
-    const url = "/api/admin/status" + (checkUpstream ? "?check_upstream=true" : "");
-    d = await (await fetch(url)).json();
-  } catch (e) {
-    return;
-  }
-  state.admin = d;
-
-  const running = !!d.running;
-  const btnUpdate = $("#admin-update");
-  const btnRestart = $("#admin-restart");
-  if (btnUpdate) btnUpdate.disabled = running;
-  if (btnRestart) btnRestart.disabled = running;
-
-  const label = $("#admin-state");
-  if (label) {
-    label.textContent = running
-      ? t("admin.running", { kind: d.kind || "" })
-      : (d.ok === true ? t("admin.done")
-         : d.ok === false ? t("admin.failed") : "");
-    label.className = "admin-state" + (running ? " busy"
-      : d.ok === false ? " bad" : d.ok === true ? " good" : "");
-  }
-
-  // Say which tools this can actually update, so a pinned binary that needs an
-  // image rebuild does not look like a button that silently did nothing.
-  // Which advice is true here depends on how this is deployed: --update
-  // installs onto the host, so in a container it cannot change the versions
-  // shown above, and repeating it is the obvious thing to try.
-  const hint = $("#mon-update-hint");
-  if (hint) {
-    hint.textContent = t("mon.updateHint") + " "
-      + t(d.containerised ? "mon.updateHintDocker" : "mon.updateHintHost");
-  }
-
-  const note = $("#admin-updatable");
-  if (note) {
-    const list = (d.tools_available || []);
-    const inPlace = list.filter((x) => x.in_place).map((x) => x.name);
-    const pinned = list.filter((x) => !x.in_place).map((x) => x.name);
-    note.textContent = "";
-    if (inPlace.length) note.textContent += t("admin.canUpdate", { list: inPlace.join(", ") });
-    if (pinned.length) note.textContent += " " + t("admin.pinned", { list: pinned.join(", ") });
-  }
-
-  // "needs a rebuild" leaves the useful question unanswered: does it need
-  // one now? Shown only once the versions have actually been fetched.
-  const versions = $("#admin-versions");
-  if (versions) {
-    const known = (d.tools_available || []).filter((x) => x.latest);
-    versions.innerHTML = "";
-    versions.classList.toggle("hidden", !known.length);
-    known.forEach((x) => {
-      const row = el("div", "av-row" + (x.outdated ? " av-old" : ""));
-      row.appendChild(el("span", "av-name", x.name));
-      row.appendChild(el("span", "av-have", x.installed || "?"));
-      if (x.outdated) {
-        row.appendChild(el("span", "av-arrow", "\u2192"));
-        row.appendChild(el("span", "av-new", x.latest));
-        row.appendChild(el("span", "av-tag", t("admin.needsRebuild")));
-      } else {
-        row.appendChild(el("span", "av-ok", t("admin.current")));
-      }
-      versions.appendChild(row);
-    });
-  }
-
-  // Say what the update actually did. Without this the user has to find
-  // "Successfully installed" in a wall of pip output to know whether the
-  // restart button matters.
-  const outcome = $("#admin-outcome");
-  if (outcome) {
-    const outs = d.outcomes || {};
-    const names = Object.keys(outs);
-    if (!running && names.length) {
-      outcome.innerHTML = "";
-      names.forEach((n) => {
-        const row = el("div", "admin-outcome-row");
-        row.appendChild(el("span", "ao-tool", n));
-        row.appendChild(el("span", "ao-" + outs[n], t("admin.outcome." + outs[n])));
-        outcome.appendChild(row);
-      });
-      if (d.restart_required) {
-        outcome.appendChild(el("div", "admin-need-restart", t("admin.needRestart")));
-      }
-      outcome.classList.remove("hidden");
-    } else if (running) {
-      outcome.classList.add("hidden");
-    }
-  }
-
-  const log = $("#admin-log");
-  if (log) {
-    if (d.log) { log.textContent = d.log; log.classList.remove("hidden"); log.scrollTop = log.scrollHeight; }
-    else log.classList.add("hidden");
-  }
-
-  // Keep polling only while something is in flight.
-  if (running) {
-    clearTimeout(state.adminTimer);
-    state.adminTimer = setTimeout(loadAdminStatus, 2000);
-  }
-}
-
-async function runToolUpdate() {
-  if (!confirm(t("admin.confirmUpdate"))) return;
-  const body = new FormData();
-  try {
-    const res = await fetch("/api/admin/update-tools", { method: "POST", body });
-    const d = await res.json();
-    if (!d.started) { alert(d.reason || t("admin.failed")); return; }
-  } catch (e) {
-    alert(t("admin.failed") + ": " + e.message);
-    return;
-  }
-  loadAdminStatus();
-}
-
-async function runRestart() {
-  if (!confirm(t("admin.confirmRestart"))) return;
-  try {
-    const res = await fetch("/api/admin/restart", { method: "POST" });
-    const d = await res.json();
-    if (!d.restarting) { alert(d.reason || t("admin.failed")); return; }
-  } catch (e) {
-    // The process may drop the connection as it goes down; that is expected.
-  }
-  // Poll until the app answers again, then reload so the UI reflects the
-  // restarted server rather than showing a stale page.
-  const label = $("#admin-state");
-  if (label) { label.textContent = t("admin.restarting"); label.className = "admin-state busy"; }
-  waitForServer();
-}
-
-function waitForServer(attempt) {
-  const n = attempt || 0;
-  if (n > 60) {
-    const label = $("#admin-state");
-    if (label) { label.textContent = t("admin.restartSlow"); label.className = "admin-state bad"; }
-    return;
-  }
-  setTimeout(async () => {
-    try {
-      const r = await fetch("/api/health", { cache: "no-store" });
-      if (r.ok) { location.reload(); return; }
-    } catch (e) { /* still down */ }
-    waitForServer(n + 1);
-  }, 1000);
 }
 
 function renderMonitorTools() {
@@ -1495,8 +1323,8 @@ function stopMonitorPolling() { clearInterval(state.monTimer); clearInterval(sta
 
 // ---------------------------------------------------------------- upgrades
 // The host checks every morning and prepares a verified candidate on its own.
-// This panel shows what it found and did, and can ask for two things only:
-// check now, or apply the candidate it prepared. While it switches, the
+// This panel shows what it found and did, and can ask for one thing only:
+// apply the candidate it prepared. While it switches, the
 // service restarts, so a failed poll here is expected, not an error.
 const UPG_PHASES = ["checking", "downloading", "building", "verifying",
   "waiting_for_scans", "switching", "done"];
@@ -1560,6 +1388,10 @@ async function loadUpgrade() {
   if (!d) return;
   if (d.forbidden) { panel.classList.add("hidden"); return; }
   panel.classList.remove("hidden");
+  // ops/ is mounted only into the container, so "enabled" also says how
+  // this is deployed -- and which way of updating the hint should name.
+  $("#mon-update-hint").textContent = t("mon.updateHint") + " "
+    + t(d.enabled ? "mon.updateHintDocker" : "mon.updateHintHost");
   const st = d.status || {};
   state.upgBusy = !!d.pending || UPG_BUSY.has(st.phase);
 
@@ -1585,7 +1417,6 @@ async function loadUpgrade() {
   }
   $("#upg-start").disabled = !d.enabled || state.upgBusy || !cand;
   $("#upg-start").dataset.candidate = cand ? cand.id : "";
-  $("#upg-check").disabled = !d.enabled || state.upgBusy || d.upstream_check === false;
   $("#upg-last").textContent = st.last_check
     ? t("upg.lastCheck", { at: fmtTime(st.last_check) }) : t("upg.neverChecked");
 
@@ -1628,7 +1459,7 @@ function renderUpgradeTools(tools) {
       line.appendChild(el("span", "av-new", row.eligible));
     } else {
       line.appendChild(el("span", "upg-why", row.reason === "up to date"
-        ? t("admin.current") : (row.reason || "")));
+        ? t("upg.toolCurrent") : (row.reason || "")));
     }
     box.appendChild(line);
   });
@@ -1678,9 +1509,9 @@ async function upgradePost(path, body, confirmText) {
   try {
     const res = await fetch(path, { method: "POST", body });
     const d = await res.json();
-    if (!d.started) { alert(d.reason || t("admin.failed")); return; }
+    if (!d.started) { alert(d.reason || t("upg.requestFailed")); return; }
   } catch (e) {
-    alert(t("admin.failed") + ": " + e.message);
+    alert(t("upg.requestFailed") + ": " + e.message);
     return;
   }
   loadUpgrade();
@@ -1693,10 +1524,6 @@ function startUpgrade() {
   body.append("candidate", id);
   upgradePost("/api/admin/upgrades/apply", body,
     t("upg.confirmApply", { versions: $("#upg-candidate strong").textContent }));
-}
-
-function checkUpgradeNow() {
-  upgradePost("/api/admin/upgrades/check", new FormData(), null);
 }
 
 function wireTabs() {

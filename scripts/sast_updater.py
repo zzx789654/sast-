@@ -3,11 +3,11 @@
 
 Runs on the host, every minute, from cron, as the deployment's user. The web
 app cannot rebuild its own image (that takes control of the Docker daemon,
-and the rebuild replaces the app's own container); it can only ask, through
-ops/, for one of two things: check now, or apply the prepared candidate.
+and the rebuild replaces the app's own container); through ops/ it can only
+approve the candidate prepared here. Checking is this script's alone.
 
 Check (each day at SAST_UPGRADE_CHECK_AT in SAST_UPGRADE_TZ, default 08:00
-Asia/Taipei, or when asked):
+Asia/Taipei, or `--check` run on the host):
     every scanner's newest release that has been out for COOLDOWN_DAYS ->
     download, verified against the published checksums, checked again ->
     a candidate image, built while the service keeps running -> accepted
@@ -20,15 +20,15 @@ Apply (only a candidate this script built and accepted, by its id):
     previous image comes back -> versions recorded in .env.
 
 Each step is an event the web panel shows: downloading, ready,
-download_failed, updating, updated, update_failed. A candidate nobody
-applies is removed after CANDIDATE_DAYS.
+download_failed, updating, updated, update_failed, expired. A candidate
+nobody applies is removed after CANDIDATE_DAYS.
 
 ops/ is writable by the container, so everything read from it is untrusted:
 size-limited, never followed through a link, validated field by field. What
 this script must believe -- the candidate, the events -- lives in a file
 the container cannot reach (STATE_FILE).
 
-    python3 scripts/sast_updater.py           requests, schedule, expiry
+    python3 scripts/sast_updater.py           an apply request, schedule, expiry
     python3 scripts/sast_updater.py --check   check now
 """
 from __future__ import annotations
@@ -84,7 +84,9 @@ ID_RE = re.compile(r"^[0-9a-f]{16}$")
 NAME_RE = re.compile(r"^[A-Za-z0-9._@-]{0,64}$")
 BUSY = {"queued", "checking", "downloading", "building", "verifying",
         "waiting_for_scans", "switching"}
-ACTIONS = {"check", "apply"}
+#: What a request may ask for. Checking is the host's own job, at 08:00
+#: (or `--check` on the host): the web may only approve a candidate.
+ACTIONS = {"apply"}
 
 
 class Failed(Exception):
@@ -227,8 +229,8 @@ def _load(raw: bytes):
 def parse_request(raw: bytes) -> dict:
     """The request, or Failed. Every field is checked; nothing else is kept.
 
-    Two actions only: "check", and "apply" with the id of a candidate. No
-    versions: what to install is decided here, never by the request.
+    One action only: "apply", with the id of a candidate. No versions:
+    what to install is decided here, never by the request.
     """
     if not raw:
         raise Failed("checking", "no request")
@@ -248,13 +250,10 @@ def parse_request(raw: bytes) -> dict:
         raise Failed("checking", "bad requester name")
     if not isinstance(action, str) or action not in ACTIONS:
         raise Failed("checking", "unknown action")
-    out = {"id": req_id, "requested_by": who, "action": action}
-    if action == "apply":
-        cand = data.get("candidate")
-        if not isinstance(cand, str) or not ID_RE.match(cand):
-            raise Failed("checking", "bad candidate id")
-        out["candidate"] = cand
-    return out
+    cand = data.get("candidate")
+    if not isinstance(cand, str) or not ID_RE.match(cand):
+        raise Failed("checking", "bad candidate id")
+    return {"id": req_id, "requested_by": who, "action": action, "candidate": cand}
 
 
 def env_setting(text: str, key: str) -> str:
@@ -636,10 +635,39 @@ class Updater:
         self.run_cmd(["bash", "scripts/prune-rollbacks.sh"], 300, None)
         self.status["warning"] = warning
 
-    def run_check(self, trigger: str, req_id: str = "") -> bool:
-        """Look for new versions; if there are, prepare and accept a candidate."""
-        self.status = {"id": req_id, "action": "check", "trigger": trigger,
+    def run_check(self, trigger: str) -> bool:
+        """Look for new versions; if there are, prepare and accept a candidate.
+
+        Started by the schedule or by --check, never by a request. Whatever
+        goes wrong ends in a failed phase, an event and no candidate -- and,
+        on the schedule, a retry later -- not in a crash every minute.
+        """
+        self.status = {"id": "", "action": "check", "trigger": trigger,
                        "started_at": _now()}
+        try:
+            return self._check()
+        except Exception as exc:
+            step, reason = (exc.step, exc.reason) if isinstance(exc, Failed) else \
+                (self.status.get("phase", "checking"), f"{type(exc).__name__}: {exc}")
+            if trigger == "schedule":
+                self.state["retry_at"] = (self.wallclock() + timedelta(hours=RETRY_HOURS)) \
+                    .strftime("%Y-%m-%dT%H:%M:%SZ")
+                self.save_state()
+            if "targets" in self.status:
+                # Building had begun, so any earlier candidate is already
+                # gone and this one is half made. Before that point a
+                # failure (a Dockerfile that cannot be read, say) leaves the
+                # candidate the administrator may be about to approve.
+                try:
+                    self.drop_candidate()
+                except Exception as drop_exc:
+                    self.log(f"could not remove the candidate: {drop_exc}")
+            self.event("download_failed", targets=self.status.get("targets", {}),
+                       step=step, reason=reason)
+            self.report("failed", step=step, reason=reason, finished_at=_now())
+            return False
+
+    def _check(self) -> bool:
         if not self.upstream_enabled():
             self.report("idle", reason="SAST_UPSTREAM_CHECK=false: version checks are off")
             return True
@@ -664,26 +692,16 @@ class Updater:
             self.report("idle")
             return True
         from_versions = {t: current.get(t, "") for t in targets}
+        self.status["targets"] = targets
         self.event("downloading", targets=targets, previous=from_versions)
-        try:
-            self.checked = {r["tool"]: (current.get(r["tool"], ""), r["eligible"],
-                                        r["latest_published"]) for r in rows if r["eligible"]}
-            self.disk_ok()
-            self.build({**current, **targets})
-            self.verify()
-            image = self.image_id(CANDIDATE)
-            if not base or not image:
-                raise Failed("verifying", "could not read the image IDs")
-        except Exception as exc:
-            step, reason = (exc.step, exc.reason) if isinstance(exc, Failed) else \
-                (self.status.get("phase", "checking"), f"{type(exc).__name__}: {exc}")
-            self.drop_candidate()
-            if trigger == "schedule":
-                self.state["retry_at"] = (self.wallclock() + timedelta(hours=RETRY_HOURS)) \
-                    .strftime("%Y-%m-%dT%H:%M:%SZ")
-            self.event("download_failed", targets=targets, step=step, reason=reason)
-            self.report("failed", step=step, reason=reason, finished_at=_now())
-            return False
+        self.checked = {r["tool"]: (current.get(r["tool"], ""), r["eligible"],
+                                    r["latest_published"]) for r in rows if r["eligible"]}
+        self.disk_ok()
+        self.build({**current, **targets})
+        self.verify()
+        image = self.image_id(CANDIDATE)
+        if not base or not image:
+            raise Failed("verifying", "could not read the image IDs")
         self.state["candidate"] = {
             "id": secrets.token_hex(8), "targets": targets, "previous": from_versions,
             "built_at": self.stamp(), "critical": self.status.get("critical", {}),
@@ -761,19 +779,15 @@ class Updater:
             self.status = {"id": "", "started_at": _now()}
             self.report("failed", step=step, reason=reason, finished_at=_now())
             return False
-        flow = (lambda: self.run_check("request", req["id"])) if req["action"] == "check" \
-            else (lambda: self.run_apply(req))
         try:
-            return flow()
+            return self.run_apply(req)
         except Exception as exc:
-            # The flows report their own expected failures; this is a bug or
-            # a broken host, and must still end in a failed phase, an event
-            # and no half-built candidate -- not a crash every minute.
+            # run_apply reports its own expected failures; this is a bug or
+            # a broken host, and must still end in a failed phase and an
+            # event -- not a crash every minute.
             reason = f"{type(exc).__name__}: {exc}"
-            if req["action"] == "check":
-                self.drop_candidate()
-            self.event("download_failed" if req["action"] == "check" else "update_failed",
-                       step=self.status.get("phase", "checking"), reason=reason)
+            self.event("update_failed", step=self.status.get("phase", "checking"),
+                       reason=reason)
             self.report("failed", step=self.status.get("phase", "checking"),
                         reason=reason, finished_at=_now())
             return False
@@ -789,7 +803,7 @@ class Updater:
         if isinstance(phase, str) and phase in BUSY:
             action = running.get("action")
             self.status = {"id": "", "action": action if isinstance(action, str)
-                           and action in ACTIONS else "",
+                           and action in ("check", "apply") else "",
                            "started_at": _now()}
             reason = ("the updater stopped while switching (a restart?); check the "
                       "service -- the image it replaced is sast-studio:rollback-previous"
@@ -827,13 +841,16 @@ def main(updater: Updater | None = None, lock_file: Path = LOCK_FILE,
                 updater.log(f"housekeeping failed: {type(exc).__name__}: {exc}")
         if "--check" in argv:
             return 0 if updater.run_check("manual") else 1
+        # The schedule before any request: the container can write a request
+        # every minute, and must not be able to keep the daily check from
+        # ever running. A request waits for the next minute.
+        if updater.scheduled_due():
+            return 0 if updater.run_check("schedule") else 1
         request = updater.ops / "request.json"
         raw = read_untrusted(request, MAX_REQUEST)
         if raw:
             request.unlink(missing_ok=True)
             return 0 if updater.process(raw) else 1
-        if updater.scheduled_due():
-            return 0 if updater.run_check("schedule") else 1
         return 0
 
 

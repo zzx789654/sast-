@@ -4,11 +4,11 @@ This process cannot rebuild its own image: that needs control of the Docker
 daemon, which is control of the host, and the rebuild ends by replacing this
 very container. So it only asks. scripts/sast_updater.py, on the host,
 prepares a candidate every morning on its own; from here an administrator
-can only ask it to check now, or to apply the candidate it prepared. No
-versions are chosen here.
+can only approve the candidate it prepared. No versions are chosen here, and
+no check is asked for: that is the host's, once a day.
 
 Files in OPS_DIR (the only things either side reads or writes there):
-    request.json  written here: "check", or "apply" a candidate id; who asked
+    request.json  written here: "apply" a candidate id, and who asked
     status.json   written by the host: phase, per-step results, overrides
     drain.json    written here: how many scans are still running
     update.log    written by the host: the tail of what it ran
@@ -96,7 +96,8 @@ def status() -> dict:
 def _refusal() -> "str | None":
     if not enabled():
         return "upgrades are not set up on this host"
-    if _read_json(STATUS).get("phase") in BUSY or _read(REQUEST):
+    phase = _read_json(STATUS).get("phase")
+    if (isinstance(phase, str) and phase in BUSY) or _read(REQUEST):
         return "the updater is busy; try again when it finishes"
     return None
 
@@ -106,16 +107,6 @@ def _ask(action: str, requested_by: str, **extra) -> dict:
                "requested_at": _now(), "action": action, **extra}
     _write_json(REQUEST, request)
     return {"started": True, "id": request["id"]}
-
-
-def request_check(requested_by: str) -> dict:
-    """Ask the host to check for new versions now (the 08:00 check, early)."""
-    why = _refusal()
-    if why is None and not config.UPSTREAM_CHECK:
-        why = "version checks are off (SAST_UPSTREAM_CHECK=false)"
-    if why:
-        return {"started": False, "reason": why}
-    return _ask("check", requested_by)
 
 
 def request_apply(candidate_id: str, requested_by: str) -> dict:
@@ -138,7 +129,8 @@ def sync_drain(manager) -> bool:
     """Follow the host: stop new scans while it waits to switch, and say how
     many are still running. Returns whether this side is draining."""
     current = _read_json(STATUS)
-    draining = current.get("phase") in DRAIN_PHASES
+    phase = current.get("phase")
+    draining = isinstance(phase, str) and phase in DRAIN_PHASES
     manager.set_draining(draining)
     if draining:
         _write_json(DRAIN, {"id": current.get("id", ""),
@@ -158,8 +150,10 @@ def start_watcher(manager, interval: float = 3.0) -> bool:
         while not _stop.wait(interval):
             try:
                 sync_drain(manager)
-            except OSError:
-                # A full disk or a vanished directory: try again next tick.
+            except Exception:
+                # A full disk, a vanished directory, something odd in
+                # status.json: try again next tick. A dead watcher would
+                # leave scans refused until the container is recreated.
                 continue
 
     threading.Thread(target=loop, name="upgrade-watch", daemon=True).start()

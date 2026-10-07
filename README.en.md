@@ -755,21 +755,10 @@ than leaving a broken container in place.
 
 
 
-Only two of the six can be updated from the Monitor tab, and the reason is
-how they are installed rather than a shortcut:
-
-| tool | updates in place? | why |
-|---|---|---|
-| semgrep | no | pinned (`SEMGREP_VERSION`) in its own root-owned venv `/opt/semgrep`; it and the app need different opentelemetry versions, and upgrading in place would let the app's account rewrite the scanner and skip CI |
-| trivy | its database | the binary is pinned; `--download-db-only` refreshes the part that changes daily |
-| bearer, gitleaks, osv-scanner | no | pinned binaries in `/usr/local/bin`, which the app's account cannot write, and none of them has a self-update command |
-| npm_audit | no | npm's global install needs root, and the advisories come from the registry at scan time anyway |
-
-For the four that cannot, **Check versions** asks GitHub for the newest
-release of each and says whether the pinned one is behind. Changing it means
-editing the `ARG`s at the top of the `Dockerfile` (and the matching defaults
-in `scripts/fetch-vendor.sh`) and rebuilding -- which is the point of pinning
-them: the version that ships is one somebody chose and checksummed.
+None of the six is updated in place from the page. Vulnerability data
+refreshes itself at scan time (below); the binaries are pinned in the image
+and change only through an image upgrade -- prepared by the host each
+morning, applied when an administrator approves it.
 
 
 
@@ -781,18 +770,21 @@ them: the version that ships is one somebody chose and checksummed.
   versions deliberately; automate the bumps with Renovate/Dependabot if you like.
 - **Update in place** with `./setup.sh --update` (re-installs the pinned binaries,
   and Semgrep in its own venv), or rebuild the Docker image.
-- **Upgrade from the web panel** (Docker deployments): Monitor → *Upgrade
-  scanners* → *Check for new versions* → tick → *Upgrade*. Semgrep, Trivy,
-  OSV-Scanner and Gitleaks; only the newest release, once it (and every file
-  in it) has been out for 7 days. The app container only files a request;
-  `scripts/sast_updater.py` on the host (cron, every minute) re-checks the
-  version, downloads and verifies the published checksum, checks again,
-  builds a candidate image, confirms every scanner still finds what it must on
-  a sample project and that the image has no more CRITICAL vulnerabilities,
-  waits for running scans (new ones get `503`), then switches -- or keeps the
-  old image if anything fails. Versions are recorded in the host's `.env`,
-  which `deploy.sh` keeps. Needs accounts on (`SAST_REQUIRE_AUTH=true`), an
-  administrator, `scripts/install-updater.sh` run once, and 3 GB free disk.
+- **Daily pre-built upgrades, approved on the web** (Docker deployments):
+  every day at 08:00 (`SAST_UPGRADE_CHECK_AT` / `SAST_UPGRADE_TZ`, default
+  Asia/Taipei) `scripts/sast_updater.py` on the host looks for new Semgrep,
+  Trivy, OSV-Scanner and Gitleaks releases (only the newest, once it and every
+  file in it has been out for 7 days), downloads and verifies the published
+  checksums, builds a candidate image and confirms every scanner still finds
+  what it must on a sample project and that the image has no more CRITICAL
+  vulnerabilities. Monitor → *Upgrade scanners* then shows it as ready, with
+  notifications; *Apply update* waits for running scans (new ones get `503`)
+  and switches -- or keeps the old image if anything fails. The page cannot
+  pick versions or ask for a check; run `python3 scripts/sast_updater.py
+  --check` on the host for one now. A candidate nobody applies is removed
+  after 14 days. `SAST_UPSTREAM_CHECK=false` turns the version queries off.
+  Needs accounts on (`SAST_REQUIRE_AUTH=true`), an administrator,
+  `scripts/install-updater.sh` run once, and 3 GB free disk.
 - **The app has no Docker socket.** The Monitor tab reads the Docker API
   through `docker-proxy` (`nginx/docker-proxy.conf`): four read-only paths,
   403 for everything else. A socket mounted `:ro` would still accept every
@@ -803,7 +795,7 @@ them: the version that ships is one somebody chose and checksummed.
 
 The **Monitor** tab shows each scanner's installed version, live per-container
 performance (CPU / memory / network) for the Docker deployment, and the
-maintenance actions below.
+scanner-upgrade panel described above.
 
 `docker-compose.yml` enables container stats by default. Reading them needs the
 Docker daemon socket mounted into the container, which is a privileged
@@ -811,41 +803,13 @@ capability even read-only, so the listing is scoped by label to this compose
 project rather than every container on the host. Turn it off with
 `SAST_ENABLE_DOCKER_STATS=false` and remove the socket mount.
 
-### Maintenance actions, and who can use them
+### Maintenance actions (removed in round 48)
 
-The Monitor tab can update the scanners that can be updated in place and
-restart the application.
-
-> **There is no login in front of these.** This project deliberately has no
-> account system, so anyone who can open the page can update the scanners and
-> restart the service. Run it on a trusted network only — do not expose port
-> 8080 to the internet.
-
-What the code does within that constraint:
-
-- every command is a fixed argument list with `shell=False`, and the tool names
-  are checked against the built-in list, so a request cannot inject a command;
-- one maintenance job runs at a time, and a restart is limited to one per
-  minute so the service cannot be kept bouncing;
-- command output is scrubbed of credentials and absolute paths before it is
-  shown, because that log is readable by anyone who can reach the page.
-
-Restarting clears scan history, which is held in memory by design.
-
-If you need defence in depth without adding accounts, restrict `/api/admin/`
-at the reverse proxy — for example in `nginx/nginx.conf`:
-
-```nginx
-location /api/admin/ {
-    allow 192.168.0.0/16;   # your management network
-    deny all;
-    proxy_pass http://sast-studio:8000;
-}
-```
-
-Scanners pinned as binaries in the image (Bearer, Gitleaks, OSV-Scanner, npm)
-cannot be changed from the page; bump the version in the `Dockerfile` and
-rebuild. The panel says which is which.
+The *Update scanners*, *Restart service* and *Check versions* buttons are
+gone. Vulnerability databases refresh at scan time, the host checks for new
+versions every morning, and applying an upgrade recreates the container.
+The only operator action left on the page is approving a prepared upgrade,
+and it needs an administrator with accounts turned on.
 
 ## Development
 

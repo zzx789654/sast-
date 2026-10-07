@@ -39,7 +39,7 @@ SAST Studio 會同時跑 **Semgrep、Bearer、Trivy、npm audit、OSV-Scanner、
 |---|---|
 | ![登入頁](docs/images/login.png) | ![掃描分頁：選來源、選工具、自訂規則](docs/images/scan.png) |
 | **報告分頁：發現卡片** | **監控分頁** |
-| ![發現卡片：嚴重度、位置、CWE/OWASP、人工標記](docs/images/findings.png) | ![監控：掃描器版本與維護動作](docs/images/monitor.png) |
+| ![發現卡片：嚴重度、位置、CWE/OWASP、人工標記](docs/images/findings.png) | ![監控：掃描器版本與升級](docs/images/monitor.png) |
 | **設定 → Log（活動紀錄）** | **設定 → MCP** |
 | ![活動紀錄](docs/images/logs.png) | ![API 與 MCP 設定](docs/images/mcp.png) |
 | **攻擊面分頁：關聯圖** | **攻擊面分頁：心智圖** |
@@ -50,7 +50,7 @@ SAST Studio 會同時跑 **Semgrep、Bearer、Trivy、npm audit、OSV-Scanner、
 | **掃描** | 選來源（上傳 zip／Git 網址／本機路徑）、勾選工具與 Semgrep 規則集、撰寫自訂規則，按下開始掃描 |
 | **報告** | 左邊是歷次掃描清單，右邊是選中那份的判定、嚴重度分佈、各工具結果、每筆發現卡片；可匯出 CSV 與 PDF |
 | **攻擊面** | 這份程式對外開了哪些端點、前端呼叫了什麼、連到哪些外部主機；以關聯圖／心智圖呈現，標出未偵測到認證、無人呼叫的端點與前端直連內網等風險（靜態推論，不影響判定） |
-| **監控** | 掃描器版本、Docker 容器效能與資源評估、維護動作（更新掃描器、重啟服務） |
+| **監控** | 掃描器版本、Docker 容器效能與資源評估、升級掃描工具（每日 08:00 主機自動準備，管理員核准套用） |
 | **設定** | 帳號、API 權杖、密碼原則、MCP 設定、活動紀錄（Log）、掃描工具說明 |
 
 右上角可一鍵切換**中文 / English**（選擇會被記住）。
@@ -106,7 +106,7 @@ npm audit）會標示「不適用」與原因——掃描照樣跑其他工具�
 | 動作 | 連到哪裡 | 說明 |
 |---|---|---|
 | Git 網址掃描 | 你給的 Git 主機 | 只允許 `http`/`https`、depth-1、不互動、有 timeout；預設拒絕內網位址（`SAST_ALLOW_INTERNAL_GIT_HOSTS`） |
-| 監控分頁「檢查版本」「檢查新版」 | GitHub Releases API、PyPI JSON API | 只查掃描器是否有新版與發布時間，不帶任何掃描資料 |
+| 主機每日 08:00 版本檢查（`scripts/sast_updater.py`，網頁容器不連） | GitHub Releases API、PyPI JSON API | 只查掃描器是否有新版與發布時間，不帶任何掃描資料；`SAST_UPSTREAM_CHECK=false` 可關閉 |
 | 更新掃描器／建置映像 | PyPI、GitHub Releases、Bearer／Trivy 安裝腳本 | 只下載工具本體，二進位檔會驗 checksum |
 
 > **敏感專案須知**：npm audit 與 OSV-Scanner 會讓外部服務知道「這個專案用了哪些套件與版本」。
@@ -190,7 +190,7 @@ cd sast-
 | `scripts/fetch-vendor.sh` | 把掃描器二進位預先下載到 `./vendor` | 由上面兩支自動呼叫；網路慢時可單獨先跑 |
 | `scripts/install-tools.sh` | 把掃描器安裝到主機 | 由 `setup.sh` 自動呼叫；手動安裝時使用 |
 | `scripts/install-updater.sh` | 開啟「網頁升級掃描工具」：建立 `ops/`、在 crontab 加入每分鐘執行的 `scripts/sast_updater.py` | `setup.sh --docker` 自動呼叫；既有部署手動執行一次 |
-| `scripts/sast_updater.py` | 主機服務：每日 08:00 檢查並預先建置、驗收候選；處理網頁的「立即檢查」與「套用」（等待掃描→切換）。`--check` 可手動立即檢查 | 由 cron 呼叫，不需手動執行 |
+| `scripts/sast_updater.py` | 主機服務：每日 08:00 檢查並預先建置、驗收候選；處理網頁的「套用」（等待掃描→切換）。急需檢查時在主機執行 `python3 scripts/sast_updater.py --check` | 由 cron 呼叫，不需手動執行 |
 | `scripts/prune-rollbacks.sh` | 映像只保留 2 版：目前版本與前一版 | 部署與升級後自動呼叫 |
 
 ### `setup.sh` — 安裝與更新
@@ -305,10 +305,9 @@ SKIP_VENDOR=1 ./setup.sh --update    # 重建映像，不碰 ./vendor 快取
   都在掃描時即時更新。只有工具**本體二進位**需要管理版本。
 - **二進位版本固定**：要升版就同時修改 `Dockerfile`、`scripts/install-tools.sh`、`scripts/fetch-vendor.sh`
   的版本號（以及 `fetch-vendor.sh` 的 checksum），再跑 `./setup.sh --update`。
-- **網頁上就地更新**：「維護動作」的「更新掃描工具」只更新 Trivy 的弱點 DB。
 - **每日預先建置＋網頁核准套用**（第 47 輪）：
   - 適用 Semgrep、Trivy、OSV-Scanner、Gitleaks；**只採用最新版，且發布滿 7 天**（以所有檔案的最後更新時間計）。
-  - **檢查**：主機上的 `scripts/sast_updater.py`（cron 每分鐘判斷）每天 08:00（`SAST_UPGRADE_CHECK_AT`、`SAST_UPGRADE_TZ`，預設台北時間；關機錯過會補做；失敗 3 小時後重試）自動檢查。也可以在監控分頁「升級掃描工具」按「立即檢查」。
+  - **檢查**：主機上的 `scripts/sast_updater.py`（cron 每分鐘判斷）每天 08:00（`SAST_UPGRADE_CHECK_AT`、`SAST_UPGRADE_TZ`，預設台北時間；關機錯過會補做；失敗 3 小時後重試）自動檢查。網頁上沒有手動檢查按鈕（第 48 輪移除）；急需時在主機執行 `python3 scripts/sast_updater.py --check`。
   - **有新版時，自動準備候選映像**，舊版持續服務：下載並比對官方 checksum → 下載後再查核一次 → 建置候選映像 → 自動驗收（六個掃描器能啟動、樣本專案每個工具都抓到預期發現、候選映像 CRITICAL 不多於現行）。
   - **通知**：頁首與監控分頁會顯示下載中、下載完成（可套用）、下載失敗、開始更新、更新完成、更新失敗、候選過期。
   - **套用**：管理員按「套用」才會切換。切換前先等進行中的掃描結束（最多 60 分鐘，期間新掃描回 503），切換後異常會自動退回。網頁只能核准主機已驗收的候選，不能指定版本。
@@ -666,11 +665,7 @@ echo "判定：$STATUS"
 | `GET /api/logs` | 👤 | 活動紀錄；可用 `categories`（`scan,auth,service,docker,api`，分別對應掃描／登入／服務／容器／API）、`level`、`actor`、`text`、`since`、`limit`、`offset` 篩選 |
 | `POST /api/logs/retention` | 🔑 | 設定保留天數：`days`（1～3650） |
 | `GET /api/system` | 👤 | Docker 容器 CPU／記憶體／網路與資源評估 |
-| `GET /api/admin/status?check_upstream=true` | 🔑 | 維護工作狀態、可更新的工具；`check_upstream` 會向 GitHub 查新版 |
-| `POST /api/admin/update-tools` | 🔑 | 就地更新掃描器（`tools` 逗號分隔，可省略）；回 `202`，用 status 輪詢 |
-| `POST /api/admin/restart` | 🔑 | 重啟應用程式（每分鐘最多一次；會清空記憶體中的掃描記錄） |
 | `GET /api/admin/upgrades` | 🔑 | 升級狀態：`status`（階段、候選、通知事件、各工具查核結果、上次檢查時間）、`log`、`pending`、`upstream_check`。未啟用帳號時一律 403 |
-| `POST /api/admin/upgrades/check` | 🔑 | 要求主機立即檢查新版（同每日 08:00 流程）；`SAST_UPSTREAM_CHECK=false` 或已有作業進行中回 `409` |
 | `POST /api/admin/upgrades/apply` | 🔑 | 表單欄位 `candidate`＝目前候選的 id，核准套用；候選不符回 `409`。等待切換期間，新的掃描請求回 `503`（`Retry-After: 120`） |
 | `GET /api/mcp/config` | 👤 | 產生可直接貼上的 MCP 用戶端設定與 `.env` 範本 |
 | `GET /api/health` | 🌐 | 健康檢查，回 `{"status":"ok"}`（nginx 另提供 `/healthz`） |
@@ -740,7 +735,7 @@ Docker 部署預設**啟用登入**（`SAST_REQUIRE_AUTH=true`）。
   | 本機路徑掃描與「檢查專案」 | ❌ | ✅ |
   | 儲存／刪除自訂規則 | ❌ | ✅ |
   | 帳號管理、密碼原則、Log 保留天數 | ❌ | ✅ |
-  | 更新掃描器、重啟服務 | ❌ | ✅ |
+  | 核准套用掃描工具升級 | ❌ | ✅ |
 
 - **最後一位管理員無法被刪除、停用或降級**，避免把所有人鎖在門外。
 - 密碼以標準函式庫的 **scrypt** 雜湊（記憶體密集型），參數與雜湊一起保存，日後可提高成本而不讓舊帳號失效。
@@ -791,7 +786,7 @@ Docker 部署預設**啟用登入**（`SAST_REQUIRE_AUTH=true`）。
 - **隔離工作區**：每次掃描在自己的目錄執行，結束後清理。
 - **CSV 防公式注入**：以 `=`、`+`、`-`、`@` 開頭的欄位自動加前綴。
 - **供應鏈**：建置時下載的掃描器二進位驗 SHA-256；CI 的 GitHub Actions 以 commit hash 釘版。
-- **維護動作**：限管理員、固定參數陣列、同時只允許一個維護工作、重啟每分鐘最多一次、輸出先遮罩憑證與絕對路徑。
+- **掃描工具升級**：限管理員且必須啟用帳號；網頁只能核准主機已驗收的候選（不能指定版本、不能要求檢查），主機逐欄驗證請求、自行查核並等掃描結束才切換。
 
 > 應用程式容器**不掛 Docker socket**（即使 `:ro` 也擋不住 Docker API 寫入）。監控分頁改經 `docker-proxy`
 > （nginx，`nginx/docker-proxy.conf`）：只放行 4 條唯讀路徑，其餘（含讀取其他容器的檔案與 log、所有寫入）一律 403。

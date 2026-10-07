@@ -87,24 +87,6 @@ def test_the_change_log_survives_a_missing_events_module(docker, monkeypatch):
     docker._log_changes([{"name": "x", "state": "running"}])     # must not raise
 
 
-# ------------------------------------------------------------------ admin
-@pytest.mark.parametrize("answer", [OSError("offline"), ValueError("not JSON"),
-                                    "incomplete", ["not", "an", "object"]])
-def test_a_failed_release_check_is_unknown_not_an_error(monkeypatch, answer):
-    import http.client
-    from app import admin, releases
-    monkeypatch.setattr(admin, "_upstream_cache", {"at": 0.0, "versions": {}})
-
-    def fetch(url, timeout=10.0):
-        if answer == "incomplete":
-            raise http.client.IncompleteRead(b"{")
-        if isinstance(answer, Exception):
-            raise answer
-        return answer
-    monkeypatch.setattr(releases, "_fetch_json", fetch)
-    assert admin._latest_upstream() == {}
-
-
 # ------------------------------------------------------------------ rules
 def test_a_validator_that_cannot_start_is_reported(monkeypatch, tmp_path):
     from app import rules

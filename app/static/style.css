@@ -505,10 +505,8 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
   a[href]::after { content: ""; }
 }
 
-/* ---------------------------------------------------------------- operator
-   Maintenance actions run on the server, so the panel stays visually calm but
-   unmistakably distinct from the read-only monitoring above it. */
-#admin-panel { border-left: 3px solid var(--med); }
+/* ---------------------------------------------------------------- upgrades
+   The scanner-upgrade panel's buttons, state label and host log. */
 .admin-actions { display: flex; gap: .5rem; flex-wrap: wrap; margin: .5rem 0 .3rem; }
 .admin-state { font-size: .78rem; color: var(--muted); }
 .admin-state.busy { color: var(--med); }
@@ -539,8 +537,6 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 .btn.ghost:hover:not(:disabled) { color: var(--ink); border-color: var(--muted); }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 
-/* Result of the last update, so "do I need to restart?" is answered outright */
-.admin-outcome { margin-top: .5rem; font-size: .78rem; }
 .upg-tools { margin-top: .5rem; display: grid; gap: .2rem; font-size: .82rem; }
 .upg-row { display: flex; gap: .5rem; align-items: baseline; cursor: pointer; }
 .upg-row.upg-off { cursor: default; color: var(--muted); }
@@ -564,16 +560,6 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
   border: 1px solid var(--ok); color: var(--ok); background: transparent; max-width: 32rem;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .upg-banner.bad { border-color: var(--high); color: var(--high); }
-.admin-outcome-row { display: flex; gap: .5rem; align-items: baseline; padding: .12rem 0; }
-.admin-outcome .ao-tool { font-family: ui-monospace, monospace; min-width: 7rem; }
-.admin-outcome .ao-upgraded { color: var(--ok); font-weight: 600; }
-.admin-outcome .ao-data_updated { color: var(--ok); }
-.admin-outcome .ao-already_current, .admin-outcome .ao-unknown { color: var(--muted); }
-.admin-outcome .ao-failed { color: var(--high); font-weight: 600; }
-.admin-need-restart {
-  margin-top: .4rem; padding: .35rem .55rem; border-radius: 4px;
-  border-left: 2px solid var(--med); background: var(--bg); color: var(--ink);
-}
 
 /* The judgement rule is fixed, so it is a statement above the scan button
    rather than a panel of controls. */
@@ -893,19 +879,8 @@ h2 { font-size: 1.05rem; margin-bottom: .75rem; }
 
 /* Installed vs latest for the pinned scanners. "Needs a rebuild" is only
    useful next to whether it needs one now. */
-.admin-versions { display: flex; flex-direction: column; gap: .2rem; margin-top: .5rem; }
-.av-row {
-  display: flex; align-items: center; gap: .45rem;
-  font-size: .78rem; color: var(--muted);
-}
-.av-row .av-name { font-weight: 600; color: var(--ink); min-width: 7rem; }
-.av-row .av-have, .av-row .av-new { font-family: ui-monospace, monospace; }
-.av-row.av-old .av-new { color: var(--high); font-weight: 600; }
-.av-row .av-tag {
-  font-size: .68rem; border: 1px solid var(--high); color: var(--high);
-  border-radius: 999px; padding: 0 .4rem;
-}
-.av-row .av-ok { color: var(--ok); }
+.upg-row .av-name { font-weight: 600; color: var(--ink); min-width: 7rem; }
+.upg-row .av-have, .upg-row .av-new { font-family: ui-monospace, monospace; }
 
 /* A scan option that costs something: it sends the dependency list out, so
    it reads as a decision rather than a tick-box among the tools. */
