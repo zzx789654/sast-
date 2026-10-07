@@ -22,6 +22,13 @@
   - 說明文字判定會藏住 curl 指令與不加引號的 HTML 屬性 → 改白名單判定。
 - 已接受殘餘（Low）：候選 id 容器讀得到，可不經管理員套用「已驗收且仍有效」的候選（`架構.md` §2C）。
 
+### CI 報表判讀（G5，run 37638073675，commit 0bf0588；基準第 46 輪 37622017263）
+- semgrep／pip-audit／pip-audit-semgrep／osv／trivy-fs／gitleaks 0；trivy-image 與基準相同（373 個 CVE，無新增）。
+- bearer 6→8：新增 2 筆都在 `app/main.py` 本輪未改動的既有程式，只是行號位移 4 行，經判讀為誤判：
+  - `path_traversal` 1653：`_save_upload` 的目的地是伺服器產生的 job 目錄＋固定檔名 `upload.zip`；
+  - `regex_using_user_input` 1077：固定正規式比對 Host 標頭，比對前已限長、無巢狀量詞。
+  其餘 6 筆與基準相同（行號位移）。
+
 ### 實測
 - .145 容器（Python 3.11）706 passed、1 failed（`test_orchestrator_stores_map_and_verdict_is_unchanged`，容器內有真掃描器，已知環境差異）；`sast_updater.py`、`attack_surface.py` 行＋分支 100%；JS 測試 3 支通過。
 
