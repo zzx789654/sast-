@@ -4628,6 +4628,8 @@ def test_deploy_keeps_only_three_rollback_images():
     assert 'KEEP="${KEEP:-1}"' in prune
     # Counted per image, and never the image in use or the one to roll back to.
     assert "rank[$2]" in prune and "sast-studio:rollback-previous" in prune
+    # Equal timestamps (a build that reused every layer) must not decide it.
+    assert 'BEGIN { if (previous != "") rank[previous] = ++n }' in prune
     assert prune.rstrip().endswith("exit 0"), "pruning must never fail a deploy"
 
 

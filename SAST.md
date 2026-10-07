@@ -20,6 +20,10 @@
 - 第二～四輪：同名檔案鍵碰撞（High）、否定條件、巢狀放行、看不懂的路徑判斷、router 同時掛在無閘門的 app、絕對 import 尾端比對多檔、把 request 交給輔助函式——**全部改為不推論**並各有測試。第三、四輪判定 G3 達標。
 - 已接受殘餘（Low）：固定 `container_name` 使單機只能一套部署；`/containers/json` 的 filters 由呼叫端決定（容器名稱／映像清單可見，既有）；推論仍是啟發式（例如身分檢查函式以名稱判斷），畫面與 MCP 均標「推論，請確認」。
 
+### CI 報表判讀（G5，run 37622017263，commit be05763；基準第 45 輪 37461611822）
+- semgrep／pip-audit／pip-audit-semgrep／osv／trivy-fs／gitleaks 0；bearer 與基準完全相同。
+- trivy-image：CRITICAL 5（同）、HIGH 190→194。新增 4 筆皆為 **CVE-2026-19445**（Debian 13 系統套件 python3.13／libpython3.13-*，2026-09-30 公布、**尚無修補版本**），來自基底映像 OS 套件、因漏洞資料庫更新而出現，非本輪引入；SAST Studio 執行於 /usr/local 的 Python 3.11。列為上游未修補的既有項目。
+
 ### 實測
 - 本專案自我掃描：未偵測到認證 53→0（全域認證 43、公開 10，與 `_auth_gate` 實際放行一致）；計數風險 3→0（3 筆範例風險照列並標示）；外部連線 52→8。
 - Linux 633 passed（1 項既有環境差異）；`attack_surface.py` 行＋分支 100%；新增 `tests/test_failure_handling.py` 驗證收窄後的例外處理。

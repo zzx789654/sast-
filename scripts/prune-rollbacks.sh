@@ -12,15 +12,21 @@
 set -uo pipefail
 
 KEEP="${KEEP:-1}"
-protect="$(docker images --format '{{.ID}}' sast-studio:latest 2>/dev/null) \
-$(docker images --format '{{.ID}}' sast-studio:rollback-previous 2>/dev/null)"
+latest="$(docker images --format '{{.ID}}' sast-studio:latest 2>/dev/null)"
+previous="$(docker images --format '{{.ID}}' sast-studio:rollback-previous 2>/dev/null)"
 
+# The image behind rollback-previous is the newest rollback by definition and
+# takes the first place. Ranking it by creation time alone failed: a build
+# that reuses every layer gets the same timestamp to the second, and the tie
+# fell to comparing ids as text.
 docker images --format '{{.CreatedAt}}|{{.ID}}|{{.Repository}}:{{.Tag}}' sast-studio 2>/dev/null \
   | grep -E '[|]sast-studio:rollback-[0-9a-f]+$' \
   | sort -r \
-  | awk -F'|' -v keep="${KEEP}" -v protect="${protect}" '
+  | awk -F'|' -v keep="${KEEP}" -v latest="${latest}" -v previous="${previous}" '
+      BEGIN { if (previous != "") rank[previous] = ++n }
+      $2 == latest { next }
       { if (!($2 in rank)) rank[$2] = ++n
-        if (rank[$2] > keep && index(protect, $2) == 0) print $3 }' \
+        if (rank[$2] > keep) print $3 }' \
   | while read -r old; do
       docker rmi "${old}" >/dev/null 2>&1 && echo "  removed ${old}"
     done
