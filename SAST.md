@@ -33,6 +33,13 @@
   - el() 涵蓋 20 種標籤；
   - 無抑制註解。
 
+### CI 報表判讀（G5，run 37797815125，commit 6a497bf；基準第 48 輪 37643494543）
+- semgrep／pip-audit／osv／trivy-fs／gitleaks 0；bearer 10→2，只剩兩處 subprocess（待人工標記），沒有逾時，也沒有解析錯誤；trivy-image 373 個 CVE，與基準相同。
+
+### 部署後實測（G6，MCP scan b59e87bf538f）
+- 六個工具皆完整（coverage_gaps 空），共 3 項：Bearer 指令注入 ×2、Semgrep httpsconnection。
+- 這 3 項請在網頁的發現卡片上標為誤判，標記理由見上表。
+
 ### 攻擊面自我分析
 - 未偵測到登入檢查 0、全站統一檢查 19、公開 9、函式內檢查 22。
 - 修正分析器的錯誤：函式內匯入會覆蓋模組層級的名稱。
