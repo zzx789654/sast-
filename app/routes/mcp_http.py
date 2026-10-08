@@ -31,17 +31,15 @@ async def mcp_endpoint(request: Request) -> Response:
     # this endpoint from a victim's browser (DNS rebinding). A browser always
     # sends Origin on a cross-origin request; a CLI or an assistant sends none,
     # which is why absent is allowed and mismatched is not.
-    origin = request.headers.get("origin")
-    if origin and not _origin_allowed(origin, request):
+    if (origin := request.headers.get("origin")) and not _origin_allowed(origin, request):
         events.record("api", "mcp", level="warn", source=_client_ip(request),
                       target="/mcp", detail=f"origin refused: {origin[:80]}")
         raise HTTPException(403, "origin not allowed")
 
     user = current_user(request)
-    events.record("api", "mcp", actor=(user.username if user else ""),
-                  source=_client_ip(request), target="/mcp",
-                  detail="authenticated" if user else "unauthenticated")
     if config.REQUIRE_AUTH and user is None:
+        events.record("api", "mcp", actor="", source=_client_ip(request),
+                      target="/mcp", detail="unauthenticated")
         # 401 with the scheme, so a client knows what to send.
         return JSONResponse(
             {"jsonrpc": "2.0", "id": None,
@@ -49,6 +47,12 @@ async def mcp_endpoint(request: Request) -> Response:
             status_code=401,
             headers={"WWW-Authenticate": "Bearer"},
         )
+    # Logged after the check, not before: the refusal above logs itself, and
+    # the check staying first is what lets a reader -- or the attack-surface
+    # map -- see at a glance that nothing runs for an unknown caller.
+    events.record("api", "mcp", actor=(user.username if user else ""),
+                  source=_client_ip(request), target="/mcp",
+                  detail="authenticated" if user else "unauthenticated")
 
     try:
         message = await request.json()

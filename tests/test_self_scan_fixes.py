@@ -276,3 +276,26 @@ def test_the_gate_lets_through_only_the_named_front_end_files():
     gate = gate[:gate.index("\n\n\n")]
     for name in (n for n in main._APP_ASSETS if n.startswith("/js/")):
         assert f'"{name}"' in gate, f"{name} is not let through for the login page"
+
+
+# ------------------------------------------------- round 50
+def test_mcp_still_logs_both_kinds_of_caller(monkeypatch):
+    """The log moved after the token check (round 50); both cases still log."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from app import events
+    from app.config import config
+    from app.routes import mcp_http
+
+    logged = []
+    monkeypatch.setattr(events, "record", lambda *a, **k: logged.append(k.get("detail")))
+    monkeypatch.setattr(config, "REQUIRE_AUTH", True)
+    monkeypatch.setattr(mcp_http, "current_user", lambda request: None)
+
+    class Anon:
+        headers = {}
+        client = SimpleNamespace(host="127.0.0.1")
+
+    res = asyncio.run(mcp_http.mcp_endpoint(Anon()))
+    assert res.status_code == 401 and logged == ["unauthenticated"]

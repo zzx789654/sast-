@@ -364,7 +364,7 @@ docker compose up --build            # http://localhost:8080（nginx → FastAPI
 | 盤點項目 | 來源 |
 |---|---|
 | 後端路由 | Python（FastAPI、Flask、Django，以 `ast` 解析，含 `APIRouter(prefix=)`、`include_router`、`Blueprint`、Django `include()`）、Express（含 `app.use('/prefix', router)` 跨檔）、Spring（類別層 `@RequestMapping` 前綴）、Laravel（`Route::prefix()->group`、`routes/api.php` 自動 `/api`） |
-| 要登入嗎 | 路由上的宣告（`Depends(get_current_user)`、`@login_required`、`@PreAuthorize`、`->middleware('auth')`、Express 中介層等）、FastAPI 全站登入中介層（推測「要登入（全站統一檢查）」或「不用登入（全站檢查特別放行）」），以及處理函式一開始就呼叫的 `require_admin()`／`require_user()` 類檢查（「限管理員／要登入（函式內檢查）」） |
+| 要登入嗎 | 路由上的宣告（`Depends(get_current_user)`、`@login_required`、`@PreAuthorize`、`->middleware('auth')`、Express 中介層等）、FastAPI 全站登入中介層（推測「要登入（全站統一檢查）」或「不用登入（全站檢查特別放行）」），以及處理函式一開始就做的身分檢查：呼叫 `require_admin()`／`require_user()` 類函式，或「`current_user()` 取不到就回 401／403」（「限管理員／要登入（函式內檢查）」；受部署設定控制時標「設定可關閉」） |
 | 前端呼叫 | `fetch`、`axios`、jQuery、`XMLHttpRequest`、`WebSocket`、`EventSource`、`/api/` 開頭的字串 |
 | 對外連線 | 程式碼與設定檔中的網址、內網 IP、雲端中繼資料位址、雲端儲存、資料庫連線字串（**帳密遮罩為 `***`**） |
 | 密鑰 | 沿用 Gitleaks 的結果（已遮罩），標出位於前端檔案的密鑰 |

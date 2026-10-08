@@ -1494,3 +1494,121 @@ def test_module_imports_are_read_in_source_order():
         "else:\n    import f\nfinally:\n    import g\nmatch y:\n    case 1:\n        import h\n"
         "with z:\n    import i\ndef fn():\n    import nope\nclass K:\n    import nor\nimport j\n")
     assert [n.names[0].name for n in asf._module_imports(tree)] == list("acdefghij")
+
+
+# ------------------------------------------- round 50: "who is it; nobody? refuse"
+_HEAD = ("from fastapi import FastAPI, Request, HTTPException\n"
+         "from fastapi.responses import JSONResponse\n"
+         "from flask import abort\n"
+         "app = FastAPI()\n")
+
+
+@pytest.mark.parametrize("body, auth", [
+    # The /mcp shape: an Origin check that only looks and only refuses, then
+    # the identity, then a refusal when it is missing (with a setting: says so).
+    ("    if is_bad_origin(request.headers.get('origin')):\n"
+     "        log('refused')\n        raise HTTPException(403, 'origin')\n"
+     "    user = current_user(request)\n"
+     "    if config.REQUIRE_AUTH and user is None:\n"
+     "        events.record('refused')\n"
+     "        return JSONResponse({}, status_code=401)\n"
+     "    return {}\n", "user_in_handler_if_setting"),
+    ("    user = await get_current_user(request)\n    if not user:\n"
+     "        raise HTTPException(status_code=401)\n    return {}\n", "user_in_handler"),
+    ("    who = current_user(request)\n    if who is None:\n        abort(403)\n    return {}\n",
+     "user_in_handler"),
+    ("    user = current_user(request)\n    if REQUIRE_AUTH and user is None:\n"
+     "        raise HTTPException(401)\n", "user_in_handler_if_setting"),
+    ("    origin = 1\n", "not_detected"),
+    # Not enough to be sure:
+    ("    user = current_user(request)\n    log(user)\n    if user is None:\n"
+     "        raise HTTPException(401)\n", "not_detected"),          # something in between
+    ("    user = current_user(request)\n    if user is None:\n        return {}\n",
+     "not_detected"),                                                 # lets it through
+    ("    user = current_user(request)\n    if user is None:\n"
+     "        raise HTTPException(404)\n", "not_detected"),          # not a refusal code
+    ("    user = current_user(request)\n    if user is None:\n"
+     "        abort.later(401)\n", "not_detected"),
+    ("    user = current_user(request)\n    if user is None:\n"
+     "        raise HTTPException(401)\n    else:\n        pass\n", "not_detected"),
+    ("    user = current_user(request)\n    if user is None:\n        if x:\n"
+     "            return {}\n        raise HTTPException(401)\n", "not_detected"),
+    ("    user = current_user(request)\n    if user is None or DEBUG:\n"
+     "        raise HTTPException(401)\n", "not_detected"),          # or, not and
+    ("    user = current_user(request)\n    if user is None and other is None:\n"
+     "        raise HTTPException(401)\n", "not_detected"),          # two things missing
+    ("    user = current_user(request)\n    if f(x) and user is None:\n"
+     "        raise HTTPException(401)\n", "not_detected"),          # not a setting
+    ("    user = current_user(request)\n    if other is None:\n"
+     "        raise HTTPException(401)\n", "not_detected"),          # checks something else
+    ("    user = load_user(request)\n    if user is None:\n"
+     "        raise HTTPException(401)\n", "not_detected"),          # name says nothing
+    ("    a, b = current_user(request)\n    if a is None:\n"
+     "        raise HTTPException(401)\n", "not_detected"),
+    ("    user = current_user(request)\n", "not_detected"),
+    ("    user = current_user(request)\n    if user is None:\n        user = guest\n",
+     "not_detected"),                                                 # carries on as a guest
+    ("    if is_bad(request):\n        raise HTTPException(403)\n", "not_detected"),
+    ("    if is_bad(request):\n        raise\n    require_admin(request)\n", "not_detected"),
+    ("    user = current_user(request)\n    if user is None:\n"
+     "        raise HTTPException(code)\n", "not_detected"),
+    # Round 50 review, each once judged protected:
+    ("    if purge_everything(request):\n        raise HTTPException(403)\n"
+     "    require_admin(request)\n", "not_detected"),           # the condition acts
+    ("    if request.headers.get('x'):\n        db.drop_all()\n"
+     "        raise HTTPException(403)\n    require_admin(request)\n", "not_detected"),
+    ("    if await is_bad(request):\n        raise HTTPException(403)\n"
+     "    require_admin(request)\n", "not_detected"),
+    ("    user = current_user(request)\n    if strict and user is None:\n"
+     "        raise HTTPException(401)\n", "not_detected"),          # the caller's flag
+    ("    user = current_user(request)\n    if request.query_params and user is None:\n"
+     "        raise HTTPException(401)\n", "not_detected"),
+    ("    user = current_user(request)\n    if user and not user:\n"
+     "        raise HTTPException(401)\n", "not_detected"),          # never refuses
+    ("    user = current_user(request)\n    if user is None:\n"
+     "        job.abort(401)\n", "not_detected"),                    # some object's abort
+    ("    user = current_user(request)\n    if user is None:\n"
+     "        raise Denied(401)\n", "not_detected"),                 # not the framework's
+    ("    user = current_user(request)\n    if user is None:\n"
+     "        return JSONResponse(401)\n", "not_detected"),          # 401 is the content
+    ("    user = current_user(request)\n    if user is None:\n"
+     "        return HTTPException(401)\n", "not_detected"),         # returned, not raised
+])
+def test_who_is_it_then_refuse_nobody(tmp_path, body, auth):
+    root = write(tmp_path, {"app/main.py": (
+        _HEAD + "@app.post('/x')\nasync def x(request: Request):\n" + body)})
+    assert routes(asf.collect(root))[("POST", "/x")]["auth"] == auth
+
+
+def test_an_async_identity_must_be_awaited(tmp_path):
+    """A coroutine is never None, so the check after it never refuses."""
+    src = _HEAD + (
+        "async def get_current_user(request):\n    return None\n"
+        "@app.get('/a')\nasync def a(request: Request):\n"
+        "    user = get_current_user(request)\n    if user is None:\n"
+        "        raise HTTPException(401)\n"
+        "@app.get('/b')\nasync def b(request: Request):\n"
+        "    user = await get_current_user(request)\n    if user is None:\n"
+        "        raise HTTPException(401)\n")
+    found = routes(asf.collect(write(tmp_path, {"app/main.py": src})))
+    assert found[("GET", "/a")]["auth"] == "not_detected"
+    assert found[("GET", "/b")]["auth"] == "user_in_handler"
+
+
+def test_a_check_a_setting_can_turn_off_is_counted_and_flagged(tmp_path):
+    src = _HEAD + (
+        "@app.get('/a')\ndef a(request: Request):\n"
+        "    user = current_user(request)\n    if config.REQUIRE_AUTH and user is None:\n"
+        "        raise HTTPException(401)\n")
+    r = asf.collect(write(tmp_path, {"app/main.py": src}))
+    e = routes(r)[("GET", "/a")]
+    assert e["auth"] == "user_in_handler_if_setting" and "auth_inferred" in e["flags"]
+    assert r["summary"]["in_handler"] == 1 and r["summary"]["no_auth"] == 0
+
+
+def test_the_guard_helpers_alone():
+    """Without a module to say where names come from, nothing is a refusal."""
+    import ast
+    fn = ast.parse("def x(request):\n    user = current_user(request)\n"
+                   "    if user is None:\n        raise HTTPException(401)\n").body[0]
+    assert asf._handler_guard(fn) is None

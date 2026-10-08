@@ -318,7 +318,8 @@ function drawSurfaceGraph(surf) {
         line1 = clip(n.e.method + "  " + n.e.path, chars);
         line2 = [...flags].filter((f) => f !== "external").map(surfaceFlagLabel).join("・") ||
           (n.e.auth === "detected" ? "✓ " + t("surface.auth.detected")
-            : ["global", "public", "admin_in_handler", "user_in_handler"].includes(n.e.auth)
+            : ["global", "public", "admin_in_handler", "user_in_handler",
+                "user_in_handler_if_setting"].includes(n.e.auth)
               ? t("surface.auth." + n.e.auth) : n.e.framework);
         tip = n.e.method + " " + n.e.path + "\n" + n.e.file + ":" + n.e.line;
       }

@@ -44,8 +44,10 @@ NOTE = ("Static analysis: the code was read, not run. Not detectable: URLs "
         "inferences from source; so are 'app-wide auth' and 'public' (read "
         "from an http middleware that refuses with 401 or a login redirect -- "
         "a configuration switch can still turn it off), 'checked in the "
-        "function' (a require_admin()/require_user()-style call at the top of "
-        "the route's own function, judged by its name) and 'test/example' "
+        "function' (a require_admin()/require_user()-style call, or "
+        "current_user() followed by a 401/403 when it is missing, at the top "
+        "of the route's own function, judged by names; 'a setting can turn it "
+        "off' when the check depends on one) and 'test/example' "
         "(judged from the file's path). Confirm them by hand. Does not "
         "affect the verdict.")
 
@@ -109,28 +111,161 @@ _GUARD_RE = re.compile(
 _ADMIN_GUARD_RE = re.compile(r"admin|superuser|staff", re.IGNORECASE)
 
 
-def _handler_guard(fn: ast.AST) -> "str | None":
-    """"admin_in_handler" or "user_in_handler" when the function's first
-    statement -- after its docstring and any imports -- calls a guard.
-    Anything before it (an if that may return, a call that changes state)
-    means the guard may not run, or may run too late: then None."""
-    for stmt in fn.body:
-        if isinstance(stmt, (ast.Import, ast.ImportFrom)) or (
-                isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant)
-                and isinstance(stmt.value.value, str)):
-            continue
-        value = stmt.value if isinstance(stmt, (ast.Expr, ast.Assign, ast.AnnAssign)) else None
-        if isinstance(value, ast.Await):
-            value = value.value
-        if not isinstance(value, ast.Call):
-            return None
-        func = value.func
-        name = (func.attr if isinstance(func, ast.Attribute)
-                else func.id if isinstance(func, ast.Name) else "")
-        if not _GUARD_RE.match(name):
-            return None
-        return "admin_in_handler" if _ADMIN_GUARD_RE.search(name) else "user_in_handler"
+# Calls that only say who is asking (None when nobody signed in), for the
+# "user = current_user(request); if user is None: refuse" form.
+_IDENTITY_RE = re.compile(
+    r"^(get_)?(current_user|authenticated_user|request_user|session_user)$", re.IGNORECASE)
+# How a request is refused, by where the name comes from: raised, returned
+# (status_code= only: a Response's first argument is its content), called.
+_RAISE_DENY = {"HTTPException"}
+_RETURN_DENY = {"JSONResponse", "Response", "PlainTextResponse"}
+_CALL_DENY = {"abort"}
+_DENY_MODULES = {"fastapi", "starlette", "flask", "werkzeug"}
+# Calls an "only refuses" if may make in its condition: reading a header or
+# asking a yes/no question by name -- not anything that may change state.
+_PREDICATE_RE = re.compile(r"^_?(is|has)_|_(allowed|valid|ok)$", re.IGNORECASE)
+# ... and in its body before the refusal: logging, nothing else.
+_LOG_CALLS = {"record", "log", "debug", "info", "warning", "error", "exception", "critical"}
+
+
+#: The "checked in the function" values _handler_guard gives.
+IN_HANDLER = ("admin_in_handler", "user_in_handler", "user_in_handler_if_setting")
+
+
+class _GuardContext:
+    """What a module tells _handler_guard: which deny names really come from
+    a web framework, and which functions are async (and must be awaited)."""
+
+    def __init__(self, tree: ast.Module):
+        self.deny = set()
+        for node in _module_imports(tree):
+            if isinstance(node, ast.ImportFrom) and node.module and \
+                    node.module.split(".")[0] in _DENY_MODULES:
+                self.deny |= {a.asname or a.name for a in node.names}
+        self.is_async = {n.name for n in ast.walk(tree)
+                         if isinstance(n, ast.AsyncFunctionDef)}
+
+
+def _called(node) -> str:
+    """The name a (possibly awaited) call calls, or ""."""
+    if isinstance(node, ast.Await):
+        node = node.value
+    if not isinstance(node, ast.Call):
+        return ""
+    func = node.func
+    return (func.attr if isinstance(func, ast.Attribute)
+            else func.id if isinstance(func, ast.Name) else "")
+
+
+def _refuses(stmt, gctx: _GuardContext) -> bool:
+    """raise/return/abort with a 401 or a 403 -- the request ends here -- by
+    a name imported from a web framework."""
+    if isinstance(stmt, ast.Raise):
+        call, allowed = stmt.exc, _RAISE_DENY
+    elif isinstance(stmt, ast.Return):
+        call, allowed = stmt.value, _RETURN_DENY
+    elif isinstance(stmt, ast.Expr):
+        call, allowed = stmt.value, _CALL_DENY
+    else:
+        return False
+    if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+            and call.func.id in allowed and call.func.id in gctx.deny):
+        return False
+    codes = [k.value for k in call.keywords if k.arg in ("status_code", "code")]
+    if allowed is not _RETURN_DENY:
+        codes += call.args[:1]
+    return any(isinstance(c, ast.Constant) and c.value in (401, 403) for c in codes)
+
+
+def _reads_only(expr) -> bool:
+    """An expression that only looks: names, attributes, comparisons, and
+    calls that read a header or answer yes/no by their name."""
+    for node in ast.walk(expr):
+        if isinstance(node, ast.Call):
+            func = node.func
+            reads_header = (isinstance(func, ast.Attribute) and func.attr == "get"
+                            and isinstance(func.value, ast.Attribute)
+                            and func.value.attr in ("headers", "cookies", "query_params"))
+            if not (reads_header or _PREDICATE_RE.search(_called(node))):
+                return False
+        elif isinstance(node, (ast.Await, ast.Lambda)):
+            return False
+    return True
+
+
+def _only_refuses(stmt, gctx: _GuardContext) -> bool:
+    """An if that only looks, and when taken can only log and refuse."""
+    if not (isinstance(stmt, ast.If) and not stmt.orelse and stmt.body
+            and _refuses(stmt.body[-1], gctx) and _reads_only(stmt.test)):
+        return False
+    return all(isinstance(s, ast.Expr) and _called(s.value) in _LOG_CALLS
+               for s in stmt.body[:-1])
+
+
+def _setting(node, name: str) -> bool:
+    """A deployment setting: config.X / settings.X, or an UPPER_CASE name --
+    not a parameter the caller fills in, not the identity itself."""
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        return node.value.id.lower() in ("config", "settings", "conf")
+    return isinstance(node, ast.Name) and node.id.isupper() and node.id != name
+
+
+def _rejects_missing(test, name: str) -> "tuple[bool, bool] | None":
+    """(True, only because of a setting) when `test` is `name is None` or
+    `not name`, or either joined by `and` to deployment settings."""
+    def missing(t):
+        return (isinstance(t, ast.UnaryOp) and isinstance(t.op, ast.Not)
+                and isinstance(t.operand, ast.Name) and t.operand.id == name) or (
+            isinstance(t, ast.Compare) and isinstance(t.left, ast.Name)
+            and t.left.id == name and len(t.ops) == 1 and isinstance(t.ops[0], ast.Is)
+            and isinstance(t.comparators[0], ast.Constant)
+            and t.comparators[0].value is None)
+    if missing(test):
+        return True, False
+    if (isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And)
+            and sum(missing(v) for v in test.values) == 1
+            and all(missing(v) or _setting(v, name) for v in test.values)):
+        return True, True
     return None
+
+
+def _handler_guard(fn: ast.AST, gctx: "_GuardContext | None" = None) -> "str | None":
+    """"admin_in_handler" or "user_in_handler" -- "user_in_handler_if_setting"
+    when a deployment setting can turn it off -- when the function begins by
+    turning away a caller who is not allowed. After its docstring, imports
+    and any ifs that only look and can only refuse (an Origin check), the
+    next statement must be one of:
+      - a guard call: require_admin(request), ensure_logged_in(), ...;
+      - `user = current_user(request)` (awaited, when that function is async
+        in this module) followed at once by an if that refuses (401/403,
+        by a name imported from the web framework) when `user` is None.
+    Anything else first -- an if that may return, a call that changes
+    state -- means the check may not run, or may run too late: then None.
+    Every way a guess here can go wrong must go towards "not detected"."""
+    gctx = gctx or _GuardContext(ast.Module(body=[], type_ignores=[]))
+    body = [s for s in fn.body if not (
+        isinstance(s, (ast.Import, ast.ImportFrom)) or (
+            isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant)
+            and isinstance(s.value.value, str)))]
+    while body and _only_refuses(body[0], gctx):
+        body = body[1:]
+    if not body:
+        return None
+    stmt = body[0]
+    value = stmt.value if isinstance(stmt, (ast.Expr, ast.Assign, ast.AnnAssign)) else None
+    name = _called(value)
+    if _GUARD_RE.match(name):
+        return "admin_in_handler" if _ADMIN_GUARD_RE.search(name) else "user_in_handler"
+    if not (_IDENTITY_RE.match(name) and isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name)
+            and len(body) > 1 and _only_refuses(body[1], gctx)):
+        return None
+    if name in gctx.is_async and not isinstance(value, ast.Await):
+        return None                     # a coroutine is never None
+    found = _rejects_missing(body[1].test, stmt.targets[0].id)
+    if found is None:
+        return None
+    return "user_in_handler_if_setting" if found[1] else "user_in_handler"
 
 
 # Hosts that appear in nearly every project and are not connections:
@@ -676,6 +811,7 @@ def extract_python(rel: str, text: str, ctx: "_Context") -> None:
     if framework == "django":
         _django_urls(rel, tree, ctx)
         return
+    gctx = _GuardContext(tree)
     # A gate in a test or an example protects nothing that ships.
     if framework == "fastapi" and not is_sample(rel, _extra_sample_paths()):
         _global_auth(tree, rel, stem, imports, ctx)
@@ -715,7 +851,8 @@ def extract_python(rel: str, text: str, ctx: "_Context") -> None:
                 methods = [verb.upper()]
             prefix, r_auth = routers.get(obj, ("", False))
             auth = (other_auth or dep_auth or r_auth
-                    or _has_auth_dep(_kw(dec, "dependencies")) or _handler_guard(node))
+                    or _has_auth_dep(_kw(dec, "dependencies"))
+                    or _handler_guard(node, gctx))
             for m in methods:
                 ctx.add_route(m, _join(prefix, path), framework, rel, dec.lineno,
                               auth, mount_key=(stem, obj))
@@ -1381,7 +1518,7 @@ def correlate(ctx: _Context, findings: "list | None") -> dict:
         r["flags"] = []
         r["sample"] = is_sample(r["file"], extra)
         gate = r.pop("_gate", None)
-        if r["auth"] in ("admin_in_handler", "user_in_handler"):
+        if r["auth"] in IN_HANDLER:
             # Read from a function name: an inference, like the gate below.
             r["flags"].append("auth_inferred")
         elif gate is not None and r["auth"] == "not_detected":
@@ -1520,7 +1657,7 @@ def correlate(ctx: _Context, findings: "list | None") -> dict:
         "no_auth": sum("no_auth_detected" in e["flags"] for e in backend),
         "global_auth": sum(e["auth"] == "global" for e in backend),
         "public": sum(e["auth"] == "public" for e in backend),
-        "in_handler": sum(e["auth"] in ("admin_in_handler", "user_in_handler")
+        "in_handler": sum(e["auth"] in IN_HANDLER
                           for e in backend),
         "unreferenced": sum("unreferenced" in e["flags"] for e in backend),
         "undocumented": sum("undocumented" in e["flags"] for e in backend),
