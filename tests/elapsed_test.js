@@ -1,6 +1,12 @@
 // The formatter's real source against the values that prompted the change.
 const fs = require("fs");
-const src = fs.readFileSync(__dirname + "/../app/static/app.js", "utf8");
+const src = (() => {
+  // The front-end as index.html loads it (split into static/js/ in round 49).
+  const dir = __dirname + "/../app/static/";
+  const html = fs.readFileSync(dir + "index.html", "utf8");
+  return [...html.matchAll(/<script src="\/js\/([^"]+)"/g)]
+    .map((m) => fs.readFileSync(dir + "js/" + m[1], "utf8")).join("\n");
+})();
 const i = src.indexOf("function elapsed(ms)");
 const elapsed = eval("(" + src.slice(i, src.indexOf("\n}", i) + 2) + ")");
 

@@ -43,7 +43,9 @@ NOTE = ("Static analysis: the code was read, not run. Not detectable: URLs "
         "how often, with what). 'no auth detected' and 'unreferenced' are "
         "inferences from source; so are 'app-wide auth' and 'public' (read "
         "from an http middleware that refuses with 401 or a login redirect -- "
-        "a configuration switch can still turn it off) and 'test/example' "
+        "a configuration switch can still turn it off), 'checked in the "
+        "function' (a require_admin()/require_user()-style call at the top of "
+        "the route's own function, judged by its name) and 'test/example' "
         "(judged from the file's path). Confirm them by hand. Does not "
         "affect the verdict.")
 
@@ -93,6 +95,43 @@ AUTH_RE = re.compile(
     r"auth|login|jwt|token|current_user|permission|role|guard|protect|"
     r"verify|session|security|isauthenticated|ensureloggedin|passport|admin",
     re.IGNORECASE)
+
+# A call at the top of a route function that refuses an unauthenticated (or
+# non-admin) caller: require_admin(request), ensure_logged_in(), ... Matched
+# on the called function's own name, which must say both "require/ensure" and
+# who. check_/verify_/assert_ are not enough: such a function often only
+# returns a yes or no, which a bare call throws away. A name like
+# create_token() is not a guard either.
+_GUARD_RE = re.compile(
+    r"^(require|ensure)_?(admin|administrator|superuser|staff|"
+    r"user|login|logged_?in|signed_?in|auth|authenticated)$|^login_required$",
+    re.IGNORECASE)
+_ADMIN_GUARD_RE = re.compile(r"admin|superuser|staff", re.IGNORECASE)
+
+
+def _handler_guard(fn: ast.AST) -> "str | None":
+    """"admin_in_handler" or "user_in_handler" when the function's first
+    statement -- after its docstring and any imports -- calls a guard.
+    Anything before it (an if that may return, a call that changes state)
+    means the guard may not run, or may run too late: then None."""
+    for stmt in fn.body:
+        if isinstance(stmt, (ast.Import, ast.ImportFrom)) or (
+                isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant)
+                and isinstance(stmt.value.value, str)):
+            continue
+        value = stmt.value if isinstance(stmt, (ast.Expr, ast.Assign, ast.AnnAssign)) else None
+        if isinstance(value, ast.Await):
+            value = value.value
+        if not isinstance(value, ast.Call):
+            return None
+        func = value.func
+        name = (func.attr if isinstance(func, ast.Attribute)
+                else func.id if isinstance(func, ast.Name) else "")
+        if not _GUARD_RE.match(name):
+            return None
+        return "admin_in_handler" if _ADMIN_GUARD_RE.search(name) else "user_in_handler"
+    return None
+
 
 # Hosts that appear in nearly every project and are not connections:
 # XML namespaces, schema ids, licence headers, documentation examples.
@@ -465,6 +504,31 @@ def _gate_publics(fn, module_sets: dict) -> "tuple[set, set] | None":
     return exact, prefixes
 
 
+def _module_imports(tree: ast.Module):
+    """The import statements that bind module-level names: at the top level,
+    or inside a top-level if/try/with -- not inside a function or a class.
+    A function's own "from . import x" names a different x for that function
+    only; letting it overwrite the module's x sent a router to the wrong file
+    (found on this project's own scan, round 49).
+
+    In source order, so a name bound twice ends up as Python would bind it.
+    """
+    blocks = (ast.If, ast.Try, ast.With, ast.Match) + (
+        (ast.TryStar,) if hasattr(ast, "TryStar") else ())
+    stack = list(reversed(tree.body))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            yield node
+        elif isinstance(node, blocks):
+            children = []
+            for field in ("body", "handlers", "cases", "orelse", "finalbody"):
+                for child in getattr(node, field, []) or []:
+                    children.extend(child.body if isinstance(
+                        child, (ast.ExceptHandler, ast.match_case)) else [child])
+            stack.extend(reversed(children))
+
+
 def _module_file(rel: str, level: int, parts: list) -> "tuple[str, bool] | None":
     """The file a module import names: (path, absolute). For a relative
     import, the path from the importing file's package; for an absolute one,
@@ -508,12 +572,12 @@ def _global_auth(tree: ast.Module, rel: str, stem: str, imports: dict,
     module_sets = _module_sets(tree)
     # name -> (level, module parts, imported name), for finding a router's file
     origins = {}
-    for node in ast.walk(tree):
+    for node in _module_imports(tree):
         if isinstance(node, ast.ImportFrom):
             for a in node.names:
                 origins[a.asname or a.name] = (
                     node.level, node.module.split(".") if node.module else [], a.name)
-        elif isinstance(node, ast.Import):
+        else:                               # a plain "import x.y"
             for a in node.names:
                 parts = a.name.split(".")
                 origins[a.asname or parts[0]] = (0, parts[:-1], parts[-1])
@@ -579,12 +643,13 @@ def extract_python(rel: str, text: str, ctx: "_Context") -> None:
     # name -> (prefix, router-level auth); "from .users import router as r"
     routers: dict[str, tuple[str, bool]] = {}
     imports: dict[str, tuple[str, str]] = {}
-    for node in ast.walk(tree):
-        ctx.tick()
+    for node in _module_imports(tree):
         if isinstance(node, ast.ImportFrom) and node.module is not None:
             mod = node.module.split(".")[-1]
             for a in node.names:
                 imports[a.asname or a.name] = (mod, a.name)
+    for node in ast.walk(tree):
+        ctx.tick()
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
             call = node.value
             ctor = _name_of(call.func)
@@ -649,7 +714,8 @@ def extract_python(rel: str, text: str, ctx: "_Context") -> None:
             else:
                 methods = [verb.upper()]
             prefix, r_auth = routers.get(obj, ("", False))
-            auth = other_auth or dep_auth or r_auth or _has_auth_dep(_kw(dec, "dependencies"))
+            auth = (other_auth or dep_auth or r_auth
+                    or _has_auth_dep(_kw(dec, "dependencies")) or _handler_guard(node))
             for m in methods:
                 ctx.add_route(m, _join(prefix, path), framework, rel, dec.lineno,
                               auth, mount_key=(stem, obj))
@@ -1189,7 +1255,10 @@ class _Context:
             self.routes[key] = {
                 "method": method, "path": path, "side": "backend",
                 "framework": framework, "file": rel, "line": line,
-                "auth": "detected" if auth else "not_detected",
+                # True: declared on the route; a string: the guard found in
+                # the function (see _handler_guard); False: nothing seen.
+                "auth": auth if isinstance(auth, str) else
+                        "detected" if auth else "not_detected",
                 "_mount": mount_key, "_js": js_file,
             }
 
@@ -1312,7 +1381,10 @@ def correlate(ctx: _Context, findings: "list | None") -> dict:
         r["flags"] = []
         r["sample"] = is_sample(r["file"], extra)
         gate = r.pop("_gate", None)
-        if gate is not None and r["auth"] == "not_detected":
+        if r["auth"] in ("admin_in_handler", "user_in_handler"):
+            # Read from a function name: an inference, like the gate below.
+            r["flags"].append("auth_inferred")
+        elif gate is not None and r["auth"] == "not_detected":
             exact, prefixes = gate
             public = r["path"] in exact or any(r["path"].startswith(p) for p in prefixes)
             r["auth"] = "public" if public else "global"
@@ -1448,6 +1520,8 @@ def correlate(ctx: _Context, findings: "list | None") -> dict:
         "no_auth": sum("no_auth_detected" in e["flags"] for e in backend),
         "global_auth": sum(e["auth"] == "global" for e in backend),
         "public": sum(e["auth"] == "public" for e in backend),
+        "in_handler": sum(e["auth"] in ("admin_in_handler", "user_in_handler")
+                          for e in backend),
         "unreferenced": sum("unreferenced" in e["flags"] for e in backend),
         "undocumented": sum("undocumented" in e["flags"] for e in backend),
         "unknown_backend": sum("unknown_backend" in e["flags"] for e in real),

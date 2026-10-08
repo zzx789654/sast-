@@ -364,12 +364,12 @@ docker compose up --build            # http://localhost:8080（nginx → FastAPI
 | 盤點項目 | 來源 |
 |---|---|
 | 後端路由 | Python（FastAPI、Flask、Django，以 `ast` 解析，含 `APIRouter(prefix=)`、`include_router`、`Blueprint`、Django `include()`）、Express（含 `app.use('/prefix', router)` 跨檔）、Spring（類別層 `@RequestMapping` 前綴）、Laravel（`Route::prefix()->group`、`routes/api.php` 自動 `/api`） |
-| 認證偵測 | `Depends(get_current_user)`、`@login_required`、`@PreAuthorize`、`->middleware('auth')`、Express 中介層等；只回報「偵測到／未偵測到」 |
+| 要登入嗎 | 路由上的宣告（`Depends(get_current_user)`、`@login_required`、`@PreAuthorize`、`->middleware('auth')`、Express 中介層等）、FastAPI 全站登入中介層（推測「要登入（全站統一檢查）」或「不用登入（全站檢查特別放行）」），以及處理函式一開始就呼叫的 `require_admin()`／`require_user()` 類檢查（「限管理員／要登入（函式內檢查）」） |
 | 前端呼叫 | `fetch`、`axios`、jQuery、`XMLHttpRequest`、`WebSocket`、`EventSource`、`/api/` 開頭的字串 |
 | 對外連線 | 程式碼與設定檔中的網址、內網 IP、雲端中繼資料位址、雲端儲存、資料庫連線字串（**帳密遮罩為 `***`**） |
 | 密鑰 | 沿用 Gitleaks 的結果（已遮罩），標出位於前端檔案的密鑰 |
 
-**標記**：未偵測到認證、無人呼叫（後端有但前端沒呼叫；專案沒有前端呼叫時不判斷）、未列於 API 文件（專案有 OpenAPI/Swagger 檔時）、後端找不到（前端呼叫的路徑在後端沒有對應）。**風險**：前端直連內網、雲端中繼資料、資料庫，或前端檔案含密鑰。
+**提醒**（滑鼠移到每個值上會顯示說明）：看不到登入檢查、系統推測請確認（「要登入嗎」是推測的）、網頁沒用到（後端有但前端沒呼叫；專案沒有前端呼叫時不判斷）、文件沒寫（專案有 OpenAPI/Swagger 檔時）、呼叫的 API 不存在（前端呼叫的路徑在後端沒有對應）；測試／範例檔與「只是文字裡提到」的網址照列但不計數。**風險**：前端直連內網、雲端中繼資料、資料庫，或前端檔案含密鑰。
 
 **畫面**：上方是限制說明與數字卡片（點卡片可篩選），中間是**關聯圖**（前端的外部連線 ← 前端檔案 → 端點 → 後端檔案 → 後端的外部連線，每個外部主機與連到它的程式排在同一列；點方塊只留下與它相連的線，沒有線連進來的端點就是沒人呼叫的端點；端點超過 60 個會依路徑前綴分組，點分組展開）或**心智圖**，下方是風險、端點與對外連線明細。報告頁另有「攻擊面摘要」卡片，所以匯出 PDF 會帶到。
 
@@ -716,7 +716,7 @@ curl -T project.zip -H "Authorization: Bearer sastup_..." http://你的主機:80
 - ZIP 走和網頁上傳完全相同的流程與限制（`SAST_MAX_UPLOAD_BYTES`、zip-slip 防護、解壓後檔數／大小上限），助理不會比網頁使用者多任何能力。
 - MCP 發起的掃描歸屬到權杖擁有者，和其他掃描一樣出現在報告分頁。
 - 端點會驗證 `Origin` 以防 DNS rebinding：同主機自動允許，其他來源用 `SAST_MCP_ORIGINS` 指定。
-- 正式部署請設定 `SAST_PUBLIC_URL`，讓**設定 → MCP** 產生的設定檔指向正確位址。
+- **經 nginx 部署（Docker）必須設定 `SAST_PUBLIC_URL`**（例如 `http://192.168.99.145:8080`）：第 49 輪起 nginx 不再轉交瀏覽器輸入的主機名稱，系統只從這個設定知道自己的位址——用來檢查表單來源（登入）與產生**設定 → MCP** 的網址。未設定時只有 `http://localhost:8080` 能登入，`deploy.sh` 會提示。
 
 ---
 
@@ -753,7 +753,7 @@ Docker 部署預設**啟用登入**（`SAST_REQUIRE_AUTH=true`）。
 | `SAST_UPSTREAM_CHECK` | `true` | 是否查詢 GitHub／PyPI 上的新版本（網頁與主機每日檢查）；`false` 時都不連外 |
 | `SAST_UPGRADE_CHECK_AT` / `SAST_UPGRADE_TZ` | `08:00` / `Asia/Taipei` | 主機每日檢查的時間與時區（讀主機 `.env`） |
 | `SAST_ADMIN_USER` / `SAST_ADMIN_PASSWORD` | `admin` / 自動產生 | 首次建立的管理員 |
-| `SAST_PUBLIC_URL` | 空 | 對外網址，例如 `https://sast.example.com`；用於產生 MCP 設定 |
+| `SAST_PUBLIC_URL` | 空 | 對外網址，例如 `https://sast.example.com`。**經 nginx 部署時必填**：登入的表單來源檢查與 MCP 設定網址都以它為準（第 49 輪起不信任轉交的主機標頭） |
 | `SAST_ALLOWED_HOSTS` | 空 | 未設 `SAST_PUBLIC_URL` 時允許的主機名稱（逗號分隔） |
 | `SAST_MCP_ORIGINS` | 空 | 額外允許呼叫 `/mcp` 的 Origin（`*`＝全部） |
 | `SAST_COOKIE_SECURE` | 自動 | 強制 Cookie 的 `Secure` 旗標（HTTPS 時自動開） |

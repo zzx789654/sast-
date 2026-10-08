@@ -3,6 +3,40 @@
 > 每次安全確認（G3）追加一則，最新在上，不覆蓋。命中密鑰只記位置與類型。
 > 第 42 輪以前的紀錄在 `待修改.md` 各輪與 `lessons.md`。
 
+## [2026-10-08] 第 49 輪 — 自我掃描告警全部處理、完整分析
+
+### 起點（MCP scan 54a0e6067dde）
+- 17 項：Bearer Critical 2／High 8／Medium 2、Semgrep High 3／Medium 2。
+- 未分析完：Bearer 略過 `app.js`（逾時）、Semgrep 部分解析 `deploy.sh`。
+
+### 做法與結果（.145 以 SAST Studio 實際規則集重跑）
+| 類別 | 處理 | 結果 |
+|---|---|---|
+| 未分析完 | Bearer 2.1.1 每檔固定 30 秒、無參數可調（實測）：前端拆 6 檔、`main.py`（單檔 28 秒）拆 main／web／routes ×4；`deploy.sh` 改寫 `if ! { …; }` | **0 逾時、0 解析錯誤** |
+| SQL ×3 | 固定語句（json_each、`:x IS NULL OR`） | 消失 |
+| 例外訊息、正規式 | 固定文字；逐字元比對主機 | 消失 |
+| 檔案權限 ×2 | umask 決定、不再 chmod；帶執行位元者刪除 | 消失 |
+| 路徑 ×7 | 目錄 fd 操作、os.open（O_EXCL／O_NOFOLLOW）、列舉工作區後刪除、job id 驗證 | 消失 |
+| nginx Host | 不再轉交 `X-Forwarded-Host`，改用 `SAST_PUBLIC_URL` | 消失 |
+| 新報出：前端 4 項 | `el()` 白名單以字面名稱建立元素、清空後 appendChild、console 只記固定文字 | 消失 |
+| 仍報：Bearer 指令注入 ×2 | 白名單＋絕對路徑＋`shell=False`；Bearer 對任何非字面值參數的 subprocess 都報（實測與參數順序、`shell=False`、`executable=` 無關） | **人工標記為誤判** |
+| 仍報：Semgrep httpsconnection | 已明確傳入 `ssl.create_default_context()` | **人工標記為誤判** |
+
+- 抑制註解 0，密鑰 0。
+
+### 人工複核（獨立子代理）
+- Critical 0、High 0、Medium 2、Low 7，全部修正並補測試（明細見 `待修改.md` 第 49 輪）。
+- 已確認：
+  - 拆分後 52 條路由不缺不重、靜態 mount 仍在最後；
+  - events.query 與舊版等價；
+  - run_command 白名單涵蓋所有呼叫者；
+  - el() 涵蓋 20 種標籤；
+  - 無抑制註解。
+
+### 攻擊面自我分析
+- 未偵測到登入檢查 0、全站統一檢查 19、公開 9、函式內檢查 22。
+- 修正分析器的錯誤：函式內匯入會覆蓋模組層級的名稱。
+
 ## [2026-10-07] 第 48 輪 — 移除與每日檢查重疊的手動按鈕
 
 ### 自動掃描

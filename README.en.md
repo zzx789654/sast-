@@ -575,7 +575,7 @@ send its bearer token. Deriving that from the `Host` header would let whoever
 sets the header choose the destination, so set the address explicitly:
 
 ```bash
-SAST_PUBLIC_URL=https://sast.example.com
+SAST_PUBLIC_URL=https://sast.example.com   # required behind nginx (round 49): sign-in and MCP settings use it
 ```
 
 Without it, the host is taken from the request but only if it is in

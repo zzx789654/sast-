@@ -1359,3 +1359,138 @@ def test_a_private_address_in_frontend_prose_is_listed_not_counted(tmp_path):
     r = asf.collect(root)
     assert [(x["detail"], x["sample"]) for x in r["risks"]] == [("10.2.3.4", True)]
     assert r["summary"]["risks"] == 0
+
+
+# ------------------------------------------------- round 49: checks in the handler
+def test_a_guard_called_at_the_top_of_the_handler_is_recognised(tmp_path):
+    root = write(tmp_path, {"app/main.py": (
+        "from fastapi import FastAPI, Request\n"
+        "app = FastAPI()\n"
+        "@app.post('/policy')\n"
+        "async def policy(request: Request):\n"
+        "    '''Administrators only.'''\n"
+        "    require_admin(request)\n"
+        "    return {}\n"
+        "@app.get('/me')\n"
+        "async def me(request: Request):\n"
+        "    user = await ensure_logged_in(request)\n"
+        "    return user\n"
+        "@app.get('/mine')\n"
+        "def mine(request: Request):\n"
+        "    who: str = auth.require_user(request)\n"
+        "    return who\n"
+        "@app.get('/maybe')\n"
+        "def maybe(request: Request):\n"
+        "    if request.query_params.get('x'):\n"
+        "        require_admin(request)\n"
+        "    return {}\n"
+        "@app.get('/late')\n"
+        "def late(request: Request):\n"
+        "    return {}\n"
+        "    require_admin(request)\n"
+        "@app.get('/token')\n"
+        "def token(request: Request):\n"
+        "    create_token(request)\n"
+        "    return {}\n"
+        "@app.get('/odd')\n"
+        "def odd(request: Request):\n"
+        "    handlers[0](request)\n"
+        "    return {}\n")})
+    r = asf.collect(root)
+    auth = {path: e["auth"] for (_m, path), e in routes(r).items()}
+    assert auth["/policy"] == "admin_in_handler"
+    assert auth["/me"] == "user_in_handler"
+    assert auth["/mine"] == "user_in_handler"
+    for unsure in ("/maybe", "/late", "/token", "/odd"):
+        assert auth[unsure] == "not_detected", unsure
+    flags = {path: e["flags"] for (_m, path), e in routes(r).items()}
+    assert "auth_inferred" in flags["/policy"] and "no_auth_detected" not in flags["/policy"]
+    assert r["summary"]["in_handler"] == 3 and r["summary"]["no_auth"] == 4
+
+
+def test_a_check_in_the_handler_beats_the_gates_pass(tmp_path):
+    """The gate lets the path through; the function itself still refuses --
+    POST /api/auth/policy, as round 49's self-scan showed it."""
+    root = write(tmp_path, {"app/main.py": (
+        "from fastapi import FastAPI, Request\n"
+        "from fastapi.responses import JSONResponse\n"
+        "app = FastAPI()\n"
+        "PUBLIC = {'/api/auth/policy'}\n"
+        "@app.middleware('http')\n"
+        "async def gate(request: Request, call_next):\n"
+        "    if request.url.path in PUBLIC:\n"
+        "        return await call_next(request)\n"
+        "    return JSONResponse({}, status_code=401)\n"
+        "@app.get('/api/auth/policy')\n"
+        "def read_policy():\n"
+        "    return {}\n"
+        "@app.post('/api/auth/policy')\n"
+        "def write_policy(request: Request):\n"
+        "    require_admin(request)\n"
+        "    return {}\n")})
+    auth = {k: e["auth"] for k, e in routes(asf.collect(root)).items()}
+    assert auth[("GET", "/api/auth/policy")] == "public"
+    assert auth[("POST", "/api/auth/policy")] == "admin_in_handler"
+
+
+def test_an_import_inside_a_function_does_not_redirect_a_router(tmp_path):
+    """Round 49, on this project's own code: main.py includes routes/accounts.py
+    as "accounts" and, inside one function, imports a different accounts
+    module. The router must still be found -- and gated."""
+    root = write(tmp_path, {
+        "app/main.py": GATE + (
+            "from .routes import accounts\n"
+            "app.include_router(accounts.router)\n"
+            "with open(__file__):\n"
+            "    from .routes import more\n"
+            "try:\n"
+            "    from .routes import extra\n"
+            "except ImportError:\n"
+            "    extra = None\n"
+            "else:\n"
+            "    app.include_router(extra.router)\n"
+            "def startup():\n"
+            "    from . import accounts\n"
+            "    accounts.init_db()\n"),
+        "app/accounts.py": "def init_db(): ...\n",
+        "app/routes/accounts.py": (
+            "from fastapi import APIRouter\nrouter = APIRouter()\n"
+            "@router.post('/api/auth/logout')\ndef logout(): ...\n"),
+        "app/routes/extra.py": (
+            "from fastapi import APIRouter\nrouter = APIRouter()\n"
+            "@router.get('/api/extra')\ndef extra(): ...\n"),
+    })
+    auth = {path: e["auth"] for (_m, path), e in routes(asf.collect(root)).items()}
+    assert auth["/api/auth/logout"] == "global"
+    assert auth["/api/extra"] == "global"
+
+
+@pytest.mark.parametrize("body, auth", [
+    ("    '''Doc.'''\n    from x import y\n    require_admin(request)\n    return {}\n",
+     "admin_in_handler"),
+    # Round 49 review: the guard has to come first, or it may never run.
+    ("    if request.query_params.get('x'):\n        return {}\n"
+     "    require_admin(request)\n    return {}\n", "not_detected"),
+    ("    db.drop()\n    require_admin(request)\n    return {}\n", "not_detected"),
+    ("    with lock:\n        return {}\n    require_user(request)\n", "not_detected"),
+    # A check_/verify_ call often only answers yes or no; thrown away, it guards nothing.
+    ("    check_user(request)\n    return {}\n", "not_detected"),
+    ("    verify_admin(request)\n    return {}\n", "not_detected"),
+    ("    x = 1\n", "not_detected"),
+    ("    pass\n", "not_detected"),
+    ("    '''Only a docstring.'''\n", "not_detected"),
+])
+def test_only_a_guard_that_comes_first_counts(tmp_path, body, auth):
+    root = write(tmp_path, {"app/main.py": (
+        "from fastapi import FastAPI, Request\napp = FastAPI()\n"
+        "@app.post('/x')\ndef x(request: Request):\n" + body)})
+    assert routes(asf.collect(root))[("POST", "/x")]["auth"] == auth
+
+
+def test_module_imports_are_read_in_source_order():
+    import ast
+    tree = ast.parse(
+        "import a\nif x:\n    from b import c\ntry:\n    import d\nexcept E:\n    import e\n"
+        "else:\n    import f\nfinally:\n    import g\nmatch y:\n    case 1:\n        import h\n"
+        "with z:\n    import i\ndef fn():\n    import nope\nclass K:\n    import nor\nimport j\n")
+    assert [n.names[0].name for n in asf._module_imports(tree)] == list("acdefghij")

@@ -51,6 +51,11 @@ UPLOAD_TICKETS_PER_USER = 5
 UPLOAD_TICKETS_TOTAL = 50
 #: Distinct from API tokens, so neither can be mistaken for the other.
 UPLOAD_TICKET_PREFIX = "sastup_"
+#: What a caller is told when it holds too many: fixed texts, no counts.
+_TICKETS_FULL = ("too many upload tickets are unused; use one or wait up to "
+                 f"{UPLOAD_TICKET_TTL // 60} minutes for them to expire")
+_TICKETS_HELD = ("this account has too many unused upload tickets; use one or "
+                 f"wait up to {UPLOAD_TICKET_TTL // 60} minutes for them to expire")
 
 TOOLS = [
     {
@@ -271,12 +276,11 @@ def issue_upload_ticket(username: Optional[str], tools: list[str],
     now = time.time()
     with _tickets_lock:
         _drop_expired_locked(now)
-        wait = f"use one or wait up to {UPLOAD_TICKET_TTL // 60} minutes for them to expire"
         if len(_tickets) >= UPLOAD_TICKETS_TOTAL:
-            raise ValueError(f"too many upload tickets are unused; {wait}")
+            raise ValueError(_TICKETS_FULL)
         held = sum(1 for t in _tickets.values() if t.username == username)
         if username is not None and held >= UPLOAD_TICKETS_PER_USER:
-            raise ValueError(f"{held} upload tickets are still unused; {wait}")
+            raise ValueError(_TICKETS_HELD)
         ticket = UPLOAD_TICKET_PREFIX + secrets.token_urlsafe(32)
         _tickets[_ticket_key(ticket)] = UploadTicket(
             username=username, tools=tools, filename=filename,

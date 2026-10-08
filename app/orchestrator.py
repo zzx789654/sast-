@@ -65,6 +65,12 @@ class JobManager:
         return job
 
     def job_dir(self, job_id: str) -> Path:
+        """The job's own workspace. Ids are made by new_job (12 hex
+        characters); anything else is refused rather than joined, so no id
+        can name a path outside the workspace -- this is what gets deleted."""
+        if not (isinstance(job_id, str) and len(job_id) == 12
+                and all(c in "0123456789abcdef" for c in job_id)):
+            raise ValueError("not a job id")
         return config.WORKSPACE_DIR / job_id
 
     def start(self, job_id: str, source_spec: dict, confirm: bool = False) -> None:
@@ -310,7 +316,16 @@ class JobManager:
 
     def _cleanup(self, job_id: str, external: bool) -> None:
         # Remove the job's own workspace; never touch a user-supplied path.
-        shutil.rmtree(self.job_dir(job_id), ignore_errors=True)
+        # Found by listing the workspace, not by joining the id into a path:
+        # only a real directory directly inside it is ever deleted.
+        self.job_dir(job_id)                    # refuses anything but an id
+        try:
+            entries = list(config.WORKSPACE_DIR.iterdir())
+        except OSError:
+            return                              # no workspace, nothing to remove
+        for entry in entries:
+            if entry.name == job_id and entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry, ignore_errors=True)
 
     def _prune_locked(self) -> None:
         if len(self._jobs) <= config.MAX_JOBS_RETAINED:

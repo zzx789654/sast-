@@ -3,7 +3,13 @@
 // close handler double-resolve -- not to re-test the browser.
 const fs = require("fs");
 
-const src = fs.readFileSync(__dirname + "/../app/static/app.js", "utf8");
+const src = (() => {
+  // The front-end as index.html loads it (split into static/js/ in round 49).
+  const dir = __dirname + "/../app/static/";
+  const html = fs.readFileSync(dir + "index.html", "utf8");
+  return [...html.matchAll(/<script src="\/js\/([^"]+)"/g)]
+    .map((m) => fs.readFileSync(dir + "js/" + m[1], "utf8")).join("\n");
+})();
 const start = src.indexOf("function askForPassword(");
 const end = src.indexOf("\n}\n", start) + 3;
 const fnSrc = src.slice(start, end);

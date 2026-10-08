@@ -256,17 +256,13 @@ def get_triage(keys: "list[str] | None" = None) -> dict:
     """The marks, as {finding_key: {...}}. All of them, or just the ones asked."""
     with _connect() as conn:
         if keys:
-            out = {}
-            # Chunked: SQLite has a limit on how many parameters one statement
-            # may carry, and a large scan has thousands of findings.
-            for i in range(0, len(keys), 400):
-                chunk = keys[i:i + 400]
-                marks = ",".join("?" * len(chunk))
-                for row in conn.execute(
-                        f"SELECT * FROM triage WHERE finding_key IN ({marks})",
-                        chunk):
-                    out[row["finding_key"]] = dict(row)
-            return out
+            # One JSON parameter, not one "?" per key: the statement stays a
+            # fixed string, and SQLite's limit on parameters (a large scan
+            # has thousands of findings) never comes into it.
+            rows = conn.execute(
+                "SELECT * FROM triage WHERE finding_key IN "
+                "(SELECT value FROM json_each(?))", (json.dumps(list(keys)),))
+            return {row["finding_key"]: dict(row) for row in rows}
         return {row["finding_key"]: dict(row)
                 for row in conn.execute("SELECT * FROM triage")}
 

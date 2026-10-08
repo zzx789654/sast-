@@ -129,6 +129,7 @@ def test_mcp_survives_a_client_that_hangs_up(monkeypatch):
     import asyncio
     from starlette.requests import ClientDisconnect
     from app import main
+    from app.routes import mcp_http
     from app.config import config
     monkeypatch.setattr(config, "REQUIRE_AUTH", False)
 
@@ -140,7 +141,7 @@ def test_mcp_survives_a_client_that_hangs_up(monkeypatch):
 
         async def json(self):
             raise ClientDisconnect()
-    res = asyncio.run(main.mcp_endpoint(Gone()))
+    res = asyncio.run(mcp_http.mcp_endpoint(Gone()))
     assert res.status_code == 400
 
 

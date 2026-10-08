@@ -15,6 +15,7 @@ import pytest
 
 from app.adapters.base import CommandResult
 from app.models import Finding, Severity, ToolKind, ToolStatus
+from tests.sources import backend_py, frontend_js
 
 
 # ---------------------------------------------------------------- availability
@@ -845,7 +846,7 @@ def test_the_app_never_asks_github_for_versions():
         text = path.read_text("utf-8")
         assert "_latest_upstream" not in text and "from . import admin" not in text, path
     html = (root / "app/static/index.html").read_text("utf-8")
-    js = (root / "app/static/app.js").read_text("utf-8")
+    js = frontend_js()
     for gone in ("admin-panel", "admin-update", "admin-restart", "admin-check-versions",
                  "upg-check", "/api/admin/status", "/api/admin/restart",
                  "/api/admin/update-tools", "/api/admin/upgrades/check"):
@@ -1242,7 +1243,7 @@ def test_pdf_export_renders_every_finding_first():
     A PDF that silently stopped at the first hundred findings would be worse
     than a slow one: the person reading it would not know any were missing.
     """
-    src = (Path(__file__).resolve().parents[1] / "app/static/app.js").read_text("utf-8")
+    src = frontend_js()
     export = src[src.index('$("#export-pdf")'):]
     export = export[:export.index("});") + 3]
     assert "renderAll" in export
@@ -1303,7 +1304,7 @@ def test_bearer_snippet_is_bounded():
 def test_every_finding_card_offers_a_judgement():
     """A reader needs somewhere to record that a finding is a false positive,
     or it gets re-argued on every scan and the noise trains people to skim."""
-    src = (Path(__file__).resolve().parents[1] / "app/static/app.js").read_text("utf-8")
+    src = frontend_js()
     assert "renderTriage" in src
     assert "card.appendChild(renderTriage(f))" in src
     # The mark has to identify the finding across scans, not by list position.
@@ -1335,13 +1336,11 @@ def test_nginx_config_does_not_name_the_host_variable():
     assert "proxy_set_header Host              sast-studio;" in conf
     assert "proxy_set_header Host              $host" not in conf
 
-    # X-Forwarded-Host does carry the client's value, deliberately: the CSRF
-    # check needs to know what the browser actually asked for, and rewriting
-    # Host had made every legitimate form post look cross-site. It is compared
-    # against the request's own Origin, never used to build anything.
-    forwarded = [l for l in conf.splitlines() if "$http_host" in l]
-    assert len(forwarded) == 1
-    assert "X-Forwarded-Host" in forwarded[0]
+    # Round 49: nothing of the host the browser typed reaches the app; it
+    # knows its address from SAST_PUBLIC_URL. A client's own header is
+    # dropped rather than passed through.
+    assert "$http_host" not in conf
+    assert 'proxy_set_header X-Forwarded-Host  "";' in conf
 
 
 # ------------------------------------------------------------ page load speed
@@ -1351,7 +1350,7 @@ def test_tool_probes_run_in_parallel():
     semgrep and bearer are ~900ms each, so the total was the sum rather than
     the slowest. They do not depend on each other.
     """
-    src = (Path(__file__).resolve().parents[1] / "app/main.py").read_text("utf-8")
+    src = backend_py()
     block = src[src.index("def probe_all()"):]
     block = block[:block.index("\n\n")]
     assert "ThreadPoolExecutor" in block
@@ -1362,7 +1361,7 @@ def test_tool_probe_result_is_cached_and_can_be_cleared():
     """A version only changes when a scanner is upgraded, and an upgrade
     recreates the container (round 48: there is no in-place update left),
     so a cached probe never outlives the versions it describes."""
-    from app.main import _tool_cache
+    from app.routes.ops import _tool_cache
 
     _tool_cache.clear()
     assert _tool_cache.get() is None
@@ -1378,7 +1377,7 @@ def test_tool_cache_expires():
     """A scanner can also be changed from outside the app."""
     import time as _time
 
-    from app.main import _ToolCache
+    from app.routes.ops import _ToolCache
 
     cache = _ToolCache()
     cache.TTL = 0.01
@@ -1389,7 +1388,7 @@ def test_tool_cache_expires():
 
 def test_startup_requests_are_not_serialised():
     """Awaiting each load in turn made the page sit blank for the slowest."""
-    src = (Path(__file__).resolve().parents[1] / "app/static/app.js").read_text("utf-8")
+    src = frontend_js()
     init = src[src.index("async function init()"):]
     init = init[:init.index("\n}")]
     assert "Promise.all" in init
@@ -1405,7 +1404,7 @@ def test_cached_tools_response_is_identical_to_an_uncached_one(client):
     every page load after the first threw and took the Monitor tab's version
     list down with it -- while the header, rendered earlier, still worked.
     """
-    from app.main import _tool_cache
+    from app.routes.ops import _tool_cache
 
     _tool_cache.clear()
     miss = client.get("/api/tools").json()      # populates the cache
@@ -1420,7 +1419,7 @@ def test_cached_tools_response_is_identical_to_an_uncached_one(client):
 
 def test_monitor_tab_survives_a_response_without_config():
     """Defence in depth: the page should degrade, not blank out."""
-    src = (Path(__file__).resolve().parents[1] / "app/static/app.js").read_text("utf-8")
+    src = frontend_js()
     load = src[src.index("async function loadTools()"):]
     load = load[:load.index("\n}")]
     # Never dereference .config directly; it must be guarded.
@@ -1692,7 +1691,8 @@ def test_every_state_changing_route_is_behind_the_auth_gate(monkeypatch):
     from fastapi.testclient import TestClient
 
     from app.config import config
-    from app.main import SESSION_COOKIE, app
+    from app.main import app
+    from app.web import SESSION_COOKIE
 
     monkeypatch.setattr(config, "REQUIRE_AUTH", True)
 
@@ -1917,9 +1917,11 @@ def test_login_works_from_a_browser_behind_the_proxy(tmp_path, monkeypatch):
     accounts.init_db()
     accounts.create_user("admin", "admin-password-1234", is_admin=True)
 
-    # What the backend sees behind nginx.
-    proxied = {"Host": "sast-studio",
-               "X-Forwarded-Host": "192.168.99.145:8080"}
+    # What the backend sees behind nginx: a fixed Host, and the deployment's
+    # address from its own settings (round 49), not from a header.
+    monkeypatch.setattr(config, "PUBLIC_URL", "http://192.168.99.145:8080")
+    monkeypatch.setattr(config, "ALLOWED_HOSTS", [])
+    proxied = {"Host": "sast-studio"}
 
     with TestClient(app, base_url="http://192.168.99.145:8080") as client:
         good = client.post(
@@ -1928,12 +1930,42 @@ def test_login_works_from_a_browser_behind_the_proxy(tmp_path, monkeypatch):
             headers={**proxied, "Origin": "http://192.168.99.145:8080"})
         assert good.status_code == 200, "the site's own login form was refused"
 
-        # And the protection still works: this is the attack it exists for.
-        evil = client.post(
-            "/api/auth/login",
-            data={"username": "admin", "password": "admin-password-1234"},
-            headers={**proxied, "Origin": "http://evil.example"})
-        assert evil.status_code == 403
+        # And the protection still works: this is the attack it exists for --
+        # including with a forwarded host header the attacker chose.
+        for extra in ({}, {"X-Forwarded-Host": "evil.example"}):
+            evil = client.post(
+                "/api/auth/login",
+                data={"username": "admin", "password": "admin-password-1234"},
+                headers={**proxied, **extra, "Origin": "http://evil.example"})
+            assert evil.status_code == 403
+
+
+
+@pytest.mark.parametrize("public_url, allowed, origin, ok", [
+    ("", [], "http://localhost:8080", True),           # nothing set: localhost only
+    ("", [], "http://127.0.0.1:8080", True),
+    ("", [], "http://192.168.99.145:8080", False),
+    ("", ["sast.lan:8080"], "https://sast.lan:8080", True),
+    ("", ["sast.lan:8080"], "http://localhost:8080", False),
+    ("https://sast.example.com", [], "https://sast.example.com", True),
+    ("https://sast.example.com", [], "http://localhost:8080", False),
+])
+def test_the_sites_own_origin_comes_from_its_settings(monkeypatch, public_url, allowed,
+                                                      origin, ok):
+    from starlette.requests import Request
+
+    from app import web as main
+    from app.config import config
+    monkeypatch.setattr(config, "PUBLIC_URL", public_url)
+    monkeypatch.setattr(config, "ALLOWED_HOSTS", allowed)
+    monkeypatch.setattr(config, "MCP_ALLOWED_ORIGINS", [])
+    behind_nginx = Request({"type": "http", "headers": [
+        (b"host", b"sast-studio"), (b"x-forwarded-host", b"evil.example")]})
+    assert main._origin_allowed(origin, behind_nginx) is ok
+    assert main._origin_allowed("http://evil.example", behind_nginx) is False
+    direct = Request({"type": "http", "headers": [(b"host", b"10.0.0.5:8000")]})
+    assert main._origin_allowed("http://10.0.0.5:8000", direct) is True, \
+        "without nginx, the Host the browser sent is the site itself"
 
 
 def test_every_view_tab_has_a_section_that_showview_toggles():
@@ -1946,7 +1978,7 @@ def test_every_view_tab_has_a_section_that_showview_toggles():
 
     root = Path(__file__).resolve().parents[1] / "app/static"
     html = (root / "index.html").read_text("utf-8")
-    js = (root / "app.js").read_text("utf-8")
+    js = frontend_js()
 
     tabs = set(re.findall(r'class="viewtab[^"]*"[^>]*data-view="(\w+)"', html))
     tabs |= set(re.findall(r'data-view="(\w+)"[^>]*class="viewtab', html))
@@ -2014,8 +2046,7 @@ def test_settings_panels_survived_the_regrouping():
 
 def test_the_open_tab_is_remembered_across_a_reload():
     """Reloading dropped the user back on Scan every time."""
-    js = (Path(__file__).resolve().parents[1]
-          / "app/static/app.js").read_text("utf-8")
+    js = frontend_js()
 
     show_view = js[js.index("function showView(view)"):]
     show_view = show_view[:show_view.index("\n}")]
@@ -2030,8 +2061,7 @@ def test_the_open_tab_is_remembered_across_a_reload():
 
 def test_an_ordinary_account_is_not_offered_admin_tabs():
     """Hiding a door that only returns 403. The server still enforces it."""
-    js = (Path(__file__).resolve().parents[1]
-          / "app/static/app.js").read_text("utf-8")
+    js = frontend_js()
 
     fn = js[js.index("function visibleViews()"):]
     fn = fn[:fn.index("\n}")]
@@ -2048,7 +2078,7 @@ def test_an_ordinary_account_is_not_offered_admin_tabs():
 def test_the_scanner_matrix_states_network_behaviour():
     """The custom-rules column was replaced by what each tool sends out."""
     root = Path(__file__).resolve().parents[1] / "app/static"
-    js = (root / "app.js").read_text("utf-8")
+    js = frontend_js()
     i18n = (root / "i18n.js").read_text("utf-8")
 
     table = js[js.index("const TOOL_MATRIX = ["):]
@@ -2076,7 +2106,7 @@ def test_nobody_is_left_without_a_way_to_change_their_password():
     way in -- and the user table is administrators-only.
     """
     root = Path(__file__).resolve().parents[1] / "app/static"
-    js = (root / "app.js").read_text("utf-8")
+    js = frontend_js()
     html = (root / "index.html").read_text("utf-8")
 
     assert 'id="account-panel"' in html, "the change-password panel is gone"
@@ -2106,7 +2136,7 @@ def test_an_api_token_always_names_the_account_it_belongs_to():
     case, so the column that carries the whole point was usually blank.
     """
     root = Path(__file__).resolve().parents[1] / "app/static"
-    js = (root / "app.js").read_text("utf-8")
+    js = frontend_js()
 
     fn = js[js.index("async function loadTokens"):]
     fn = fn[:fn.index("\n}\n")]
@@ -2124,7 +2154,7 @@ def test_token_creation_says_which_account_it_will_belong_to(accounts_env):
     """Stated before the token exists, not discovered from the list after."""
     root = Path(__file__).resolve().parents[1] / "app/static"
     html = (root / "index.html").read_text("utf-8")
-    js = (root / "app.js").read_text("utf-8")
+    js = frontend_js()
     i18n = (root / "i18n.js").read_text("utf-8")
 
     assert 'id="token-owner"' in html
@@ -2174,8 +2204,7 @@ def test_vendored_manifests_do_not_count(tmp_path):
 
 def test_the_reason_reaches_the_ui():
     """The panel has to render it, or the explanation is only in the JSON."""
-    js = (Path(__file__).resolve().parents[1]
-          / "app/static/app.js").read_text("utf-8")
+    js = frontend_js()
 
     fn = js[js.index("function emptySbomReason"):]
     fn = fn[:fn.index("\n}")]
@@ -2229,7 +2258,7 @@ def test_the_inventory_option_is_offered_on_the_scan_form():
     """
     root = Path(__file__).resolve().parents[1] / "app/static"
     html = (root / "index.html").read_text("utf-8")
-    js = (root / "app.js").read_text("utf-8")
+    js = frontend_js()
     i18n = (root / "i18n.js").read_text("utf-8")
 
     assert 'id="opt-full-inventory"' in html, "no control on the form"
@@ -2540,7 +2569,7 @@ def test_a_declared_list_is_not_presented_as_a_complete_one():
     """It excludes transitive dependencies and cannot confirm a version. A
     short list that looks authoritative is worse than no list."""
     root = Path(__file__).resolve().parents[1] / "app/static"
-    js = (root / "app.js").read_text("utf-8")
+    js = frontend_js()
     i18n = (root / "i18n.js").read_text("utf-8")
 
     assert "declared_only" in js, "the page never checks which kind it has"
@@ -3070,8 +3099,7 @@ def test_the_ui_key_matches_the_backend_key():
     from app.models import Severity
     from app.policies import finding_key
 
-    js = (Path(__file__).resolve().parents[1]
-          / "app/static/app.js").read_text("utf-8")
+    js = frontend_js()
     fn = js[js.index("function findingKey(f)"):]
     fn = fn[:fn.index("\n}")]
     assert "[f.tool, f.rule_id, f.file, f.start_line].join(\"|\")" in fn
@@ -3253,7 +3281,7 @@ def test_the_monitor_hint_does_not_send_container_users_in_a_loop():
     """
     root = Path(__file__).resolve().parents[1] / "app/static"
     i18n = (root / "i18n.js").read_text("utf-8")
-    js = (root / "app.js").read_text("utf-8")
+    js = frontend_js()
 
     # The unconditional advice is gone from the shared line...
     shared = [l for l in i18n.splitlines() if '"mon.updateHint"' in l]
@@ -3680,7 +3708,7 @@ def test_resetting_your_own_password_sends_you_to_the_login_page():
     user list rendered as nothing at all.
     """
     root = Path(__file__).resolve().parents[1] / "app/static"
-    js = (root / "app.js").read_text("utf-8")
+    js = frontend_js()
 
     fn = js[js.index("async function resetUserPassword"):]
     fn = fn[:fn.index("\n}")]
@@ -3696,7 +3724,7 @@ def test_resetting_your_own_password_sends_you_to_the_login_page():
 def test_the_user_list_says_why_it_is_empty_rather_than_showing_nothing():
     """An empty list reads as "there are no users", which is never true."""
     root = Path(__file__).resolve().parents[1] / "app/static"
-    js = (root / "app.js").read_text("utf-8")
+    js = frontend_js()
 
     fn = js[js.index("async function loadUsers"):]
     fn = fn[:fn.index("\n}\n")]
@@ -3731,7 +3759,7 @@ def test_every_styled_class_used_on_a_button_is_actually_defined():
     root = Path(__file__).resolve().parents[1] / "app/static"
     css = (root / "style.css").read_text("utf-8")
     html = (root / "index.html").read_text("utf-8")
-    js = (root / "app.js").read_text("utf-8")
+    js = frontend_js()
 
     used = set()
     for blob in re.findall(r'class="btn([^"]*)"', html):
@@ -3794,7 +3822,7 @@ def test_the_browser_revalidates_the_ui_instead_of_reusing_it(client):
     new CSS and the browser never requested it. Every UI change this session
     landed invisibly for that reason.
     """
-    for path in ["/style.css", "/app.js", "/i18n.js", "/login.js", "/login"]:
+    for path in ["/style.css", "/js/core.js", "/js/surface.js", "/i18n.js", "/login.js", "/login"]:
         res = client.get(path)
         assert res.status_code == 200, path
         cache = res.headers.get("cache-control", "")
@@ -3821,7 +3849,7 @@ def test_scan_durations_are_shown_in_seconds():
     import subprocess
 
     root = Path(__file__).resolve().parents[1]
-    js = (root / "app/static/app.js").read_text("utf-8")
+    js = frontend_js()
     assert 'duration_ms || 0) + "ms"' not in js, "still printing raw milliseconds"
     assert "elapsed(r.duration_ms" in js
 
@@ -3841,7 +3869,7 @@ def test_a_password_is_never_typed_into_a_visible_prompt():
     text on screen, and offered back by autofill afterwards.
     """
     root = Path(__file__).resolve().parents[1] / "app/static"
-    js = (root / "app.js").read_text("utf-8")
+    js = frontend_js()
     html = (root / "index.html").read_text("utf-8")
 
     fn = js[js.index("async function resetUserPassword"):]
@@ -3880,25 +3908,24 @@ def test_the_password_dialog_behaves(tmp_path):
     assert "ALL DIALOG CHECKS PASSED" in out.stdout
 
 
-def test_the_host_pattern_cannot_be_made_to_backtrack():
-    """A scanner flagged this as ReDoS; measure rather than argue.
-
-    The pattern is a constant with no nested quantifiers, so it is linear.
-    The length cap in front of it is belt-and-braces.
-    """
+def test_the_host_check_is_character_by_character():
+    """A scanner flagged the old pattern match on a header (round 49): the
+    check now reads characters, so there is nothing to backtrack."""
     import time
 
-    from app.main import _HOST_RE
+    from app.web import _valid_host
 
-    hostile = [".'" * 200, "." * 253 + ":", "a" * 252 + ":" + "9" * 6,
-               "-" * 253 + "!", "a" * 10000, "a." * 5000]
+    for good in ["localhost", "a.b-c.example:8080", "192.168.99.145:8080", "a" * 253]:
+        assert _valid_host(good), good
+    for bad in ["", "a" * 254, "evil.example/path", "evil example", "h:", "h:123456",
+                "h:80a", "h:8:8", "evil.example\r\nX: 1", "ex\u00e4mple", "h:\u0661"]:
+        assert not _valid_host(bad), bad
+    hostile = [".'" * 200, "." * 253 + ":", "a" * 252 + ":" + "9" * 6, "a" * 10000]
     start = time.perf_counter()
-    for s in hostile:
+    for value in hostile:
         for _ in range(500):
-            _HOST_RE.match(s)
-    elapsed = time.perf_counter() - start
-    # Catastrophic backtracking takes seconds on inputs this size, not ms.
-    assert elapsed < 2.0, f"matching took {elapsed:.2f}s; check for backtracking"
+            _valid_host(value)
+    assert time.perf_counter() - start < 2.0
 
 
 # ------------------------------------------------ host header in client config
@@ -3918,7 +3945,8 @@ def test_a_forged_host_header_cannot_redirect_a_token(client, monkeypatch):
     monkeypatch.setattr(config, "ALLOWED_HOSTS", ["sast.internal:8080"])
     monkeypatch.setattr(config, "PUBLIC_URL", "")
 
-    body = _mcp_config(client, **{"X-Forwarded-Host": "evil.example"})
+    body = _mcp_config(client, **{"Host": "evil.example",
+                                  "X-Forwarded-Host": "evil.example"})
     blob = json.dumps(body)
 
     assert "evil.example" not in blob, "a forged host reached the client config"
@@ -3947,7 +3975,7 @@ def test_a_host_that_is_not_a_host_is_refused(client, monkeypatch):
 
     for bad in ["evil.example/path", "evil example", "a" * 300,
                 "evil.example\r\nX-Injected: 1"]:
-        body = _mcp_config(client, **{"X-Forwarded-Host": bad})
+        body = _mcp_config(client, **{"Host": bad})
         assert body["url"] == "http://localhost:8080/mcp", (
             f"{bad!r} was accepted as a host"
         )
@@ -3960,7 +3988,8 @@ def test_the_ordinary_host_still_works(client, monkeypatch):
     monkeypatch.setattr(config, "ALLOWED_HOSTS", [])
     monkeypatch.setattr(config, "PUBLIC_URL", "")
 
-    body = _mcp_config(client, **{"X-Forwarded-Host": "192.168.99.145:8080"})
+    # Without nginx in front, the Host the browser sent is the site itself.
+    body = _mcp_config(client, **{"Host": "192.168.99.145:8080"})
     assert body["url"] == "http://192.168.99.145:8080/mcp"
     assert "SAST_STUDIO_MCP_URL=http://192.168.99.145:8080/mcp" in body["env_template"]
 
@@ -4168,13 +4197,21 @@ def test_a_user_sees_only_their_own_login_history(two_users):
     assert all(e["username"] == "bob" for e in body["events"])
 
 
-def test_mcp_config_uses_the_host_the_browser_asked_for(two_users):
-    """Behind nginx, Host is a fixed value, so a config built from it is wrong."""
+def test_mcp_config_uses_the_configured_address(two_users, monkeypatch):
+    """Behind nginx, Host is a fixed value, so a config built from it is wrong;
+    the address comes from SAST_PUBLIC_URL (round 49)."""
+    from app.config import config
     admin, _user = two_users
+    monkeypatch.setattr(config, "PUBLIC_URL", "http://192.168.99.145:8080")
     body = admin.get("/api/mcp/config",
                      headers={"Host": "sast-studio",
-                              "X-Forwarded-Host": "192.168.99.145:8080"}).json()
+                              "X-Forwarded-Host": "evil.example"}).json()
     assert body["url"] == "http://192.168.99.145:8080/mcp"
+    monkeypatch.setattr(config, "PUBLIC_URL", "")
+    monkeypatch.setattr(config, "ALLOWED_HOSTS", [])
+    body = admin.get("/api/mcp/config", headers={"Host": "sast-studio"}).json()
+    assert body["url"] == "http://localhost:8080/mcp", \
+        "nginx's own fixed Host is not where anyone reaches the site"
     # The token is never handed back: it is shown once, at creation.
     assert "YOUR_TOKEN_HERE" in json.dumps(body["config"])
 
@@ -4195,7 +4232,7 @@ def test_the_scanner_matrix_covers_every_adapter():
 
     from app.adapters import ADAPTERS
 
-    js = (Path(__file__).resolve().parents[1] / "app/static/app.js").read_text("utf-8")
+    js = frontend_js()
     table = js[js.index("const TOOL_MATRIX"):]
     table = table[:table.index("];")]
     for adapter in ADAPTERS:
@@ -4476,7 +4513,7 @@ def test_container_state_is_sampled_without_a_watcher(tmp_path, monkeypatch):
 
 def test_the_sampler_is_started_at_boot():
     """A sampler nothing starts is the same as no sampler."""
-    main = _read("app/main.py")
+    main = backend_py()
     assert "docker_stats.start_sampler()" in main
 
 
@@ -4617,7 +4654,7 @@ def test_the_app_never_writes_container_config():
     reconfigure any container on the host", and compose would undo the change
     on the next deploy anyway.
     """
-    source = _read("app/docker_stats.py") + _read("app/main.py")
+    source = _read("app/docker_stats.py") + backend_py()
     for forbidden in ("/update", "/containers/create", "/start", "/stop", "/kill"):
         assert f'"{forbidden}' not in source, f"{forbidden} is called somewhere"
     assert 'conn.request("GET"' in _read("app/docker_stats.py")
@@ -4626,9 +4663,9 @@ def test_the_app_never_writes_container_config():
 
 def test_the_limits_endpoints_are_admin_only():
     """Host memory and cpu counts are infrastructure detail."""
-    main = _read("app/main.py")
-    block = main[main.index('@app.get("/api/docker/limits")'):]
-    block = block[:block.index('@app.get("/api/logs")')]
+    main = backend_py()
+    block = main[main.index('@router.get("/api/docker/limits")'):]
+    block = block[:block.index('@router.get("/api/logs")')]
     assert block.count("require_admin(request)") == 2, \
         "one of the two limits endpoints is not admin-gated"
 
@@ -5204,7 +5241,7 @@ def test_job_summary_counts_incomplete_tools_apart():
 
 
 def test_ui_knows_the_incomplete_status():
-    app_js = _read("app/static/app.js")
+    app_js = frontend_js()
     i18n = _read("app/static/i18n.js")
     css = _read("app/static/style.css")
     assert 'incomplete: "tstat.incomplete"' in app_js
@@ -5290,7 +5327,7 @@ def test_mcp_result_carries_the_coverage_gaps(monkeypatch):
 
 
 def test_ui_explains_a_review_caused_by_coverage():
-    app_js = _read("app/static/app.js")
+    app_js = frontend_js()
     i18n = _read("app/static/i18n.js")
     assert "coverage_gaps" in app_js
     assert i18n.count('"verdict.coverageGaps":') == 2

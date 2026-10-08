@@ -1,7 +1,13 @@
 // The attack surface graph model: which boxes and lines the relationship
 // graph draws from a scan's attack_surface. Runs the real source.
 const fs = require("fs");
-const src = fs.readFileSync(__dirname + "/../app/static/app.js", "utf8");
+const src = (() => {
+  // The front-end as index.html loads it (split into static/js/ in round 49).
+  const dir = __dirname + "/../app/static/";
+  const html = fs.readFileSync(dir + "index.html", "utf8");
+  return [...html.matchAll(/<script src="\/js\/([^"]+)"/g)]
+    .map((m) => fs.readFileSync(dir + "js/" + m[1], "utf8")).join("\n");
+})();
 function grab(name) {
   const i = src.indexOf("function " + name + "(");
   return src.slice(i, src.indexOf("\n}\n", i) + 3);

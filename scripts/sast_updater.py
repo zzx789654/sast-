@@ -104,12 +104,21 @@ def _now() -> str:
 PROGRAMS = {"docker", "bash"}
 
 
+#: Where those programs are looked up: fixed, not whatever PATH cron or a
+#: caller's environment happens to carry.
+PROGRAM_PATH = "/usr/local/bin:/usr/bin:/bin"
+
+
 def _run(cmd: list[str], timeout: int, env: dict | None = None) -> tuple[int, str]:
     if not cmd or cmd[0] not in PROGRAMS:
         return 126, f"refusing to run {cmd[:1]}"
+    program = shutil.which(cmd[0], path=PROGRAM_PATH)
+    if program is None:
+        return 127, f"{cmd[0]} is not installed"
     try:
-        proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
-                              timeout=timeout, env={**os.environ, **(env or {})})
+        proc = subprocess.run([program, *cmd[1:]], cwd=ROOT, capture_output=True,
+                              text=True, timeout=timeout, shell=False,
+                              env={**os.environ, **(env or {})})
     except subprocess.TimeoutExpired:
         return 124, f"timed out after {timeout}s"
     except OSError as exc:
@@ -149,6 +158,12 @@ def read_untrusted(path: Path, limit: int) -> bytes:
         return fh.read(limit + 1)
 
 
+#: The umask this script runs under (main sets it). Files are created with
+#: exactly the mode asked for -- 0644, or 0600 for the private ones -- and
+#: never changed afterwards, so nothing here needs a chmod.
+UMASK = 0o022
+
+
 def write_replace(path: Path, text: str, mode: int = 0o644) -> None:
     # Rename over the name rather than open it: a link the container left
     # there is replaced, not written through. Created with its final mode, so
@@ -157,9 +172,6 @@ def write_replace(path: Path, text: str, mode: int = 0o644) -> None:
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(text)
-        # On the descriptor, not the name: the name is in a directory the
-        # container can write, and could be a link by now.
-        os.fchmod(fh.fileno(), mode)
     os.replace(tmp, path)
 
 
@@ -174,45 +186,112 @@ def tidy_ops(ops: Path) -> list[str]:
     The container can create whatever it likes there: a directory or a FIFO
     named status.json would break every later run, and an executable left
     behind is owned on the host by the deployment's user -- setuid included.
-    So only the expected regular files stay, and they lose any exec or setid
-    bits. Returns what was removed.
+    So only the expected names stay, and only as plain data files: one with
+    an exec, setuid, setgid or sticky bit is removed like any stranger (the
+    app writes 0644; nothing it writes looks like that). Every name is taken
+    relative to the directory's own descriptor, never joined into a path.
+    Returns what was removed.
     """
     removed = []
-    for entry in os.scandir(ops):
-        expected = entry.name in OPS_FILES or (
-            entry.name.startswith(".") and entry.name.endswith(".tmp"))
-        try:
-            if expected and _strip_mode(entry.path):
+    dir_fd = os.open(ops, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for entry in os.scandir(dir_fd):
+            expected = entry.name in OPS_FILES or (
+                entry.name.startswith(".") and entry.name.endswith(".tmp"))
+            try:
+                if expected and _plain_file(entry.name, dir_fd):
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    if not _remove_tree(entry.name, dir_fd):
+                        # Not counted as removed. One with a name this script
+                        # needs is moved aside; anything else is tried again
+                        # on the next run.
+                        if entry.name in OPS_FILES:
+                            _set_aside(entry.name, dir_fd)
+                        continue
+                else:
+                    os.unlink(entry.name, dir_fd=dir_fd)
+                removed.append(entry.name)
+            except OSError:
+                # Gone already (the container raced us), or not ours to touch.
+                # Either way this run carries on; the next one looks again.
                 continue
-            if entry.is_dir(follow_symlinks=False):
-                shutil.rmtree(entry.path, ignore_errors=True)
-            else:
-                os.unlink(entry.path)
-            removed.append(entry.name)
-        except OSError:
-            # Gone already (the container raced us), or not ours to touch.
-            # Either way this run carries on; the next one looks again.
-            continue
+    finally:
+        os.close(dir_fd)
     return removed
 
 
-def _strip_mode(path: str) -> bool:
-    """Make a regular file 0644 through its descriptor. False if it is not a
-    regular file. A file owned by someone else (ops/ is sticky when the app
-    runs as another uid) cannot be chmod-ed; an expected one is kept anyway --
-    it is read as data, never run -- and anything else is removed."""
+#: How deep _remove_tree goes. Anything deeper the container made stays
+#: until a person looks: it is junk, not a way to stop the updater.
+MAX_TREE_DEPTH = 64
+
+
+def _remove_tree(name: str, dir_fd: int, depth: int = 0) -> bool:
+    """Delete the directory `name` in `dir_fd` and everything in it, one
+    descriptor at a time: a link inside is unlinked, never followed. Says
+    whether the directory is gone."""
+    if depth > MAX_TREE_DEPTH:
+        return False
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
     except OSError:
         return False
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            return False
-        try:
-            os.fchmod(fd, 0o644)
-        except PermissionError:
-            pass
-        return True
+        for entry in os.scandir(fd):
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    _remove_tree(entry.name, fd, depth + 1)
+                else:
+                    os.unlink(entry.name, dir_fd=fd)
+            except OSError:
+                continue
+    finally:
+        os.close(fd)
+    try:
+        os.rmdir(name, dir_fd=dir_fd)
+    except OSError:
+        return False
+    return True
+
+
+def _set_aside(name: str, dir_fd: int) -> None:
+    """A directory that would not go (too deep, or not ours): moved out of
+    the way under a junk name, so a name the updater needs -- status.json --
+    is free again, and left for a person to look at."""
+    junk = f".junk-{secrets.token_hex(4)}"
+    try:
+        os.rename(name, junk, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except OSError:
+        return
+    print(f"ops/{name} could not be removed; moved aside as ops/{junk}", file=sys.stderr)
+
+
+def remove_dir(path: Path) -> None:
+    """_remove_tree for a directory given by path (the download area)."""
+    try:
+        parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError:
+        return
+    try:
+        _remove_tree(path.name, parent)
+    finally:
+        os.close(parent)
+
+
+#: Mode bits a data file never needs.
+_NOT_DATA = stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX | 0o111
+
+
+def _plain_file(name: str, dir_fd: int) -> bool:
+    """A regular file with no exec or set-id bits, looked at through its own
+    descriptor (a link is not followed, a FIFO does not block)."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    except OSError:
+        return False
+    try:
+        mode = os.fstat(fd).st_mode
+        return stat.S_ISREG(mode) and not mode & _NOT_DATA
     finally:
         os.close(fd)
 
@@ -565,7 +644,7 @@ class Updater:
                     raise Failed("verifying", "could not read Trivy's report") from None
         finally:
             # The binary is ~150 MB, on a disk that has run nearly full.
-            shutil.rmtree(self.tmp, ignore_errors=True)
+            remove_dir(self.tmp)
         return counts[0], counts[1]
 
     def wait_for_scans(self, req_id: str) -> None:
@@ -825,11 +904,17 @@ def _plus_days(stamp: str, days: int) -> str:
 
 def main(updater: Updater | None = None, lock_file: Path = LOCK_FILE,
          argv: list[str] | None = None) -> int:
+    # Before anything is written: files get exactly the mode they are
+    # created with (see UMASK), whatever umask cron started us under.
+    os.umask(UMASK)
     updater = updater or Updater()
     argv = sys.argv[1:] if argv is None else argv
     if not updater.ops.is_dir():
         return 0
-    with open(lock_file, "w") as lock:
+    # Opened by descriptor: a link where the lock should be is refused, not
+    # followed; the same file deploy.sh locks.
+    lock_fd = os.open(lock_file, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(lock_fd, "w") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:

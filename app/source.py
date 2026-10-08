@@ -155,7 +155,10 @@ def clone_git(url: str, dest_dir: Path) -> Path:
             "git", "-c", "credential.helper=",
             "clone", "--depth", "1", "--no-tags",
             "--config", "core.askpass=true",
-            url, str(dest_dir),
+            # Nothing after this is an option, whatever it starts with. The
+            # URL is checked to be http(s) already; this holds even if that
+            # check is ever widened.
+            "--", url, str(dest_dir),
         ],
         timeout=config.GIT_CLONE_TIMEOUT,
         env=env,

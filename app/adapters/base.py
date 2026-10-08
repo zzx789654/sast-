@@ -41,6 +41,12 @@ class Partial:
 MAX_SKIPPED = 50
 
 
+#: Every program this app starts: the six scanners (npm for npm audit) and
+#: git for cloning. Anything else asked of run_command is refused.
+PROGRAMS = frozenset({"semgrep", "bearer", "trivy", "npm", "osv-scanner",
+                      "gitleaks", "git"})
+
+
 @dataclass
 class CommandResult:
     returncode: int
@@ -59,17 +65,24 @@ def run_command(
 
     Always list-args + shell=False (no shell interpolation of user input),
     always bounded by a timeout. This is the single choke point through which
-    every tool is invoked.
+    every tool is invoked, so it also decides which programs may be started
+    at all: only those in PROGRAMS, by the absolute path PATH gives them.
     """
+    if not args or args[0] not in PROGRAMS or not all(isinstance(a, str) for a in args):
+        return CommandResult(-1, "", f"refusing to run {str(args[:1])[:80]}")
+    program = shutil.which(args[0])
+    if program is None:
+        return CommandResult(-1, "", "executable not found")
     try:
         proc = subprocess.run(
-            args,
+            [program, *args[1:]],
             cwd=str(cwd) if cwd else None,
             capture_output=True,
             text=True,
             timeout=timeout,
             env=env,
             check=False,
+            shell=False,
         )
         return CommandResult(proc.returncode, proc.stdout or "", proc.stderr or "")
     except subprocess.TimeoutExpired as exc:

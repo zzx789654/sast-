@@ -185,41 +185,42 @@ def query(*, categories: Optional[list[str]] = None,
     The total is separate from the returned rows so the UI can say "showing
     200 of 4,312" rather than implying the filter found exactly a pageful.
     """
-    where: list[str] = []
-    args: list = []
-
+    # One fixed statement: a filter that is not in use is NULL and lets
+    # every row through, so nothing is ever spliced into the SQL. The LIKE
+    # wildcards are in the value, so the pattern cannot escape either.
     wanted = [c for c in (categories or []) if c in CATEGORIES]
-    if wanted:
-        where.append("category IN (%s)" % ",".join("?" * len(wanted)))
-        args.extend(wanted)
-    if level in LEVELS:
-        where.append("level = ?")
-        args.append(level)
-    if actor:
-        where.append("actor = ?")
-        args.append(actor[:64])
-    if since:
-        where.append("at >= ?")
-        args.append(since[:40])
-    if text:
-        # A parameterised LIKE, with the wildcards in the value rather than
-        # the SQL, so the pattern cannot escape into the statement.
-        like = f"%{text[:120]}%"
-        where.append("(action LIKE ? OR target LIKE ? OR detail LIKE ? "
-                     "OR actor LIKE ? OR source LIKE ?)")
-        args.extend([like] * 5)
-
-    clause = (" WHERE " + " AND ".join(where)) if where else ""
-    limit = max(1, min(int(limit or 200), 1000))
-    offset = max(0, int(offset or 0))
+    args = {
+        "cats": json.dumps(wanted) if wanted else None,
+        "level": level if level in LEVELS else None,
+        "actor": actor[:64] or None,
+        "since": since[:40] or None,
+        "like": f"%{text[:120]}%" if text else None,
+        "limit": max(1, min(int(limit or 200), 1000)),
+        "offset": max(0, int(offset or 0)),
+    }
 
     with _connect() as conn:
         total = conn.execute(
-            "SELECT COUNT(*) AS n FROM events" + clause, args).fetchone()["n"]
+            "SELECT COUNT(*) AS n FROM events WHERE "
+            "(:cats IS NULL OR category IN (SELECT value FROM json_each(:cats))) "
+            "AND (:level IS NULL OR level = :level) "
+            "AND (:actor IS NULL OR actor = :actor) "
+            "AND (:since IS NULL OR at >= :since) "
+            "AND (:like IS NULL OR action LIKE :like OR target LIKE :like "
+            "     OR detail LIKE :like OR actor LIKE :like OR source LIKE :like)",
+            args).fetchone()["n"]
         rows = conn.execute(
             "SELECT at, category, action, level, actor, source, target, detail "
-            "FROM events" + clause + " ORDER BY id DESC LIMIT ? OFFSET ?",
-            args + [limit, offset]).fetchall()
+            "FROM events WHERE "
+            "(:cats IS NULL OR category IN (SELECT value FROM json_each(:cats))) "
+            "AND (:level IS NULL OR level = :level) "
+            "AND (:actor IS NULL OR actor = :actor) "
+            "AND (:since IS NULL OR at >= :since) "
+            "AND (:like IS NULL OR action LIKE :like OR target LIKE :like "
+            "     OR detail LIKE :like OR actor LIKE :like OR source LIKE :like) "
+            "ORDER BY id DESC LIMIT :limit OFFSET :offset",
+            args).fetchall()
+    limit, offset = args["limit"], args["offset"]
 
     return {
         "events": [dict(r) for r in rows],

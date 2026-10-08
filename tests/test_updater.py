@@ -652,22 +652,36 @@ def test_ops_is_tidied_of_anything_the_container_should_not_leave(env):
     os.mkfifo(ops / "drain.json")
     (ops / "update.log").symlink_to("/etc/passwd")
     removed = up.tidy_ops(ops)
-    assert sorted(removed) == ["drain.json", "evil", "status.json", "update.log"]
-    assert sorted(p.name for p in ops.iterdir()) == [".status.json.ab12cd34.tmp", "request.json"]
-    assert oct(os.stat(ops / "request.json").st_mode & 0o7777) == "0o644"
+    # The set-id file goes too, though its name is expected: nothing is
+    # chmod-ed (round 49), a data file that is not plain data is removed.
+    assert sorted(removed) == ["drain.json", "evil", "request.json", "status.json",
+                               "update.log"]
+    assert sorted(p.name for p in ops.iterdir()) == [".status.json.ab12cd34.tmp"]
     assert os.path.exists("/etc/passwd")
 
 
-def test_tidy_keeps_an_expected_file_it_may_not_chmod(env, monkeypatch):
+@pytest.mark.parametrize("mode, kept", [
+    (0o644, True), (0o600, True), (0o444, True),
+    (0o744, False), (0o654, False), (0o645, False), (0o1644, False),
+])
+def test_an_expected_file_stays_only_as_plain_data(env, mode, kept):
     ops = env / "ops"
     (ops / "request.json").write_text("{}")
+    os.chmod(ops / "request.json", mode)
     (ops / "stray").write_text("x")
+    assert sorted(up.tidy_ops(ops)) == (["stray"] if kept else ["request.json", "stray"])
+    assert (ops / "request.json").exists() is kept
 
-    def refuse(fd, mode):
-        raise PermissionError("not owner")
-    monkeypatch.setattr(up.os, "fchmod", refuse)
-    assert up.tidy_ops(ops) == ["stray"]
-    assert (ops / "request.json").exists()
+
+def test_files_get_exactly_the_mode_they_are_created_with(env, tmp_path):
+    old = os.umask(0o077)                    # a umask that would hide status.json
+    try:
+        up.main(make(env, now=datetime(2026, 10, 19, 22, 0, tzinfo=timezone.utc)),
+                tmp_path / "lock", argv=["--check"])
+    finally:
+        os.umask(old)
+    assert oct(os.stat(env / "ops" / "status.json").st_mode & 0o777) == "0o644"
+    assert oct(os.stat(env / "state.json").st_mode & 0o777) == "0o600"
 
 
 def test_tidy_carries_on_when_the_container_races_it(env, monkeypatch):
@@ -677,11 +691,11 @@ def test_tidy_carries_on_when_the_container_races_it(env, monkeypatch):
     real = up.os.unlink
     calls = []
 
-    def flaky(path):
+    def flaky(path, *, dir_fd=None):
         calls.append(path)
         if len(calls) == 1:
             raise FileNotFoundError(path)
-        real(path)
+        real(path, dir_fd=dir_fd)
     monkeypatch.setattr(up.os, "unlink", flaky)
     assert len(up.tidy_ops(ops)) == 1 and len(calls) == 2
 
@@ -870,8 +884,24 @@ def test_run_starts_only_its_own_programs():
 
 
 def test_run_reports_a_program_that_is_not_installed(monkeypatch):
-    monkeypatch.setenv("PATH", "/nonexistent")
-    assert up._run(["docker", "ps"], 5)[0] == 127
+    monkeypatch.setattr(up, "PROGRAM_PATH", "/nonexistent")
+    assert up._run(["docker", "ps"], 5) == (127, "docker is not installed")
+
+
+def test_run_ignores_the_callers_path(monkeypatch, tmp_path):
+    """A "bash" earlier on PATH is not the one started (round 49)."""
+    fake = tmp_path / "bash"
+    fake.write_text("#!/bin/sh\necho hijacked\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ.get('PATH', '')}")
+    assert up._run(["bash", "-c", "echo real"], 30) == (0, "real\n")
+
+
+def test_run_reports_a_program_that_cannot_start(monkeypatch):
+    def boom(*a, **k):
+        raise PermissionError("not executable")
+    monkeypatch.setattr(up.subprocess, "run", boom)
+    assert up._run(["bash", "-c", "true"], 5) == (127, "not executable")
 
 
 class _FakeHTTP:
@@ -915,3 +945,71 @@ def test_missing_pins_and_env_file_are_not_errors(env):
 def test_the_switch_reads_like_the_app_reads_it(env, value, on):
     (env / ".env").write_text(f"SAST_UPSTREAM_CHECK={value}\n" if value else "")
     assert make(env).upstream_enabled() is on
+
+
+# ------------------------------------------------- round 49: removal by descriptor
+def test_a_tree_is_removed_without_following_links(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep").write_text("x")
+    tree = tmp_path / "work" / "a" / "b" / "c"
+    tree.mkdir(parents=True)
+    (tree / "f").write_text("x")
+    (tmp_path / "work" / "a" / "link").symlink_to(outside)
+    (tmp_path / "work" / "a" / "b" / "file-link").symlink_to(outside / "keep")
+    up.remove_dir(tmp_path / "work")
+    assert not (tmp_path / "work").exists()
+    assert (outside / "keep").read_text() == "x", "a link was followed"
+    up.remove_dir(tmp_path / "gone" / "work")           # no parent: nothing to do
+    up.remove_dir(tmp_path / "missing")                 # no such directory
+
+
+def test_a_tree_deeper_than_the_limit_is_left_not_recursed(tmp_path, monkeypatch):
+    monkeypatch.setattr(up, "MAX_TREE_DEPTH", 2)
+    deep = tmp_path / "work" / "1" / "2" / "3" / "4"
+    deep.mkdir(parents=True)
+    up.remove_dir(tmp_path / "work")
+    assert (tmp_path / "work" / "1" / "2" / "3").exists(), "went past the limit"
+
+
+def test_a_file_that_cannot_be_unlinked_does_not_stop_the_rest(tmp_path, monkeypatch):
+    work = tmp_path / "work"
+    work.mkdir()
+    for name in ("a", "b"):
+        (work / name).write_text("x")
+    real = up.os.unlink
+
+    def stubborn(name, *, dir_fd=None):
+        if name == "a":
+            raise PermissionError(name)
+        real(name, dir_fd=dir_fd)
+    monkeypatch.setattr(up.os, "unlink", stubborn)
+    up.remove_dir(work)
+    assert sorted(p.name for p in work.iterdir()) == ["a"], "b was not removed"
+
+
+def test_a_needed_name_that_will_not_go_is_moved_aside(env, monkeypatch, capsys):
+    """Round 49 review: a status.json directory too deep to remove would
+    break every run; it is moved out of the way instead, and not reported as
+    removed."""
+    monkeypatch.setattr(up, "MAX_TREE_DEPTH", 1)
+    ops = env / "ops"
+    (ops / "status.json" / "a" / "b" / "c").mkdir(parents=True)
+    (ops / "stray" / "a" / "b" / "c").mkdir(parents=True)
+    assert up.tidy_ops(ops) == []
+    names = sorted(p.name for p in ops.iterdir())
+    assert "status.json" not in names and "stray" in names
+    assert any(n.startswith(".junk-") for n in names)
+    assert "moved aside" in capsys.readouterr().err
+
+
+def test_moving_aside_that_fails_is_left_for_next_time(env, monkeypatch):
+    monkeypatch.setattr(up, "MAX_TREE_DEPTH", 1)
+    ops = env / "ops"
+    (ops / "status.json" / "a" / "b" / "c").mkdir(parents=True)
+
+    def refuse(*a, **k):
+        raise PermissionError("no")
+    monkeypatch.setattr(up.os, "rename", refuse)
+    assert up.tidy_ops(ops) == []
+    assert (ops / "status.json").is_dir()

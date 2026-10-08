@@ -40,7 +40,7 @@ compose() {
 # it again would drop the lock for a moment, long enough for the updater. So
 # open it only when it is not open yet, and always take the lock: locking
 # the same open file again succeeds, and no option can skip it.
-if ! { true >&9; } 2>/dev/null; then
+if [ ! -e /dev/fd/9 ]; then
   exec 9>"${ROOT}/.updater.lock"
 fi
 flock -n 9 || die "a scanner upgrade is running; try again when it finishes"
@@ -187,6 +187,15 @@ if compose logs sast-studio 2>/dev/null | grep -q "First run: created administra
     | grep -A 4 "First run: created administrator" \
     | sed 's/^[^|]*| *//'
   echo "  Save these now; the password is not recoverable."
+fi
+
+# Since round 49 the app learns its own address only from SAST_PUBLIC_URL:
+# nginx no longer passes on the host the browser typed. Without it, signing
+# in works only at http://localhost:8080 and the MCP settings point there.
+if ! grep -qE '^SAST_PUBLIC_URL=[a-z]+://.+' "${ROOT}/.env" 2>/dev/null; then
+  step "SAST_PUBLIC_URL is not set"
+  echo "  Add the address people use to .env, e.g. SAST_PUBLIC_URL=http://192.168.99.145:8080,"
+  echo "  then run this again. Until then only http://localhost:8080 can sign in."
 fi
 
 # Every deploy keeps the image it replaced. Without a limit they pile up:
