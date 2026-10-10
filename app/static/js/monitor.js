@@ -26,6 +26,16 @@ function wireViewNav() {
       window.location.href = `/api/scans/${state.selectedJob}/packages.csv`;
     });
   }
+  // Standard SBOM formats, for tools that read one (Dependency-Track and
+  // the like) rather than a person reading the CSV.
+  [["#export-cdx", "cdx"], ["#export-spdx", "spdx"]].forEach(([sel, fmt]) => {
+    const btn = $(sel);
+    if (!btn) return;
+    btn.addEventListener("click", () => {
+      if (!state.selectedJob) return;
+      window.location.href = `/api/scans/${state.selectedJob}/sbom.${fmt}.json`;
+    });
+  });
   const sbomFilter = $("#sbom-filter");
   if (sbomFilter) sbomFilter.addEventListener("input", renderSbomRows);
   const sbomOnly = $("#sbom-attention-only");

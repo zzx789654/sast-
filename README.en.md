@@ -326,6 +326,8 @@ The UI is a thin client over a small JSON API — handy for scripting/CI:
 | `GET /api/scans/{id}` | scan status, progress, results |
 | `GET /api/scans/{id}/export.csv` | download that scan's findings as CSV |
 | `GET /api/scans/{id}/attack-surface.json` | download that scan's attack surface map |
+| `GET /api/scans/{id}/sbom.cdx.json` | download the package inventory as CycloneDX 1.6 JSON |
+| `GET /api/scans/{id}/sbom.spdx.json` | download the package inventory as SPDX 2.3 JSON |
 | `GET/POST /api/triage` | read or set a finding's mark (`real` / `false_positive` / `accepted`) |
 | `POST /api/scans/{id}/reevaluate` | re-judge a scan against the current marks |
 | `POST /api/scans/{id}/confirm` \| `/cancel` | run or discard a scan awaiting confirmation |
@@ -444,7 +446,25 @@ which licence. It is collapsed under the findings, and exports separately:
 
 ```
 GET /api/scans/<id>/packages.csv
+GET /api/scans/<id>/sbom.cdx.json     # CycloneDX 1.6
+GET /api/scans/<id>/sbom.spdx.json    # SPDX 2.3
 ```
+
+The two SBOM files are for tools that read one (Dependency-Track, a
+customer's procurement check, PCI DSS 6.3.2's component inventory). They are
+built from the same inventory as the table, and say no more than it knows:
+
+* A package listed from a manifest has a version *range*, so it goes out
+  with no version and the range as a property -- never `"version": ">=0.111"`.
+* A licence that is not a known SPDX id goes out by name (CycloneDX) or as a
+  `LicenseRef-` carrying its text (SPDX), never as a made-up id.
+* Nothing is marked complete; a manifest-only list is marked incomplete.
+* If the inventory could not be read, the download answers `409` rather
+  than sending an empty SBOM, which would claim "no dependencies".
+
+Trivy's package URLs and dependency graph are carried over when it produced
+the inventory. Both formats pass the official validators
+(`cyclonedx-python-lib` strict 1.6, `pyspdxtools`).
 
 The honest limitation: a lockfile records names and versions, not licences.
 The licence is read from the package's own files, so it is known only when

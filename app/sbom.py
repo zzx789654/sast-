@@ -406,6 +406,13 @@ def _parse(data: dict, scan_root: Path) -> dict:
                 "category": _category(names, found),
                 "direct": pkg.get("Relationship") == "direct",
                 "attention": any(_needs_attention(n) for n in names),
+                # Kept for the CycloneDX/SPDX export (app/sbom_export.py):
+                # trivy's own package URL and its dependency graph, keyed by
+                # trivy's "name@version" id.
+                "purl": (pkg.get("Identifier") or {}).get("PURL") or "",
+                "ref": pkg.get("ID") or "",
+                "depends_on": [d for d in (pkg.get("DependsOn") or [])
+                               if isinstance(d, str)],
             }
 
     ordered = sorted(packages.values(),

@@ -355,9 +355,19 @@ docker compose up --build            # http://localhost:8080（nginx → FastAPI
    - **相依套件類**：顯示套件名稱、已安裝版本與修補版本。
    - **密鑰類**：只顯示遮罩後的預覽，真實密鑰值不會送到瀏覽器。
 7. **標記判斷**：每筆發現可標為 **確認為問題／誤報／已知並接受**，並可**重新判定**。
-8. **匯出**：CSV（發現清單、套件與授權清單）或 PDF（瀏覽器列印，已套用列印樣式）。
+8. **匯出**：CSV（發現清單、套件與授權清單）、標準格式 SBOM（CycloneDX 1.6、SPDX 2.3 JSON），或 PDF（瀏覽器列印，已套用列印樣式）。
 
 > 發現的內文來自掃描工具本身，多為英文原文；介面會補一行中文嚴重度說明。
+
+### 標準格式 SBOM
+
+報告頁「使用的套件與授權」區塊可下載 **CycloneDX 1.6** 與 **SPDX 2.3** 兩種 JSON，供 Dependency-Track、客戶採購審查或 PCI DSS 6.3.2（軟體元件清單）等需要標準 SBOM 的地方使用。內容與畫面上的套件清單同源，且不多說它不知道的事：
+
+- 只從宣告檔讀到的套件只有版本**範圍**（如 `>=0.111`），輸出時**不填版本**，範圍放在 property／comment，絕不寫成 `version: ">=0.111"`。
+- 不在 SPDX 清單內的授權名稱：CycloneDX 以名稱輸出，SPDX 以 `LicenseRef-` 並附原文，不編造 SPDX ID。
+- 一律不標示「完整」；只有宣告檔的清單標示為不完整（incomplete）。
+- 套件清單讀不到時回應 `409`，不送出空的 SBOM（空的 SBOM 等於宣稱「沒有相依套件」）。
+- 由 Trivy 產生清單時，沿用它的 purl 與相依關係圖。兩種格式皆通過官方驗證工具（`cyclonedx-python-lib` 1.6 嚴格模式、`pyspdxtools`）。
 
 ### 攻擊面（靜態盤點）
 
@@ -531,6 +541,8 @@ socket 呼叫 `/containers/update`——`:ro` 讓 socket 檔案唯讀，但**不
 | `POST /api/scans/{id}/reevaluate` | 👤 | 依目前的人工標記重新計算判定 |
 | `GET /api/scans/{id}/export.csv` | 👤 | 下載發現清單 CSV（UTF-8 BOM，Excel 直接開；已防公式注入） |
 | `GET /api/scans/{id}/packages.csv` | 👤 | 下載套件與授權清單 CSV |
+| `GET /api/scans/{id}/sbom.cdx.json` | 👤 | 下載 SBOM（CycloneDX 1.6 JSON） |
+| `GET /api/scans/{id}/sbom.spdx.json` | 👤 | 下載 SBOM（SPDX 2.3 JSON） |
 | `GET /api/scans/{id}/attack-surface.json` | 👤 | 下載攻擊面盤點 JSON（端點、對外連線、風險，附靜態分析限制說明） |
 | `GET /api/policies` | 👤 | 固定判定規則的內容（僅供顯示） |
 

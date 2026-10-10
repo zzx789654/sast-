@@ -434,6 +434,13 @@ def _read_scan(args: dict, user=None) -> dict:
         "tools": {n: _tool_state(r) for n, r in job.results.items()},
         "findings": findings,
         "attack_surface": _attack_surface_brief(job.attack_surface or {}),
+        # Counts only; the inventory itself is a download, in two formats.
+        "packages": {
+            "total": ((job.sbom or {}).get("summary") or {}).get("total", 0),
+            "declared_only": bool((job.sbom or {}).get("declared_only")),
+            "sbom": {"cyclonedx": f"/api/scans/{job.id}/sbom.cdx.json",
+                     "spdx": f"/api/scans/{job.id}/sbom.spdx.json"},
+        },
         "note": ("a verdict labels this scan; it does not block anything. "
                  "Scanners report patterns, so check the code before acting."),
     })

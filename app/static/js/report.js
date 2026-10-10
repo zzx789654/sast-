@@ -52,7 +52,8 @@ function renderSbom(sbom) {
   }
 
   // Controls that do nothing on an empty list.
-  ["sbom-filter", "sbom-attention-only", "export-packages"].forEach((id) => {
+  ["sbom-filter", "sbom-attention-only", "export-packages",
+   "export-cdx", "export-spdx"].forEach((id) => {
     const node = $("#" + id);
     if (node) node.disabled = empty;
   });

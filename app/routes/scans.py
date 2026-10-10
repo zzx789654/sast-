@@ -12,7 +12,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from .. import events
+from .. import events, sbom_export
 from ..adapters import ADAPTERS
 from ..attack_surface import NOTE as ATTACK_SURFACE_NOTE
 from ..config import config
@@ -361,6 +361,41 @@ async def export_packages_csv(request: Request, job_id: str) -> Response:
         headers={"Content-Disposition":
                  f'attachment; filename="sast-packages-{job.id}.csv"'},
     )
+
+
+#: Media types registered for each format (CycloneDX spec; SPDX 2.3 annex).
+_SBOM_FORMATS = {
+    "cdx": (sbom_export.to_cyclonedx, "application/vnd.cyclonedx+json"),
+    "spdx": (sbom_export.to_spdx, "application/spdx+json"),
+}
+
+
+@router.get("/api/scans/{job_id}/sbom.{fmt}.json")
+async def export_sbom(request: Request, job_id: str, fmt: str) -> JSONResponse:
+    """The package inventory as CycloneDX 1.6 or SPDX 2.3 JSON.
+
+    Refused (409) rather than sent empty when the inventory could not be
+    read: an SBOM with no components says "no dependencies", which is a
+    different claim from "could not tell". A project with no manifest at all
+    really has nothing to list, so that one is sent.
+    """
+    if fmt not in _SBOM_FORMATS:
+        raise HTTPException(404, "unknown SBOM format; use cdx or spdx")
+    job = manager.get(job_id)
+    if job is None or not _may_see_scan(request, job):
+        raise HTTPException(404, "scan not found")
+    inv = job.sbom or {}
+    if not inv:
+        raise HTTPException(409, "the package inventory is not ready yet")
+    if not inv.get("packages") and (inv.get("reason") or "") not in ("", "no-manifest"):
+        raise HTTPException(409, "the package inventory could not be read for "
+                                 f"this scan ({inv.get('reason')}); an empty SBOM "
+                                 "would wrongly say there are no dependencies")
+
+    build, media_type = _SBOM_FORMATS[fmt]
+    return JSONResponse(build(job), media_type=media_type, headers={
+        "Content-Disposition":
+            f'attachment; filename="sast-sbom-{job.id}.{fmt}.json"'})
 
 
 @router.get("/api/scans/{job_id}/attack-surface.json")
