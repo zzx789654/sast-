@@ -375,3 +375,4 @@
   - Dockerfile 的 Bearer 改為固定 2.1.1 並驗 checksum（與 install-tools.sh、CI 一致）。
 - **後續動作**：第 51 輪（待修改.md）；乾淨環境 G6 需要可登入的主機（.240 目前無法連線、.145 需使用者提供登入方式）。
 - **後續動作（2026-10-10，G2～G4）**：獨立複核 High 1（root 退路會把 updater 排進 root crontab）／Medium 2／Low 3 全數修正；root 退路移除，改請使用者重新登入後再部署。乾淨環境（本機 Ubuntu 24.04 容器）`./setup.sh --docker` 一次完成並驗證；Bearer 固定版本後改由 repo 升級。待使用者同意推送（G5）與 .145 部署（G6）。
+- **後續動作（2026-10-10，G5）**：使用者要求推送到 main。448ccb7 推送，CI 38043806617 綠燈；trivy-image 新增項目為上游新公告，無新增 CRITICAL。G6 待 .145 以 `deploy.sh` 升級部署。

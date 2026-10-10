@@ -24,6 +24,11 @@
 
 - 已確認：`sg docker -c` 為固定字串；`ops/` 在 compose 掛載前建立；`.env` 以 umask 077 建立。
 
+### CI 報表判讀（run 38043806617）
+- semgrep 0、gitleaks 0、pip-audit／pip-audit-semgrep 0、osv-scanner 0、trivy-fs 0；bearer 2 筆與第 50 輪相同（兩處 subprocess，待人工標記）。
+- trivy-image：與第 50 輪（37802551923）逐筆比對，新增 88、消失 2，**無新增 CRITICAL**。新增集中在 golang.org/x/net 與 Go stdlib（bearer、trivy、osv-scanner、gitleaks 同時命中）以及 Debian 套件，皆為 10/08 之後公布的公告，非本輪引入。第 50 輪的映像經官方安裝腳本取得的同樣是 Bearer 2.1.1，固定版本沒有改變實際二進位。
+- 後續：Trivy 0.75.0 已有候選（乾淨環境自動建出），可在網頁核准；Go 依賴的新公告待各掃描器上游發布新版。
+
 ## [2026-10-08] 第 50 輪 — 攻擊面辨識「取得使用者、沒有就拒絕」
 
 ### 自動掃描
