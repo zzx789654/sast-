@@ -22,8 +22,9 @@ from urllib.parse import urlsplit
 COOLDOWN_DAYS = 7
 
 #: Upgradable tools and where their releases are published. Bearer is absent
-#: on purpose: the image installs whatever its installer serves, so a rebuild
-#: is its upgrade. npm comes from the OS packages.
+#: on purpose: it is pinned in the Dockerfile together with its checksum, so
+#: a new version is a reviewed change to the repository. npm comes from the
+#: OS packages.
 SOURCES = {
     "semgrep": ("pypi", "semgrep"),
     "trivy": ("github", "aquasecurity/trivy"),

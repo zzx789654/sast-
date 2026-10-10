@@ -2001,3 +2001,12 @@ object to repository database`），沒抓到新的 origin/main，
 - **教訓（推論要逐項想反例）**：第一版允許「只會拒絕的 if」放在檢查前面，但沒限制它的條件和內文，複核立刻找出 7 種把沒保護判成有保護的寫法。往「判為安全」的推論，每個允許條件都要有反例測試，並且要說明為什麼反例不成立。
 - **驗證**：.145 容器 787 passed；`attack_surface.py` 100%。
 
+## 2026-10-10 輪結 Round 51 — 自動化部署一次自動完成
+- 起因：第 40～50 輪 G6 都只在 .145 跑 `deploy.sh` 升級；首次安裝路徑（`setup.sh --docker`）有自己一份 `compose up --build -d`，落後 deploy.sh 三十輪（沒有健康等待、首次密碼、`SAST_PUBLIC_URL`、沿用升級版本、updater）。
+- 修法：`setup.sh --docker` 只負責裝 Docker／cron／python3，其餘交給 `deploy.sh --no-pull`；deploy.sh 每次排 updater、自動填 `SAST_PUBLIC_URL`；Dockerfile 的 Bearer 固定版本＋checksum。
+- G3 複核：root 退路會把 updater 排進 root crontab（High）→ 移除退路、install-updater 拒絕以 root 排程。
+- G4：本機 privileged Ubuntu 24.04 容器（systemctl 替身）乾淨安裝一次成功；第二次部署冪等。
+- **教訓 1**：同一件事有兩份腳本時，只有被每輪 G6 走到的那份會跟上。首次安裝路徑要嘛委派給每輪會跑的那份，要嘛列入 G6 定期在乾淨環境重跑。
+- **教訓 2**：Windows 上 `git archive` 會套用 `core.autocrlf`，打包給 Linux 測試要加 `-c core.autocrlf=false`，否則 shebang 變成 `bash`。
+- **教訓 3**：「乾淨環境」比真主機更乾淨（沒有 python3、cron、systemd），反而抓到 install-updater 的前置條件缺口。
+

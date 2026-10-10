@@ -86,6 +86,38 @@ echo "  deploying $(git rev-parse --short HEAD 2>/dev/null || echo 'working tree
 # compose starts: a missing bind-mount source is created by Docker as root,
 # and then neither the app nor the host updater could write to it.
 mkdir -p "${ROOT}/ops"
+# Upgrades from the web panel (the daily 08:00 check and "apply") need the
+# host updater scheduled. Safe to re-run; a host without cron still deploys.
+if ! bash "${ROOT}/scripts/install-updater.sh"; then
+  echo "  ! upgrades from the web panel are off (see the message above)"
+fi
+
+# The app knows its own address only from SAST_PUBLIC_URL: sign-in checks a
+# form's Origin against it. Unset, only http://localhost:8080 can sign in, so
+# a first deploy fills it in with this host's address. A value already set,
+# or an allow-list of host names (SAST_ALLOWED_HOSTS), is never overridden.
+if ! grep -qE '^SAST_(PUBLIC_URL|ALLOWED_HOSTS)=.+' .env 2>/dev/null; then
+  # Either lookup may fail (no route, no ip command); that is not a reason
+  # for set -e to end the deploy.
+  addr="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit }}' || true)"
+  [ -n "${addr}" ] || addr="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9.]+$' | head -n 1 || true)"
+  if ! printf '%s' "${addr}" | grep -qE '^[0-9]{1,3}([.][0-9]{1,3}){3}$'; then
+    echo "  ! could not work out this host's IPv4 address; SAST_PUBLIC_URL left unset"
+  elif [ -L .env ] || { [ -e .env ] && [ ! -w .env ]; }; then
+    echo "  ! .env is a link or not writable by $(id -un); SAST_PUBLIC_URL left unset"
+  else
+    public_url="http://${addr}:8080"
+    [ -e .env ] || (umask 077 && : > .env)
+    if grep -qE '^SAST_PUBLIC_URL=$' .env; then
+      sed -i "s|^SAST_PUBLIC_URL=\$|SAST_PUBLIC_URL=${public_url}|" .env
+    else
+      # A last line without a newline would swallow the new setting.
+      [ ! -s .env ] || [ -z "$(tail -c 1 .env)" ] || echo >> .env
+      echo "SAST_PUBLIC_URL=${public_url}" >> .env
+    fi
+    echo "  SAST_PUBLIC_URL=${public_url} written to .env (change it if people use another address)"
+  fi
+fi
 
 # Download the scanner binaries before the build rather than during it. On a
 # slow link this is the difference between a build of minutes and one of tens

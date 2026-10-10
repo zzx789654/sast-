@@ -100,8 +100,9 @@ and the Compose plugin on Ubuntu when they are missing:
 ./setup.sh --run        # ...and start the server on http://localhost:8000
 ```
 
-Other flags: `./setup.sh --docker` (install Docker if needed, then build & start
-via Docker Compose),
+Other flags: `./setup.sh --docker` (install Docker and cron if needed, then
+hand over to `scripts/deploy.sh --no-pull`: cache, build, scanner check, switch,
+health check, first-run password, `SAST_PUBLIC_URL`),
 `--no-tools` (Python app only — scanners degrade gracefully), `--no-venv`
 (install into the current environment), `--help`.
 
@@ -575,7 +576,7 @@ send its bearer token. Deriving that from the `Host` header would let whoever
 sets the header choose the destination, so set the address explicitly:
 
 ```bash
-SAST_PUBLIC_URL=https://sast.example.com   # required behind nginx (round 49): sign-in and MCP settings use it
+SAST_PUBLIC_URL=https://sast.example.com   # required behind nginx (round 49); deploy.sh fills in http://<host IP>:8080 when empty
 ```
 
 Without it, the host is taken from the request but only if it is in
@@ -784,7 +785,8 @@ morning, applied when an administrator approves it.
   --check` on the host for one now. A candidate nobody applies is removed
   after 14 days. `SAST_UPSTREAM_CHECK=false` turns the version queries off.
   Needs accounts on (`SAST_REQUIRE_AUTH=true`), an administrator,
-  `scripts/install-updater.sh` run once, and 3 GB free disk.
+  the host updater scheduled (`deploy.sh` runs `scripts/install-updater.sh`
+  each time), and 3 GB free disk.
 - **The app has no Docker socket.** The Monitor tab reads the Docker API
   through `docker-proxy` (`nginx/docker-proxy.conf`): four read-only paths,
   403 for everything else. A socket mounted `:ro` would still accept every

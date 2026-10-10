@@ -180,8 +180,8 @@ fetch "${GL_NAME}" \
 fetch "${TV_NAME}" \
   "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${TV_NAME}" || rc=1
 
-# Bearer is not version-pinned in the Dockerfile, so it keeps using its own
-# installer and is intentionally not cached here.
+# Bearer is pinned and checksummed in the Dockerfile itself (one ~20 MB
+# download), so it is not cached here.
 
 echo
 if [ "${rc}" -eq 0 ]; then

@@ -3,6 +3,27 @@
 > 每次安全確認（G3）追加一則，最新在上，不覆蓋。命中密鑰只記位置與類型。
 > 第 42 輪以前的紀錄在 `待修改.md` 各輪與 `lessons.md`。
 
+## [2026-10-10] 第 51 輪 — 自動化部署一次自動完成
+
+### 自動掃描
+- 本輪改的是部署腳本、Dockerfile、`.env.example`、README 與一行註解（`app/releases.py`），以 CI（G5）為準。
+- 抑制註解 0、密鑰 0（新增行皆無）。
+
+### 供應鏈
+- Dockerfile 的 Bearer 由「`curl main/install.sh | sh`」改為固定 2.1.1 的 release 壓縮檔＋官方 checksum；只認 amd64／arm64，其他架構直接停止建置。與 `install-tools.sh`、CI 版本與 checksum 一致（測試檢查）。
+
+### 人工複核（獨立子代理）
+| 等級 | 問題 | 修正 |
+|---|---|---|
+| High | `setup.sh` 以 sudo 執行 deploy 的退路，會把 updater 排進 root 的 crontab（repo 內可被使用者改寫的腳本以 root 執行，且處理 1777 的 ops/ 內容） | 移除 root 退路（請重新登入後再部署）；`install-updater.sh` 以 root 執行時拒絕排程 |
+| Medium | 取位址的管線在 `set -euo pipefail` 下失敗會靜默中止部署 | 加 `|| true`；實測無 `ip` 時部署繼續 |
+| Medium | 已設 `SAST_ALLOWED_HOSTS` 時自動填 IP 會讓網域登入失敗、MCP 改指明文 IP | 有 `SAST_ALLOWED_HOSTS` 就不自動填 |
+| Low | 位址未驗證（可能是 IPv6） | 只接受 IPv4 格式 |
+| Low | `.env` 為符號連結 | 不寫入、只警告 |
+| Low | Bearer 未知架構落到 amd64 | 明確分支，其他架構失敗 |
+
+- 已確認：`sg docker -c` 為固定字串；`ops/` 在 compose 掛載前建立；`.env` 以 umask 077 建立。
+
 ## [2026-10-08] 第 50 輪 — 攻擊面辨識「取得使用者、沒有就拒絕」
 
 ### 自動掃描

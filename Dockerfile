@@ -8,6 +8,10 @@ ARG SEMGREP_VERSION=1.179.0
 ARG OSV_SCANNER_VERSION=2.6.0
 ARG GITLEAKS_VERSION=8.30.1
 ARG TRIVY_VERSION=0.74.0
+ARG BEARER_VERSION=2.1.1
+# From https://github.com/Bearer/bearer/releases/download/v2.1.1/checksums.txt
+ARG BEARER_SHA256_AMD64=6b79d315577fea8305dfe08577bea6ad53852a929cd24de9211d39750a194bbb
+ARG BEARER_SHA256_ARM64=ef05756d374aeb179534e1bb441cd2c3bd56b8fcf21c693d71078859c6721916
 ARG PIP_TIMEOUT=600
 ARG PIP_RETRIES=10
 
@@ -116,10 +120,28 @@ RUN arch="$(dpkg --print-architecture)"; \
     /usr/local/bin/trivy --version
 
 # --- Bearer (free, Elastic License; semantic SAST — CodeQL alternative) ---
-# Bearer is not version-pinned, so it always goes through its own installer.
-RUN curl -sSfL --retry 5 --retry-delay 5 --connect-timeout 30 --speed-limit 1024 --speed-time 120 \
-      https://raw.githubusercontent.com/Bearer/bearer/main/contrib/install.sh \
-      | sh -s -- -b /usr/local/bin
+# Pinned, and checked against the checksum Bearer publishes, like
+# scripts/install-tools.sh and CI. It used to be "curl main/install.sh | sh":
+# whatever that branch served at build time, so the image could ship a
+# Bearer CI had never run.
+RUN arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) A=amd64; SUM="${BEARER_SHA256_AMD64}";; \
+      arm64) A=arm64; SUM="${BEARER_SHA256_ARM64}";; \
+      *)     echo "bearer: no checksum recorded for $arch" >&2; exit 1;; \
+    esac; \
+    F="bearer_${BEARER_VERSION}_linux_${A}.tar.gz"; \
+    curl -fsSL --retry 5 --retry-delay 5 --connect-timeout 30 --speed-limit 1024 --speed-time 120 -C - \
+      -o /tmp/bearer.tgz \
+      "https://github.com/Bearer/bearer/releases/download/v${BEARER_VERSION}/${F}"; \
+    got="$(sha256sum /tmp/bearer.tgz | cut -d" " -f1)"; \
+    if [ "$got" != "$SUM" ]; then \
+      echo "bearer checksum mismatch: want $SUM, got $got" >&2; \
+      exit 1; \
+    fi; \
+    tar -xzf /tmp/bearer.tgz -C /usr/local/bin bearer; \
+    chmod +x /usr/local/bin/bearer; rm /tmp/bearer.tgz; \
+    /usr/local/bin/bearer version
 
 WORKDIR /app
 COPY requirements.txt .

@@ -29,9 +29,19 @@ if [ "${1:-}" = "--remove" ]; then
   exit 0
 fi
 
-command -v crontab >/dev/null 2>&1 || { echo "  crontab not found; install cron" >&2; exit 1; }
-command -v python3 >/dev/null 2>&1 || { echo "  python3 not found" >&2; exit 1; }
+# Never in root's crontab: the updater is a script in this repository, and
+# it acts on requests the container writes into ops/. As root, whoever can
+# edit either would run code as root.
+if [ "$(id -u)" = "0" ]; then
+  mkdir -p "${ROOT}/ops"
+  echo "  not scheduling the updater as root; run this as the account that owns" >&2
+  echo "  the repository (in the docker group)" >&2
+  exit 1
+fi
 
+# ops/ first, before anything that can stop this script: compose mounts it,
+# and a missing bind-mount source is created by Docker as root, which
+# neither the app nor the updater can write to afterwards.
 mkdir -p "${ROOT}/ops"
 # The app writes here as uid 1000 (appuser in the image). When this user is
 # someone else, the app needs write access some other way.
@@ -42,6 +52,9 @@ if [ "$(id -u)" != "1000" ]; then
   echo "  !   The updater treats everything in it as untrusted input; keep this"
   echo "  !   directory's parents closed to other accounts (chmod 750 ~)."
 fi
+
+command -v crontab >/dev/null 2>&1 || { echo "  crontab not found; install cron" >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "  python3 not found" >&2; exit 1; }
 
 if current_crontab | grep -qF "${MARK}"; then
   echo "  updater already scheduled"

@@ -189,7 +189,7 @@ cd sast-
 | `scripts/reset-password.sh` | 在主機上重設帳號密碼 | 忘記密碼、帳號被鎖 |
 | `scripts/fetch-vendor.sh` | 把掃描器二進位預先下載到 `./vendor` | 由上面兩支自動呼叫；網路慢時可單獨先跑 |
 | `scripts/install-tools.sh` | 把掃描器安裝到主機 | 由 `setup.sh` 自動呼叫；手動安裝時使用 |
-| `scripts/install-updater.sh` | 開啟「網頁升級掃描工具」：建立 `ops/`、在 crontab 加入每分鐘執行的 `scripts/sast_updater.py` | `setup.sh --docker` 自動呼叫；既有部署手動執行一次 |
+| `scripts/install-updater.sh` | 開啟「網頁升級掃描工具」：建立 `ops/`、在 crontab 加入每分鐘執行的 `scripts/sast_updater.py` | 每次 `deploy.sh` 自動呼叫（可重複執行） |
 | `scripts/sast_updater.py` | 主機服務：每日 08:00 檢查並預先建置、驗收候選；處理網頁的「套用」（等待掃描→切換）。急需檢查時在主機執行 `python3 scripts/sast_updater.py --check` | 由 cron 呼叫，不需手動執行 |
 | `scripts/prune-rollbacks.sh` | 映像只保留 2 版：目前版本與前一版 | 部署與升級後自動呼叫 |
 
@@ -203,7 +203,7 @@ cd sast-
 |---|---|
 | （無） | **主機完整安裝**：檢查並用 apt 補齊 git／curl／Node.js／npm／python3-venv → 建立 `.venv` → 安裝 Python 相依 → 安裝六個掃描器 → 跑測試驗證 → 列出各工具是否可用 |
 | `--run` | 安裝完直接以 `uvicorn` 在 `http://localhost:8000` 啟動服務 |
-| `--docker` | **Docker 安裝**：若沒有 Docker 就從 Docker 官方 apt 來源安裝 Docker Engine ＋ Compose → 開啟網頁升級（`scripts/install-updater.sh`）→ `docker compose up --build -d`，完成後開 `http://localhost:8080` |
+| `--docker` | **Docker 安裝**：若沒有 Docker 就從 Docker 官方 apt 來源安裝 Docker Engine ＋ Compose（缺 cron 時一併安裝）→ 交給 `scripts/deploy.sh --no-pull` 完成其餘步驟（快取、建置、掃描器探測、切換、健康檢查、首次密碼、`SAST_PUBLIC_URL`），完成後開 `http://本機位址:8080`。剛加入 docker 群組時以 `sg docker` 執行，不必重新登入 |
 | `--update` | **更新**（詳見下方） |
 | `--no-tools` | 只裝 Python app，不裝掃描器（掃描器會顯示「未安裝」） |
 | `--no-venv` | Python 相依裝進目前環境，不建立 `.venv` |
@@ -246,6 +246,8 @@ SKIP_VENDOR=1 ./setup.sh --update    # 重建映像，不碰 ./vendor 快取
 | 0. 取得鎖 | 與網頁升級共用 `.updater.lock`，升級進行中就停止 | 停止 |
 | 1. 更新原始碼 | `git pull --ff-only`；若 `deploy.sh` 本身被更新，改執行新版（不會跑到一半的舊步驟） | 有本機修改會停止，請先處理 |
 | 2. 標記舊映像 | 把 `sast-studio:latest` 另存為 `sast-studio:rollback-<commit>` 與 `sast-studio:rollback-previous` | 第一次部署時略過 |
+| 2a. 網頁升級 | 建立 `ops/`，執行 `scripts/install-updater.sh` 排入 cron（已排入則略過） | 只警告，部署繼續（網頁升級停用） |
+| 2b. 對外網址 | `.env` 沒有 `SAST_PUBLIC_URL` 時，以本機對外 IP 寫入 `http://<IP>:8080`；已有 `SAST_PUBLIC_URL` 或 `SAST_ALLOWED_HOSTS` 時一律不改 | 取不到 IPv4 位址、`.env` 為連結或不可寫時只警告 |
 | 3. 沿用升級版本 | `.env` 中網頁升級過的 `*_VERSION` 以 build args 傳入，不會被 repo 的版本蓋回 | — |
 | 4. 快取掃描器 | `scripts/fetch-vendor.sh` | 繼續，建置時再下載缺少的 |
 | 5. 建置新映像 | `docker compose build`，**舊容器持續服務**；建置時即確認六個掃描器都能啟動 | 停止，舊版仍在服務 |
@@ -315,7 +317,7 @@ SKIP_VENDOR=1 ./setup.sh --update    # 重建映像，不碰 ./vendor 快取
   - **版本紀錄**：升級後的版本寫在主機 `.env`，之後 `deploy.sh` 會沿用。畫面會提示「本機版本比 repo 新」，請找時間把 repo 的版本號也改上去，CI 才會測到同樣的版本。
   - **前提**：
     - **必須啟用帳號**（`SAST_REQUIRE_AUTH=true`），且由管理員操作；
-    - 主機已執行 `scripts/install-updater.sh`；
+    - 主機已執行 `scripts/install-updater.sh`（每次 `deploy.sh` 都會自動執行）；
     - 磁碟至少 3 GB 可用。
   - **關閉對外查詢**：`.env` 設 `SAST_UPSTREAM_CHECK=false`，網頁與主機都不再連 api.github.com／pypi.org。
   - **紀錄位置**：狀態與通知存在主機 `.updater-state.json`；`ops/status.json`、`ops/update.log` 是給網頁顯示的副本。
@@ -716,7 +718,7 @@ curl -T project.zip -H "Authorization: Bearer sastup_..." http://你的主機:80
 - ZIP 走和網頁上傳完全相同的流程與限制（`SAST_MAX_UPLOAD_BYTES`、zip-slip 防護、解壓後檔數／大小上限），助理不會比網頁使用者多任何能力。
 - MCP 發起的掃描歸屬到權杖擁有者，和其他掃描一樣出現在報告分頁。
 - 端點會驗證 `Origin` 以防 DNS rebinding：同主機自動允許，其他來源用 `SAST_MCP_ORIGINS` 指定。
-- **經 nginx 部署（Docker）必須設定 `SAST_PUBLIC_URL`**（例如 `http://192.168.99.145:8080`）：第 49 輪起 nginx 不再轉交瀏覽器輸入的主機名稱，系統只從這個設定知道自己的位址——用來檢查表單來源（登入）與產生**設定 → MCP** 的網址。未設定時只有 `http://localhost:8080` 能登入，`deploy.sh` 會提示。
+- **經 nginx 部署（Docker）必須設定 `SAST_PUBLIC_URL`**（例如 `http://192.168.99.145:8080`）：第 49 輪起 nginx 不再轉交瀏覽器輸入的主機名稱，系統只從這個設定知道自己的位址——用來檢查表單來源（登入）與產生**設定 → MCP** 的網址。未設定時只有 `http://localhost:8080` 能登入；`deploy.sh` 第一次部署時會自動以本機對外 IP 填入，使用網域或其他位址時請自行修改 `.env` 後重新部署。
 
 ---
 

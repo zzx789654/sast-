@@ -5431,3 +5431,75 @@ def test_nginx_follows_the_backend_to_a_new_address():
     deploy = _read("scripts/deploy.sh")
     check = deploy[deploy.index('step "Checking the app answers"'):]
     assert "for _ in $(seq 1 12)" in check[:600], "one try can land inside the 10 s window"
+
+
+# ----------------------------------------------- first deploy (round 51)
+def test_setup_docker_hands_the_deploy_to_deploy_sh():
+    """setup.sh --docker had its own `compose up --build -d` and fell behind
+    deploy.sh for thirty rounds: no health wait, no first-run password, no
+    SAST_PUBLIC_URL, scanner versions from .env ignored (talk.md #033)."""
+    setup = _read("setup.sh")
+    block = setup[setup.index('if [ "$MODE" = "docker" ]'):]
+    block = block[:block.index("\nfi\n")]
+    assert "scripts/deploy.sh --no-pull" in block
+    assert "up --build" not in block, "a second copy of the deploy is back"
+    assert "install-updater.sh" not in block, "deploy.sh does that now"
+    # A user just added to the docker group gets it through sg, never root.
+    assert "sg docker" in block
+    assert "sudo bash scripts/deploy.sh" not in block
+    assert "cron" in block
+
+
+def test_deploy_schedules_the_updater_and_sets_the_public_url():
+    deploy = _read("scripts/deploy.sh")
+    switch = deploy.index('step "Switching to the new image"')
+    updater = deploy.index('bash "${ROOT}/scripts/install-updater.sh"')
+    assert updater < switch
+    # Filled in before the containers start, never over an existing value.
+    url = deploy.index("public_url=")
+    assert url < switch
+    assert "^SAST_(PUBLIC_URL|ALLOWED_HOSTS)=.+" in deploy
+    assert "([.][0-9]{1,3}){3}$" in deploy, "the address is written unchecked"
+    assert "[ -L .env ]" in deploy
+    assert "umask 077" in deploy, ".env may hold settings; it is created private"
+
+
+def test_install_updater_creates_ops_before_it_can_fail():
+    """Without cron the script stopped before creating ops/, and Docker then
+    created it as root: neither the app nor the updater could write to it."""
+    install = _read("scripts/install-updater.sh")
+    body = install[install.index('if [ "${1:-}" = "--remove" ]'):]
+    assert body.index('mkdir -p "${ROOT}/ops"') < body.index("command -v crontab")
+    assert body.index("chmod 1777") < body.index("command -v crontab")
+    # Never in root's crontab: the updater is a script this user can edit.
+    as_root = install.index('if [ "$(id -u)" = "0" ]')
+    assert as_root < install.index('{ current_crontab; echo "${LINE}"; } | crontab -')
+
+
+def test_bearer_is_pinned_and_checksummed_in_the_image():
+    """The image piped Bearer's main-branch installer into sh, so it could
+    ship a Bearer CI had never run."""
+    import re
+
+    dockerfile = _read("Dockerfile")
+    assert "Bearer/bearer/main/contrib/install.sh" not in dockerfile
+    block = dockerfile[dockerfile.index("--- Bearer"):dockerfile.index("WORKDIR /app")]
+    assert "bearer checksum mismatch" in block and "exit 1" in block
+    pinned = {
+        "Dockerfile": re.search(r"ARG BEARER_VERSION=([0-9.]+)", dockerfile).group(1),
+        "ci.yml": re.search(r'BEARER_VERSION: "([0-9.]+)"',
+                            _read(".github/workflows/ci.yml")).group(1),
+        "install-tools.sh": re.search(r'BEARER_VERSION="\$\{BEARER_VERSION:-([0-9.]+)\}"',
+                                      _read("scripts/install-tools.sh")).group(1),
+    }
+    assert len(set(pinned.values())) == 1, pinned
+    tools = _read("scripts/install-tools.sh")
+    for arch in ("AMD64", "ARM64"):
+        want = re.search(rf'BEARER_SHA256_{arch}="([0-9a-f]{{64}})"', tools).group(1)
+        assert f"ARG BEARER_SHA256_{arch}={want}" in dockerfile, arch
+
+
+def test_env_example_lists_the_updater_settings():
+    example = _read(".env.example")
+    for key in ("SAST_UPSTREAM_CHECK=", "SAST_UPGRADE_CHECK_AT=", "SAST_UPGRADE_TZ="):
+        assert key in example, key

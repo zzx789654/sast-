@@ -11,7 +11,8 @@
 # Usage:
 #   ./setup.sh                 # full local setup (venv + deps + tools + verify)
 #   ./setup.sh --run           # ...then start the server on http://localhost:8000
-#   ./setup.sh --docker        # build & start via Docker Compose instead (http://localhost:8080)
+#   ./setup.sh --docker        # install Docker if missing, then deploy with
+#                              #   scripts/deploy.sh (http://<this host>:8080)
 #   ./setup.sh --update        # update everything, end to end. Downloads into
 #                              #   ./vendor first (reusing what is there), then:
 #                              #     - Docker deployment -> rebuilds the image
@@ -147,26 +148,44 @@ if [ "$MODE" = "docker" ]; then
   say "Docker mode / 使用 Docker 建立"
   install_docker || { echo "Docker installation failed." >&2; exit 1; }
   have docker || { echo "Docker is not available after installation."; exit 1; }
+  # The daily scanner check is python3 run from cron; a minimal Ubuntu (a
+  # cloud image, a container) may have neither.
+  UPDATER_PKGS=()
+  have crontab || UPDATER_PKGS+=(cron)
+  have python3 || UPDATER_PKGS+=(python3)
+  if [ "${#UPDATER_PKGS[@]}" -gt 0 ] && have apt-get; then
+    say "Installing ${UPDATER_PKGS[*]} (the daily scanner check runs from it)"
+    maybe_sudo apt-get install -y --no-install-recommends "${UPDATER_PKGS[@]}" \
+      || warn "could not install ${UPDATER_PKGS[*]}; upgrades from the web panel stay off"
+    if have systemctl && have crontab; then maybe_sudo systemctl enable --now cron || true; fi
+  fi
+
+  # The rest -- cache, build, scanner check, switch, health, first-run
+  # password, SAST_PUBLIC_URL -- is what every deploy does, so it is done by
+  # the one script that does it. A copy here fell behind deploy.sh for
+  # thirty rounds (talk.md #033).
   if docker info >/dev/null 2>&1; then
-    if docker compose version >/dev/null 2>&1; then COMPOSE="docker compose";
-    elif have docker-compose; then COMPOSE="docker-compose";
-    else echo "Docker Compose is not available."; exit 1; fi
-  elif have sudo && sudo docker info >/dev/null 2>&1 && sudo docker compose version >/dev/null 2>&1; then
-    COMPOSE="sudo docker compose"
+    DEPLOY=(bash scripts/deploy.sh --no-pull)
+  elif have sg && id -nG "$(id -un)" | tr ' ' '\n' | command grep -qx docker \
+       && sg docker -c "docker info" >/dev/null 2>&1; then
+    # Just added to the docker group: this session does not have it yet,
+    # and running the deploy as root would leave ops/ and .env root-owned.
+    DEPLOY=(sg docker -c "bash scripts/deploy.sh --no-pull")
+  elif have sudo && sudo docker info >/dev/null 2>&1; then
+    # Not as root: the deploy schedules the updater in the caller's crontab,
+    # and a root one would run a script this user can edit, fed by ops/.
+    echo "Docker is installed, but this session cannot use it yet." >&2
+    echo "Log out and back in (to pick up the docker group), then run ./scripts/deploy.sh" >&2
+    exit 1
   else
     echo "Docker daemon is not available to the current user." >&2
     exit 1
   fi
-  # Before the first container exists: a bind-mount source Docker has to
-  # create itself is created as root. Also starts the host updater (cron).
-  say "Setting up scanner upgrades from the web panel"
-  bash scripts/install-updater.sh || warn "upgrades from the web panel are off"
 
-  say "Building and starting containers (this pulls the six scanners)…"
-  $COMPOSE up --build -d
-  say "Done. Open http://localhost:8080"
-  echo "  logs:  $COMPOSE logs -f"
-  echo "  stop:  $COMPOSE down"
+  say "Deploying (this pulls the six scanners the first time)…"
+  "${DEPLOY[@]}" || { echo "Deploy failed; see the step above." >&2; exit 1; }
+  echo "  logs:  docker compose logs -f"
+  echo "  stop:  docker compose down"
   exit 0
 fi
 
